@@ -1,6 +1,6 @@
-# AgentGrade — Kurulum Rehberi
+# CodeJury — Kurulum Rehberi
 
-Bu doküman, AgentGrade çoklu-ajan kod değerlendirme sistemini sıfırdan
+Bu doküman, CodeJury çoklu-ajan kod değerlendirme sistemini sıfırdan
 kurmak için gereken tüm adımları içerir. Otomatik kurulum scriptlerinin
 yanı sıra manuel adımlar da açıklanmıştır.
 

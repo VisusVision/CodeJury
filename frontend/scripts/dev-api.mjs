@@ -38,7 +38,7 @@ function loadEnvFiles() {
 loadEnvFiles();
 const backendDir = path.join(__dirname, "..", "backend");
 const backendDirAbs = path.resolve(backendDir);
-/** AgentGrade kok (frontend'in ust dizini) — backend.agents her zaman buradan yuklensin */
+/** CodeJury kok (frontend'in ust dizini) — backend.agents her zaman buradan yuklensin */
 const repoRoot = path.join(__dirname, "..", "..");
 const repoRootAbs = path.resolve(repoRoot);
 /** PYTHONPATH'teki gercek backend (ajanlar burada); uvicorn --reload bunu izlemezse security.py vb. hep ESKI kalir */
