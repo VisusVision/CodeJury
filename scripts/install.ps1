@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-  AgentGrade - Otomatik kurulum scripti (Windows / PowerShell).
+  CodeJury - Otomatik kurulum scripti (Windows / PowerShell).
 
 .DESCRIPTION
   Sistem önkoşullarını (Python, Node.js, Docker, Ollama) kontrol eder,
@@ -263,7 +263,7 @@ function Pull-OllamaModel {
 # ---------------------------------------------------------------------------
 
 Write-Host "============================================" -ForegroundColor Magenta
-Write-Host " AgentGrade - Otomatik Kurulum (Windows)" -ForegroundColor Magenta
+Write-Host " CodeJury - Otomatik Kurulum (Windows)" -ForegroundColor Magenta
 Write-Host "============================================" -ForegroundColor Magenta
 
 if (-not $SkipPrereqCheck) {

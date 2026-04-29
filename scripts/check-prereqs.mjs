@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * AgentGrade - Onkosul dogrulama scripti (cross-platform).
+ * CodeJury - Onkosul dogrulama scripti (cross-platform).
  *
  * Hicbir sey kurmaz, sadece sistemde gerekli araclarin var olup
  * olmadigini ve versiyonlarini kontrol eder.
@@ -175,7 +175,7 @@ function checkEnvFile() {
 
 async function main() {
   console.log(C.magenta("============================================"));
-  console.log(C.magenta(" AgentGrade - Onkosul Dogrulama"));
+  console.log(C.magenta(" CodeJury - Onkosul Dogrulama"));
   console.log(C.magenta("============================================\n"));
 
   checkRepoFiles();

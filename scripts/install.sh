@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # =============================================================================
-# AgentGrade - Otomatik kurulum scripti (Linux / macOS)
+# CodeJury - Otomatik kurulum scripti (Linux / macOS)
 # =============================================================================
 # Sistem onkosullarini (Python, Node.js, Docker, Ollama) kontrol eder,
 # eksikleri uyarir, ardindan bagimliliklari kurar, sandbox imajini
@@ -253,7 +253,7 @@ pull_ollama_model() {
 # ---------------------------------------------------------------------------
 
 echo -e "${C_MAGENTA}============================================${C_RESET}"
-echo -e "${C_MAGENTA} AgentGrade - Otomatik Kurulum (Linux/macOS)${C_RESET}"
+echo -e "${C_MAGENTA} CodeJury - Otomatik Kurulum (Linux/macOS)${C_RESET}"
 echo -e "${C_MAGENTA}============================================${C_RESET}"
 
 if [ "$SKIP_CHECKS" -eq 0 ]; then

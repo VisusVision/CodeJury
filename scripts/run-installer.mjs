@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * AgentGrade - Platforma gore install scriptini secen wrapper.
+ * CodeJury - Platforma gore install scriptini secen wrapper.
  * Windows -> powershell scripts/install.ps1
  * Linux/macOS -> bash scripts/install.sh
  *

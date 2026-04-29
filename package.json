@@ -1,5 +1,5 @@
 {
-  "name": "AgentGrade-workspace",
+  "name": "codejury-workspace",
   "private": true,
   "scripts": {
     "dev:full": "npm --prefix frontend run dev",
