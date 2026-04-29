@@ -1,0 +1,557 @@
+"""
+Master Rubric Evaluator Agent -- tam LLM: nihai rubrik yorumu Ollama ile.
+
+Agirlikli cekirdek puan ve ajan ozetleri yalnizca prompt ipucu; final_score ve metinler LLM'den (LLM zorunlu).
+
+Ogretmenin `faculty_rubric_criteria` listesi verildiyse (name, description, max_score), degerlendirme
+buna gore satir satir yapilir; her satirda kazanilan puan 0..max_score arasidir; nihai not 100 uzerindendir.
+"""
+import json
+from typing import Any
+
+from backend.agents.assignment_alignment import alignment_summary_tr, compute_brief_code_alignment
+from backend.agents.base import BaseAgent, LLMInferenceError, build_llm_user_suffix, format_assignment_context_for_prompt
+
+_DEFAULT_WEIGHTS = {"functionality": 35, "algorithmic_efficiency": 25, "code_standards": 25, "security": 15}
+_LABELS_EN = {
+    "functionality": "Functionality",
+    "algorithmic_efficiency": "Algorithmic efficiency",
+    "code_standards": "Code standards",
+    "security": "Security",
+}
+
+
+def normalize_faculty_rubric_criteria(raw: Any) -> list[dict[str, Any]]:
+    """DB / API'den gelen kriter listesini Master Evaluator girisine cevir."""
+    if not isinstance(raw, list):
+        return []
+    out: list[dict[str, Any]] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("name", "")).strip()
+        if not name:
+            continue
+        desc = str(item.get("description", "")).strip()
+        try:
+            mx = int(round(float(item.get("max_score", 0))))
+        except (TypeError, ValueError):
+            mx = 0
+        if mx < 1:
+            mx = 1
+        out.append({"name": name, "description": desc, "max_score": mx})
+    return out
+
+
+def _rubrik_score(
+    agent_dict: dict,
+    default: int,
+    *,
+    floor: int = 0,
+    ceiling: int = 100,
+    zero_means_missing: bool = False,
+) -> int:
+    """Ajan 'score' alanini guvenle sayiya cevirir.
+
+    dict.get('score', default) anahtar varken 0 dondururse default kullanilmaz; bu yuzden
+    kod kalitesi gibi ajanlarda 0 genelde hatali ciktidir (zero_means_missing=True).
+    Test ajaninda 0 gecerlidir (zero_means_missing=False).
+    """
+    if not isinstance(agent_dict, dict):
+        return max(floor, min(ceiling, default))
+    raw = agent_dict.get("score")
+    if raw is None:
+        return max(floor, min(ceiling, default))
+    try:
+        x = int(round(float(raw)))
+    except (TypeError, ValueError):
+        return max(floor, min(ceiling, default))
+    x = max(0, min(ceiling, x))
+    if zero_means_missing and x == 0:
+        return max(floor, min(ceiling, default))
+    return max(floor, min(ceiling, x))
+
+
+_MASTER_SYSTEM_PROMPT = """\
+You are a senior final code-review expert. Produce final_score, rubric_breakdown, and all narrative
+feedback by reasoning over the agent outputs. The compact summary in the user message is a weighted
+core hint only — it is not binding.
+
+Rules:
+- final_score: number 0–100 (weighted judgment).
+- rubric_breakdown: for each criterion: {"criterion": str, "label": str, "weight": int, "score": 0-100, "weighted_score": float, "justification": str}
+- strengths, weaknesses, recommendations: arrays of short strings.
+- summary: one or two sentences.
+- Be fair and resolve serious contradictions between agents in a balanced way.
+- If an ASSIGNMENT BRIEF block appears in the user message, you must judge whether the submission
+  fulfills that brief (topic, required concepts, deliverables). Clear mismatch (wrong task, missing
+  required paradigm such as OOP when required) should lower final_score and must appear in weaknesses
+  and in rubric_breakdown justifications (especially functionality and code_standards).
+- The numeric field brief_code_alignment (0–1) in the compact hint is programmatic: if it is below
+  ~0.45, treat functionality / task fit as largely failed even when the sandbox run succeeded; do not
+  award high functionality on correctness of an unrelated program.
+
+Reply with ONLY this JSON shape, no other text:
+{
+  "final_score": 0-100,
+  "rubric_breakdown": [...],
+  "summary": "...",
+  "strengths": [],
+  "weaknesses": [],
+  "recommendations": []
+}
+"""
+
+_MASTER_SYSTEM_PROMPT_FACULTY = """\
+You are a senior grader. The instructor defined an assignment rubric: each row has a name, description,
+and maximum points (weight). You must grade the student's submission against **each row** using agent
+outputs as supporting evidence — not as a mechanical copy of their numeric scores.
+
+Rules:
+- rubric_breakdown: MUST contain **exactly one entry per row** in the FACULTY RUBRIC JSON array, in the **same order**.
+- For row index i use "criterion": "criterion_i" (i zero-based).
+- "label": must match the faculty row "name" **exactly** (same string).
+- "weight": must equal that row's max_points (integer).
+- "score": integer **points earned** from **0 to weight** inclusive (this is NOT a 0–100 scale per row unless weight is 100).
+- "weighted_score": set equal to "score" (points earned for that row).
+- "justification": Turkish (or report_language), specific to that criterion and the actual code/run results.
+- final_score: single number 0–100: 100 * (sum of earned scores) / (sum of weights). Compute it correctly.
+- If the assignment brief implies wrong topic / missing required concepts, heavily penalize the relevant criteria
+  (e.g. scope/requirements/correctness rows).
+- Use brief_code_alignment in the compact hint (0–1): if below ~0.45 and the brief is on record, cap points on
+  rows about correctness, scope, or deliverables unless the code clearly matches the brief.
+
+Reply with ONLY this JSON shape:
+{
+  "final_score": 0-100,
+  "rubric_breakdown": [...],
+  "summary": "...",
+  "strengths": [],
+  "weaknesses": [],
+  "recommendations": []
+}
+"""
+
+
+class MasterEvaluatorAgent(BaseAgent):
+    name = "master_evaluator"
+    description = "Rubrik degerlendirme ve nihai puanlama"
+
+    async def analyze(self, input_data: dict) -> dict:
+        report_language = input_data.get("report_language") or "tr"
+        faculty = normalize_faculty_rubric_criteria(input_data.get("faculty_rubric_criteria"))
+
+        programmatic = self._programmatic_analysis(input_data)
+        compact = {
+            "core_weighted_suggestion": programmatic["final_score"],
+            "brief_code_alignment": round(float(programmatic.get("brief_alignment_factor", 1.0)), 3),
+            "brief_alignment_flags": programmatic.get("brief_alignment_reasons", []),
+            "rubric": [
+                {"c": b["criterion"], "w": b["weight"], "s": b["score"]}
+                for b in programmatic["rubric_breakdown"]
+            ],
+            "strengths": programmatic.get("strengths", [])[:4],
+            "weaknesses": programmatic.get("weaknesses", [])[:4],
+        }
+
+        brief = format_assignment_context_for_prompt(input_data.get("assignment_description"))
+
+        if faculty:
+            faculty_json = [
+                {
+                    "order": i,
+                    "name": c["name"],
+                    "description": c["description"],
+                    "max_points": c["max_score"],
+                }
+                for i, c in enumerate(faculty)
+            ]
+            user_prompt = (
+                f"{brief}"
+                "FACULTY RUBRIC — you MUST output exactly one rubric_breakdown entry per row, same order, exact names:\n"
+                f"{json.dumps(faculty_json, ensure_ascii=False, separators=(',', ':'))}\n\n"
+                "Non-binding automated agent summary (internal dimensions; map evidence to faculty rows yourself):\n"
+                f"{json.dumps(compact, ensure_ascii=False, separators=(',', ':'))}\n\n"
+                "Task: Award integer points per row (0..max_points). Set final_score = 100 * sum(points)/sum(max_points). "
+                "Write summary, strengths, weaknesses, recommendations."
+                f"{build_llm_user_suffix(report_language=report_language)}"
+            )
+            llm_result = await self._call_llm(
+                system_prompt=_MASTER_SYSTEM_PROMPT_FACULTY,
+                user_prompt=user_prompt,
+                required_keys=["final_score", "summary", "rubric_breakdown"],
+            )
+            if not isinstance(llm_result.get("rubric_breakdown"), list):
+                raise LLMInferenceError("[master_evaluator] rubric_breakdown gecersiz (faculty mode).")
+            self._finalize_faculty_rubric_output(llm_result, faculty)
+            self._apply_brief_alignment_guard(llm_result, programmatic, faculty_mode=True)
+            return llm_result
+
+        user_prompt = (
+            f"{brief}"
+            "Non-binding core hints from agents (weighted average — use your own judgment):\n"
+            f"{json.dumps(compact, ensure_ascii=False, separators=(',',':'))}\n"
+            "Task: Produce final_score, rubric_breakdown (with justification per criterion), summary, "
+            "strengths, weaknesses, and recommendations. Resolve major contradictions fairly."
+            f"{build_llm_user_suffix(report_language=report_language)}"
+        )
+
+        llm_result = await self._call_llm(
+            system_prompt=_MASTER_SYSTEM_PROMPT,
+            user_prompt=user_prompt,
+            required_keys=["final_score", "summary", "rubric_breakdown"],
+        )
+
+        if not isinstance(llm_result.get("rubric_breakdown"), list) or not llm_result["rubric_breakdown"]:
+            raise LLMInferenceError("[master_evaluator] rubric_breakdown bos veya gecersiz.")
+
+        # Doküman Bölüm 4 -- "not hesaplama LLM'e değil, bir Python script aracına
+        # yaptırılmalıdır": LLM rubric_breakdown.score'u versin, final_score'u biz
+        # ağırlıklara göre programatik olarak yeniden üretelim.
+        self._recompute_default_final_score(llm_result)
+
+        self._apply_brief_alignment_guard(llm_result, programmatic, faculty_mode=False)
+        return llm_result
+
+    @staticmethod
+    def _recompute_default_final_score(llm_result: dict[str, Any]) -> None:
+        """LLM matematiksel halüsinasyonunu ortadan kaldır: final_score'u Python ile yeniden hesapla.
+
+        Default rubric satırlarında `score` 0..100 ölçeğindedir; final = sum(score * weight) / sum(weight).
+        weighted_score alanı da tutarlı şekilde yeniden yazılır.
+        """
+        bd = llm_result.get("rubric_breakdown")
+        if not isinstance(bd, list) or not bd:
+            return
+        total_weight = 0.0
+        accumulated = 0.0
+        for row in bd:
+            if not isinstance(row, dict):
+                continue
+            try:
+                w = float(row.get("weight", 0))
+                s = float(row.get("score", 0))
+            except (TypeError, ValueError):
+                continue
+            if w <= 0:
+                continue
+            s = max(0.0, min(100.0, s))
+            row["score"] = int(round(s))
+            row["weight"] = int(round(w))
+            row["weighted_score"] = round(s * w / 100.0, 2)
+            total_weight += w
+            accumulated += s * w / 100.0
+        if total_weight <= 0:
+            try:
+                fs = float(llm_result.get("final_score", 0))
+            except (TypeError, ValueError):
+                fs = 0.0
+            llm_result["final_score"] = max(0.0, min(100.0, round(fs, 1)))
+            return
+        final = round(100.0 * accumulated / total_weight, 1)
+        llm_result["final_score"] = max(0.0, min(100.0, final))
+
+    @staticmethod
+    def _alignment_score_cap(alignment_factor: float) -> float:
+        """Clear topic mismatch gets a hard final-score ceiling, independent of LLM optimism."""
+        if alignment_factor < 0.18:
+            return 28.0
+        if alignment_factor < 0.30:
+            return 35.0
+        if alignment_factor < 0.45:
+            return 42.0
+        if alignment_factor < 0.70:
+            return 65.0
+        return 100.0
+
+    @staticmethod
+    def _is_security_row(row: dict[str, Any]) -> bool:
+        label = str(row.get("label", row.get("criterion", ""))).lower()
+        return any(token in label for token in ("security", "güven", "guven"))
+
+    @classmethod
+    def _apply_brief_alignment_guard(
+        cls,
+        llm_result: dict[str, Any],
+        programmatic: dict[str, Any],
+        *,
+        faculty_mode: bool,
+    ) -> None:
+        """Rubric/brief mismatch is a grading invariant, not just a prompt suggestion."""
+        try:
+            align_f = float(programmatic.get("brief_alignment_factor", 1.0))
+        except (TypeError, ValueError):
+            align_f = 1.0
+        if align_f >= 0.70:
+            return
+
+        cap = cls._alignment_score_cap(align_f)
+        if cap >= 100.0:
+            return
+
+        reasons = programmatic.get("brief_alignment_reasons", [])
+        reason_text = alignment_summary_tr(reasons if isinstance(reasons, list) else [])
+        if not reason_text:
+            reason_text = "Teslim edilen kod ödev açıklamasıyla yeterince örtüşmüyor."
+
+        raw_bd = llm_result.get("rubric_breakdown")
+        if isinstance(raw_bd, list):
+            for row in raw_bd:
+                if not isinstance(row, dict):
+                    continue
+
+                try:
+                    weight = int(round(float(row.get("weight", 100))))
+                except (TypeError, ValueError):
+                    weight = 100
+                try:
+                    current = float(row.get("score", 0))
+                except (TypeError, ValueError):
+                    current = 0.0
+
+                if faculty_mode:
+                    # Faculty rows are points. Security-only rows can stay high; every other row
+                    # depends on solving the requested assignment.
+                    row_cap = weight if cls._is_security_row(row) else max(0, int(round(weight * cap / 100.0)))
+                    new_score = min(current, float(row_cap))
+                    row["score"] = int(round(new_score))
+                    row["weighted_score"] = float(row["score"])
+                else:
+                    # Default rows use 0..100 scores inside the evaluator.
+                    criterion = str(row.get("criterion", "")).lower()
+                    if criterion in {"functionality", "code_standards"}:
+                        row_cap = cap
+                    elif criterion == "algorithmic_efficiency":
+                        row_cap = max(cap, 55.0)
+                    elif cls._is_security_row(row):
+                        row_cap = 100.0
+                    else:
+                        row_cap = max(cap, 60.0)
+                    row["score"] = int(round(max(0.0, min(current, row_cap))))
+                    if weight > 0:
+                        row["weighted_score"] = round(row["score"] * weight / 100.0, 2)
+
+                just = str(row.get("justification", "")).strip()
+                note = f"Ödev uyumu cezası: {reason_text}"
+                row["justification"] = f"{just} {note}".strip() if just else note
+
+        if faculty_mode and isinstance(llm_result.get("rubric_breakdown"), list):
+            total_max = 0
+            total_earned = 0
+            for row in llm_result["rubric_breakdown"]:
+                if not isinstance(row, dict):
+                    continue
+                try:
+                    total_max += int(round(float(row.get("weight", 0))))
+                    total_earned += int(round(float(row.get("score", 0))))
+                except (TypeError, ValueError):
+                    continue
+            guarded = round(100.0 * total_earned / total_max, 1) if total_max > 0 else 0.0
+        else:
+            try:
+                guarded = float(llm_result.get("final_score", 0))
+            except (TypeError, ValueError):
+                guarded = 0.0
+
+        llm_result["final_score"] = round(max(0.0, min(float(cap), guarded)), 1)
+
+        weaknesses = llm_result.get("weaknesses")
+        if not isinstance(weaknesses, list):
+            weaknesses = []
+        if reason_text not in weaknesses:
+            weaknesses.insert(0, reason_text)
+        llm_result["weaknesses"] = weaknesses
+
+    @staticmethod
+    def _finalize_faculty_rubric_output(llm_result: dict, faculty: list[dict[str, Any]]) -> None:
+        """LLM ciktisini ogretmen satirlariyla hizalar; puanlari 0..max'a kirpar; nihai notu hesaplar."""
+        raw_bd = llm_result.get("rubric_breakdown")
+        if not isinstance(raw_bd, list):
+            raw_bd = []
+        total_max = sum(int(c["max_score"]) for c in faculty)
+        new_bd: list[dict[str, Any]] = []
+        for i, fc in enumerate(faculty):
+            wmax = int(fc["max_score"])
+            row: dict[str, Any] = raw_bd[i] if i < len(raw_bd) and isinstance(raw_bd[i], dict) else {}
+            try:
+                raw_s = float(row.get("score", 0))
+            except (TypeError, ValueError):
+                raw_s = 0.0
+            if raw_s > float(wmax) + 0.5:
+                earned = int(round(raw_s * wmax / 100.0))
+            else:
+                earned = int(round(raw_s))
+            earned = max(0, min(wmax, earned))
+            just = str(row.get("justification", "")).strip()
+            if not just:
+                just = (
+                    f"\"{fc['name']}\" kriteri: Otomatik agent ozetine dayanarak degerlendirildi; "
+                    f"detay icin kanit listesine bakin."
+                )
+            new_bd.append({
+                "criterion": f"criterion_{i}",
+                "label": fc["name"],
+                "weight": wmax,
+                "score": earned,
+                "weighted_score": float(earned),
+                "justification": just,
+            })
+        llm_result["rubric_breakdown"] = new_bd
+        total_earned = sum(int(b["score"]) for b in new_bd)
+        llm_result["final_score"] = (
+            round(100.0 * total_earned / total_max, 1) if total_max > 0 else 0.0
+        )
+        llm_result["final_score"] = max(0.0, min(100.0, float(llm_result["final_score"])))
+
+    def _programmatic_analysis(self, input_data: dict) -> dict:
+        """Agirlikli cekirdek ve ozetler -- yalnizca LLM prompt ipucu."""
+        evidence = input_data.get("evidence", {})
+        sandbox_result = input_data.get("sandbox_result", {})
+        rubric = input_data.get("rubric")
+        brief_txt = str(input_data.get("assignment_description") or "").strip()
+        source_txt = str(input_data.get("source_code") or "")
+        align_f, align_rs = compute_brief_code_alignment(brief_txt, source_txt)
+        if not rubric or not isinstance(rubric, dict):
+            rubric = dict(_DEFAULT_WEIGHTS)
+        else:
+            rubric = {k: int(v) for k, v in rubric.items() if isinstance(v, (int, float))}
+            if not rubric:
+                rubric = dict(_DEFAULT_WEIGHTS)
+
+        cq = input_data.get("code_quality", {}) or {}
+        ta = input_data.get("test_agent", {}) or {}
+        sn = input_data.get("seniority", {}) or {}
+        gl = input_data.get("guideline", {}) or {}
+        sc = input_data.get("security", {}) or {}
+        validated = evidence.get("validated_claims", [])
+
+        ta_s = _rubrik_score(ta, 72, floor=0, ceiling=100, zero_means_missing=False)
+        cq_s = _rubrik_score(cq, 72, floor=0, ceiling=100, zero_means_missing=True)
+        sn_s = _rubrik_score(sn, 60, floor=0, ceiling=100, zero_means_missing=True)
+        gl_raw = _rubrik_score(gl, 60, floor=0, ceiling=100, zero_means_missing=True)
+        gl_alt = gl.get("clean_code_score") if isinstance(gl, dict) else None
+        gl_s = gl_raw
+        if isinstance(gl_alt, (int, float)):
+            try:
+                alt_i = int(round(float(gl_alt)))
+                gl_s = max(gl_s, max(0, min(100, alt_i)))
+            except (TypeError, ValueError):
+                pass
+        std_s = max(12, min(100, int(round((sn_s + gl_s) / 2))))
+        sc_s = _rubrik_score(sc, 98, floor=0, ceiling=100, zero_means_missing=False)
+
+        if align_f < 1.0:
+            cq_s = max(0, min(100, int(round(cq_s * (0.52 + 0.48 * align_f)))))
+
+        criteria_map = {
+            "functionality": {"agents": ["test_agent"], "claims": [], "score": ta_s},
+            "algorithmic_efficiency": {"agents": ["code_quality"], "claims": [], "score": cq_s},
+            "code_standards": {"agents": ["seniority", "guideline"], "claims": [], "score": std_s},
+            "security": {"agents": ["security"], "claims": [], "score": sc_s},
+        }
+        for claim in validated:
+            src = claim.get("agent_source", "")
+            for _c, info in criteria_map.items():
+                if src in info["agents"]:
+                    info["claims"].append(claim)
+
+        if sandbox_result:
+            if not sandbox_result.get("compilation_success", True):
+                criteria_map["functionality"]["score"] = min(criteria_map["functionality"]["score"], 10)
+            elif sandbox_result.get("exit_code", 0) != 0:
+                criteria_map["functionality"]["score"] = min(criteria_map["functionality"]["score"], 35)
+
+        tw = sum(rubric.get(k, 0) for k in criteria_map)
+        if tw <= 0:
+            tw = sum(_DEFAULT_WEIGHTS.values())
+        breakdown, wsum = [], 0.0
+        for crit in criteria_map:
+            w = int(rubric.get(crit, _DEFAULT_WEIGHTS.get(crit, 0)))
+            if w <= 0:
+                continue
+            sc_ = criteria_map[crit]["score"]
+            wp = (sc_ * w) / tw
+            wsum += wp
+            claims = criteria_map[crit]["claims"]
+            if not claims:
+                just = f"{crit}: Summary score {sc_}/100."
+            else:
+                lines_j = [f"{crit} ({sc_}/100):"]
+                for c in claims[:5]:
+                    sev = str(c.get("severity", "medium")).upper()
+                    ln = c.get("lines", [])
+                    fb = str(c.get("feedback", ""))[:120]
+                    lines_j.append(f"  [{sev}] {ln if ln else 'General'}: {fb}")
+                just = "\n".join(lines_j)
+            breakdown.append({
+                "criterion": crit,
+                "label": _LABELS_EN.get(crit, crit),
+                "weight": w,
+                "score": sc_,
+                "weighted_score": round(wp, 2),
+                "justification": just,
+            })
+        final_score = round(wsum, 1)
+        strengths, weaknesses, recommendations = [], [], []
+        if sandbox_result and sandbox_result.get("compilation_success") and sandbox_result.get("exit_code") == 0:
+            strengths.append("Code compiles and runs successfully")
+        fs = criteria_map["functionality"]["score"]
+        as_ = criteria_map["algorithmic_efficiency"]["score"]
+        ss = criteria_map["code_standards"]["score"]
+        se = criteria_map["security"]["score"]
+        if fs >= 70:
+            strengths.append("Functionality is adequate")
+        elif fs < 40:
+            weaknesses.append("Code does not run or does not match expected output")
+            recommendations.append("Fix correctness before polish")
+        if as_ >= 70:
+            strengths.append("Algorithmic efficiency is solid")
+        elif as_ < 50:
+            weaknesses.append("Algorithmic efficiency is weak")
+            recommendations.append("Optimize hot paths (e.g. hash-based lookups)")
+        if ss >= 70:
+            strengths.append("Code standards compliance is good")
+        elif ss < 50:
+            weaknesses.append("Code standards and documentation are insufficient")
+            recommendations.append("Add docstrings and consider type hints")
+        if se >= 90:
+            strengths.append("Security posture looks clean")
+        elif se < 50:
+            weaknesses.append("Security risks were flagged")
+            recommendations.append("Remove risky calls/imports where possible")
+        if align_f < 1.0:
+            hum = alignment_summary_tr(align_rs)
+            if hum:
+                weaknesses.append(hum)
+
+        if any(c.get("severity") in ("high", "critical") for c in validated):
+            weaknesses.append("High-severity issues were validated")
+        if not strengths:
+            strengths.append("There is a clear attempt to solve the problem")
+        tv = evidence.get("total_claims_received", 0)
+        vv = evidence.get("total_claims_validated", 0)
+        hc = sum(1 for c in validated if c.get("severity") in ("high", "critical"))
+        summary = (
+            f"Hint final score: {final_score}/100. {vv}/{tv} claims validated ({hc} high / critical). "
+            f"Functionality: {fs}/100, Efficiency: {as_}/100, Standards: {ss}/100, Security: {se}/100."
+        )
+        return {
+            "final_score": final_score,
+            "rubric_breakdown": breakdown,
+            "summary": summary,
+            "strengths": strengths,
+            "weaknesses": weaknesses,
+            "recommendations": recommendations,
+            "brief_alignment_factor": align_f,
+            "brief_alignment_reasons": list(align_rs),
+        }
+
+
+def generate_markdown_report(result: dict) -> str:
+    out = ["# Kod Degerlendirme Raporu\n", f"**Nihai Puan: {result.get('final_score', 0)}/100**\n"]
+    for it in result.get("rubric_breakdown", []):
+        w = it.get("weight", 100)
+        s = it.get("score", 0)
+        out.append(f"- {it.get('label', it.get('criterion'))}: {s}/{w} puan\n")
+    out.append("\n---\n" + result.get("summary", ""))
+    return "".join(out)

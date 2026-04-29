@@ -1,0 +1,13 @@
+{
+  "name": "AgentGrade-workspace",
+  "private": true,
+  "scripts": {
+    "dev:full": "npm --prefix frontend run dev",
+    "dev:frontend": "npm --prefix frontend run dev:vite",
+    "dev:api": "npm --prefix frontend exec node scripts/dev-api.mjs",
+    "check:prereqs": "node scripts/check-prereqs.mjs",
+    "setup": "node scripts/run-installer.mjs",
+    "setup:demo": "node scripts/run-installer.mjs --demo",
+    "setup:skip-checks": "node scripts/run-installer.mjs --skip-checks"
+  }
+}
