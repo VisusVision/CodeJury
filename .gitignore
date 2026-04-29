@@ -1,0 +1,51 @@
+# --- Python ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# --- Virtual envs ---
+.venv/
+venv/
+env/
+frontend/backend/venv/
+
+# --- Build artifacts ---
+dist/
+build/
+*.egg
+frontend/dist/
+
+# --- Node ---
+node_modules/
+
+# --- Environment / secrets ---
+.env
+.env.local
+*.pem
+*.key
+
+# --- Runtime / demo data ---
+.demo_store.json
+*.log
+
+# --- IDE / OS ---
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+
+# --- Test / coverage ---
+coverage/
+.coverage
+htmlcov/
+test-results/
+playwright-report/
+
+# --- Misc ---
+*.tmp
+*.bak

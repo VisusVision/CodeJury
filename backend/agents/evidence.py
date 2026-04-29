@@ -1,0 +1,804 @@
+"""
+Evidence Mapping Agent -- tam LLM: kanit eslestirme Ollama ile.
+
+Programatik on-dogrulama yalnizca prompt ipucu; validated/rejected listeleri LLM ciktisindan (LLM zorunlu).
+
+Girdi:  {"source_code": str, "agent_findings": dict}
+Cikti:  EvidenceOutput dict
+"""
+
+import ast as _pyast
+import json
+import re
+from typing import Optional
+
+from backend.agents.base import BaseAgent, LLMInferenceError, build_llm_user_suffix, format_assignment_context_for_prompt
+from backend.agents.code_utils import get_code_metrics
+
+
+def build_numbered_code(source_code: str) -> str:
+    """Satır numarası eklenmiş kod üretir."""
+    lines = source_code.splitlines()
+    width = len(str(len(lines)))
+    return "\n".join(f"{i+1:>{width}} | {line}" for i, line in enumerate(lines))
+
+# Evidence-only: slightly warmer so the model keeps legitimate structural findings when unsure.
+_EVIDENCE_LLM_TEMPERATURE = 0.28
+_EVIDENCE_NUM_PREDICT = 4096
+
+_EVIDENCE_SYSTEM_PROMPT = """\
+You are an evidence mapper for automated code review. Validate every agent claim by tying it to
+concrete evidence in the source: either specific numbered lines or an AST block.
+
+Rules:
+- For each supported claim emit one validated_claim referring to concrete evidence:
+  * Single-line: set "lines":[n] (1-based). "code_snippet" should be that line.
+  * Block-level (function, class, if/elif/else, for, while, try, with): set
+    "block_id" to the matching AST_BLOCKS id, set "line_range":[start,end], and
+    "node_type" (function|class|if|for|while|try|with). Add "symbol" for the
+    function/class name when known.
+  * Whole-file truth with no specific block: "lines":[] and omit "line_range".
+- Prefer block evidence for structural critique (gereksiz iç içe if-else, çok uzun
+  fonksiyon, eksik try/except, sınıfın bütünü hakkında yorum, vs.). Use block_id
+  when AST_BLOCKS contains a clearly matching node.
+- Reject only claims that are false, unrelated, or reference APIs/behavior that
+  do not exist in this code.
+- One validated_claim per distinct finding; do not summarize away valid items.
+- total_claims_received MUST equal TOTAL_CLAIMS in the user message.
+- total_claims_validated MUST equal len(validated_claims).
+- Required top-level keys: validated_claims, rejected_claims,
+  total_claims_received, total_claims_validated.
+
+Each validated_claim shape:
+{
+  "lines":[int],
+  "line_range":[int,int],          // optional, block evidence
+  "block_id":"bN",                  // optional, must come from AST_BLOCKS
+  "node_type":"function|class|if|for|while|try|with|line|file",
+  "symbol":"name",                  // optional
+  "code_snippet":str,
+  "feedback":str,
+  "agent_source":str,
+  "severity":"low|medium|high|critical|info",
+  "is_valid":true
+}
+
+Return ONLY this JSON object:
+{
+  "validated_claims":[...],
+  "rejected_claims":[],
+  "total_claims_received":0,
+  "total_claims_validated":0
+}
+"""
+
+
+def _first_list(record: dict, *keys: str) -> list | None:
+    for key in keys:
+        value = record.get(key)
+        if isinstance(value, list):
+            return value
+    return None
+
+
+def _coerce_lines(value) -> list[int]:
+    raw_items: list = []
+    if isinstance(value, list):
+        raw_items = value
+    elif isinstance(value, (int, float)):
+        raw_items = [value]
+    elif isinstance(value, str):
+        raw_items = re.findall(r"\d+", value)
+
+    out: list[int] = []
+    seen: set[int] = set()
+    for item in raw_items:
+        try:
+            n = int(round(float(str(item).strip())))
+        except (TypeError, ValueError):
+            continue
+        if n >= 1 and n not in seen:
+            out.append(n)
+            seen.add(n)
+    return out
+
+
+def _normalize_severity(value) -> str:
+    sev = str(value or "medium").strip().lower()
+    mapping = {
+        "bilgi": "info",
+        "düşük": "low",
+        "dusuk": "low",
+        "orta": "medium",
+        "yüksek": "high",
+        "yuksek": "high",
+        "kritik": "critical",
+    }
+    sev = mapping.get(sev, sev)
+    return sev if sev in ("low", "medium", "high", "critical", "info") else "medium"
+
+
+_AST_NODE_TYPES = {
+    "function",
+    "class",
+    "if",
+    "for",
+    "while",
+    "try",
+    "with",
+    "line",
+    "file",
+}
+
+
+def _build_ast_evidence_map(source_code: str, language: str) -> dict:
+    """Python AST'ten somut delillendirme icin blok haritasi cikar.
+
+    Donen yapi:
+        {
+            "language": "python",
+            "blocks": [
+                {"id": "b1", "type": "class", "name": "Kitap", "start": 6, "end": 14},
+                ...
+            ]
+        }
+
+    Python disindaki diller icin bos liste doner -- LLM bu durumda satir bazli
+    delil uretmeye odaklanir.
+    """
+    lang = (language or "").strip().lower()
+    if lang not in ("python", "py"):
+        return {"language": lang or "unknown", "blocks": []}
+
+    cleaned = source_code.lstrip("\ufeff") if isinstance(source_code, str) else ""
+    if not cleaned.strip():
+        return {"language": "python", "blocks": []}
+
+    try:
+        tree = _pyast.parse(cleaned)
+    except SyntaxError as exc:
+        return {
+            "language": "python",
+            "syntax_error": True,
+            "error": str(exc)[:160],
+            "blocks": [],
+        }
+
+    blocks: list[dict] = []
+    counter = {"n": 0}
+
+    def _push(node: _pyast.AST, type_: str, name: Optional[str] = None) -> None:
+        start = getattr(node, "lineno", None)
+        end = getattr(node, "end_lineno", None)
+        if not isinstance(start, int) or not isinstance(end, int):
+            return
+        if end < start:
+            end = start
+        counter["n"] += 1
+        blocks.append({
+            "id": f"b{counter['n']}",
+            "type": type_,
+            "name": name,
+            "start": start,
+            "end": end,
+        })
+
+    for node in _pyast.walk(tree):
+        if isinstance(node, (_pyast.FunctionDef, _pyast.AsyncFunctionDef)):
+            _push(node, "function", node.name)
+        elif isinstance(node, _pyast.ClassDef):
+            _push(node, "class", node.name)
+        elif isinstance(node, _pyast.If):
+            _push(node, "if")
+        elif isinstance(node, (_pyast.For, _pyast.AsyncFor)):
+            _push(node, "for")
+        elif isinstance(node, _pyast.While):
+            _push(node, "while")
+        elif isinstance(node, _pyast.Try):
+            _push(node, "try")
+        elif isinstance(node, _pyast.With):
+            _push(node, "with")
+
+    blocks.sort(key=lambda b: (b["start"], -(b["end"] - b["start"])))
+    if len(blocks) > 60:
+        blocks = blocks[:60]
+    return {"language": "python", "blocks": blocks}
+
+
+def _enclosing_block(blocks: list[dict], line_no: int) -> Optional[dict]:
+    if line_no <= 0 or not blocks:
+        return None
+    candidates = [b for b in blocks if b["start"] <= line_no <= b["end"]]
+    if not candidates:
+        return None
+    return min(candidates, key=lambda b: (b["end"] - b["start"], b["start"]))
+
+
+def _coerce_int(value) -> Optional[int]:
+    try:
+        return int(round(float(str(value).strip())))
+    except (TypeError, ValueError):
+        return None
+
+
+def _normalize_claims(
+    claims: list,
+    source_lines: list[str],
+    *,
+    ast_blocks: Optional[list[dict]] = None,
+) -> list[dict]:
+    blocks = ast_blocks or []
+    block_idx = {b["id"]: b for b in blocks}
+    norm: list[dict] = []
+    seen: set[tuple[str, tuple[int, ...], str]] = set()
+    for claim in claims:
+        if not isinstance(claim, dict):
+            continue
+
+        raw_lines = (
+            claim.get("lines")
+            if "lines" in claim
+            else claim.get("line", claim.get("line_hint", claim.get("satir", [])))
+        )
+        lines_v = [n for n in _coerce_lines(raw_lines) if n <= len(source_lines)]
+
+        feedback = str(
+            claim.get(
+                "feedback",
+                claim.get("message", claim.get("description", claim.get("reason", ""))),
+            )
+        ).strip()
+        if not feedback:
+            continue
+
+        agent_source = str(
+            claim.get("agent_source", claim.get("agent", claim.get("source", "unknown")))
+        )
+        severity = _normalize_severity(claim.get("severity", "medium"))
+
+        # ---- Block-level evidence ----
+        line_range: Optional[list[int]] = None
+        raw_range = (
+            claim.get("line_range")
+            or claim.get("lineRange")
+            or claim.get("range")
+            or claim.get("satir_araligi")
+        )
+        if isinstance(raw_range, list) and len(raw_range) >= 2:
+            start = _coerce_int(raw_range[0])
+            end = _coerce_int(raw_range[1])
+            if start and end and start >= 1 and end >= start and end <= len(source_lines):
+                line_range = [start, end]
+
+        block_id = str(claim.get("block_id") or claim.get("blockId") or "").strip()
+        if line_range is None and block_id and block_id in block_idx:
+            blk = block_idx[block_id]
+            line_range = [int(blk["start"]), int(blk["end"])]
+
+        node_type_raw = str(
+            claim.get("node_type") or claim.get("nodeType") or ""
+        ).strip().lower()
+        node_type = node_type_raw if node_type_raw in _AST_NODE_TYPES else None
+        symbol = str(claim.get("symbol") or "").strip() or None
+
+        # If only specific lines were given but they sit inside an AST block,
+        # surface the block context so the UI can highlight the full range.
+        if line_range is None and lines_v:
+            blk = _enclosing_block(blocks, lines_v[0])
+            # Only attach when the block is meaningfully wider than a single line.
+            if blk and (blk["end"] - blk["start"]) >= 2:
+                line_range = [blk["start"], blk["end"]]
+                if not node_type:
+                    node_type = blk.get("type")
+                if not symbol and blk.get("name"):
+                    symbol = blk.get("name")
+
+        if line_range is not None:
+            if not node_type:
+                blk = block_idx.get(block_id)
+                if not blk:
+                    blk = _enclosing_block(blocks, line_range[0])
+                if blk:
+                    node_type = blk.get("type")
+                    if not symbol and blk.get("name"):
+                        symbol = blk.get("name")
+            if not lines_v:
+                start, end = line_range
+                cap = min(end, start + 5)
+                lines_v = list(range(start, cap + 1))
+
+        # ---- Snippet ----
+        code_snippet = str(claim.get("code_snippet", claim.get("snippet", "")) or "")
+        if not code_snippet:
+            if line_range:
+                start, end = line_range
+                block_lines = source_lines[start - 1: end]
+                if len(block_lines) > 8:
+                    block_lines = block_lines[:5] + ["    # ..."] + block_lines[-2:]
+                code_snippet = "\n".join(s.rstrip() for s in block_lines)
+            elif lines_v:
+                code_snippet = "\n".join(source_lines[n - 1].rstrip() for n in lines_v[:4])
+
+        key = (feedback[:180], tuple(lines_v[:4]), agent_source)
+        if key in seen:
+            continue
+        seen.add(key)
+
+        out: dict = {
+            "lines": lines_v[:8],
+            "code_snippet": code_snippet,
+            "feedback": feedback,
+            "agent_source": agent_source,
+            "severity": severity,
+            "is_valid": True,
+        }
+        if line_range:
+            out["line_range"] = line_range
+        if node_type:
+            out["node_type"] = node_type
+        if symbol:
+            out["symbol"] = symbol
+        norm.append(out)
+    return norm
+
+
+def _merge_claim_lists(*claim_lists: list[dict], max_items: int | None = None) -> list[dict]:
+    merged: list[dict] = []
+    seen: set[tuple[str, tuple[int, ...], str]] = set()
+    for claims in claim_lists:
+        for claim in claims:
+            key = (
+                str(claim.get("feedback", ""))[:180],
+                tuple(claim.get("lines", [])[:4]),
+                str(claim.get("agent_source", "unknown")),
+            )
+            if key in seen:
+                continue
+            seen.add(key)
+            merged.append(claim)
+            if max_items is not None and len(merged) >= max_items:
+                return merged
+    return merged
+
+
+class EvidenceAgent(BaseAgent):
+    name = "evidence"
+    description = "Kanit eslestirme ve dogrulama"
+
+    async def analyze(self, input_data: dict) -> dict:
+        source_code = input_data["source_code"]
+        agent_findings = input_data["agent_findings"]
+        language = input_data.get("language", "python")
+        report_language = input_data.get("report_language") or "tr"
+
+        programmatic = self._programmatic_analysis(source_code, agent_findings, language)
+
+        ast_map = _build_ast_evidence_map(source_code, language)
+        ast_blocks = ast_map.get("blocks", []) or []
+
+        n_lines = len(source_code.splitlines())
+        if n_lines <= 260:
+            numbered = build_numbered_code(source_code)
+        else:
+            excerpt = self._truncate_code(source_code, max_lines=220)
+            numbered = build_numbered_code(excerpt)
+            numbered += (
+                "\n\n[NOTE] Middle of file may be omitted. Agent line numbers refer to the "
+                "full original file; map them to this excerpt when visible."
+            )
+
+        findings_for_llm = {}
+        for agent_name, findings in agent_findings.items():
+            if not isinstance(findings, dict):
+                continue
+            items = []
+            for key in ("issues", "style_violations", "threats", "test_failures"):
+                for item in (findings.get(key) or [])[:6]:
+                    if isinstance(item, dict):
+                        items.append({
+                            "severity": item.get("severity", "?"),
+                            "description": str(item.get("description", item.get("reason", "")))[:130],
+                            "line": item.get("line", item.get("line_hint", "")),
+                        })
+            for key in ("immaturity_indicators", "maturity_indicators"):
+                for text in (findings.get(key) or [])[:4]:
+                    if isinstance(text, str):
+                        items.append({"severity": "info", "description": text[:120]})
+            if items:
+                findings_for_llm[agent_name] = items
+
+        pre_validated = [
+            {"lines": c["lines"], "feedback": c["feedback"][:90], "agent": c["agent_source"]}
+            for c in programmatic["validated_claims"][:10]
+        ]
+
+        total_in = programmatic["total_claims_received"]
+        brief = format_assignment_context_for_prompt(input_data.get("assignment_description"))
+
+        ast_block_payload = ast_blocks[:60]
+        ast_block_json = (
+            json.dumps(ast_block_payload, ensure_ascii=False, separators=(",", ":"))
+            if ast_block_payload
+            else "[]"
+        )
+        if ast_map.get("syntax_error"):
+            ast_block_note = (
+                "AST_BLOCKS is empty because the source has a SyntaxError "
+                f"({ast_map.get('error', '')[:120]}). Use line-level evidence only."
+            )
+        elif not ast_block_payload:
+            ast_block_note = (
+                "AST_BLOCKS is empty for this language. Use line-level evidence only."
+            )
+        else:
+            ast_block_note = (
+                "Reference AST_BLOCKS via 'block_id' (preferred) or 'line_range' for "
+                "structural critique (long function, nested if-else, missing try, etc.)."
+            )
+
+        user_prompt = (
+            f"Language: {language}\n"
+            f"TOTAL_CLAIMS: {total_in}\n\n"
+            f"{brief}\n"
+            "Numbered source (use these integers in 'lines'):\n"
+            f"```\n{numbered}\n```\n\n"
+            "AST_BLOCKS (id,type,name,start,end):\n"
+            f"{ast_block_json}\n"
+            f"{ast_block_note}\n\n"
+            f"Agent findings (by agent):\n{json.dumps(findings_for_llm, ensure_ascii=False, separators=(',',':'))}\n\n"
+            f"Heuristic pre-map (non-binding):\n{json.dumps(pre_validated, ensure_ascii=False, separators=(',',':'))}\n\n"
+            "For every distinct claim above: validate with concrete evidence. Prefer a block "
+            "(block_id + line_range + node_type) when the issue is structural; otherwise use "
+            "specific lines. Use lines=[] only for whole-file truths. Reject only clear "
+            "hallucinations or statements false for this file. "
+            f"Set total_claims_received to {total_in}. "
+            "If no claims exist, return validated_claims: [] and rejected_claims: []."
+            f"{build_llm_user_suffix(report_language=report_language)}"
+        )
+
+        if total_in == 0:
+            return {
+                "validated_claims": [],
+                "rejected_claims": [],
+                "total_claims_received": 0,
+                "total_claims_validated": 0,
+                "llm_status": "skipped_no_claims",
+            }
+
+        try:
+            llm_result = await self._call_llm(
+                system_prompt=_EVIDENCE_SYSTEM_PROMPT,
+                user_prompt=user_prompt,
+                required_keys=["validated_claims", "total_claims_received"],
+                temperature=_EVIDENCE_LLM_TEMPERATURE,
+                num_predict=_EVIDENCE_NUM_PREDICT,
+            )
+            llm_status = "ok"
+        except LLMInferenceError:
+            # Evidence is supportive metadata; a malformed LLM response should not fail
+            # the whole grading pipeline. Use deterministic pre-validation instead.
+            llm_result = {}
+            llm_status = "fallback_programmatic"
+        if not isinstance(llm_result, dict):
+            llm_result = {}
+
+        llm_result["total_claims_received"] = total_in
+        vclaims = _first_list(
+            llm_result,
+            "validated_claims",
+            "validatedClaims",
+            "valid_claims",
+            "validClaims",
+            "claims",
+            "evidence",
+        )
+        if not isinstance(vclaims, list):
+            vclaims = programmatic.get("validated_claims", [])
+        source_lines = source_code.splitlines()
+        llm_norm = _normalize_claims(vclaims, source_lines, ast_blocks=ast_blocks)
+        programmatic_norm = _normalize_claims(
+            programmatic.get("validated_claims", []),
+            source_lines,
+            ast_blocks=ast_blocks,
+        )
+        # LLM remains the primary mapper, but it sometimes drops valid structural claims.
+        # Merge deterministic pre-map afterward to keep evidence recall high.
+        max_items = total_in if total_in > 0 else None
+        norm = _merge_claim_lists(llm_norm, programmatic_norm, max_items=max_items)
+        llm_result["validated_claims"] = norm
+        llm_result["total_claims_validated"] = len(norm)
+        rejected = _first_list(llm_result, "rejected_claims", "rejectedClaims", "rejections")
+        if not isinstance(rejected, list):
+            rejected = programmatic.get("rejected_claims", [])
+        llm_result["rejected_claims"] = rejected
+        llm_result["llm_status"] = llm_status
+        llm_result["ast_block_count"] = len(ast_blocks)
+        if ast_map.get("syntax_error"):
+            llm_result["ast_syntax_error"] = ast_map.get("error", "")
+        # Block-bazli kanit oraninin ayri raporlanmasi UI/audit icin faydali olabilir.
+        llm_result["block_evidence_count"] = sum(
+            1 for c in norm if isinstance(c, dict) and c.get("line_range")
+        )
+
+        return llm_result
+
+    def _programmatic_analysis(self, source_code: str, agent_findings: dict, language: str) -> dict:
+        """On-dogrulama sayimlari ve kisa ozet -- yalnizca LLM prompt ipucu."""
+        lines = source_code.splitlines()
+        metrics = get_code_metrics(source_code, language)
+
+        validated = []
+        rejected = []
+        total = 0
+
+        for agent_name, findings in agent_findings.items():
+            if not isinstance(findings, dict):
+                continue
+
+            for issue in findings.get("issues", []):
+                total += 1
+                claim = self._validate_issue(issue, lines, metrics, agent_name)
+                if claim:
+                    validated.append(claim)
+                else:
+                    desc = issue.get("description", "")
+                    sev = issue.get("severity", "medium")
+                    if sev == "info":
+                        validated.append({
+                            "lines": [],
+                            "code_snippet": "",
+                            "feedback": desc[:120],
+                            "agent_source": agent_name,
+                            "severity": "info",
+                            "is_valid": True,
+                        })
+                    else:
+                        rejected.append(f"[{agent_name}] '{desc[:80]}' -- kodda dogrulanamadi")
+
+            for viol in findings.get("style_violations", []):
+                total += 1
+                claim = self._validate_violation(viol, lines, metrics, agent_name)
+                if claim:
+                    validated.append(claim)
+                else:
+                    desc = viol.get("description", viol.get("rule", ""))[:120]
+                    sev = viol.get("severity", "low")
+                    if sev == "info":
+                        validated.append({
+                            "lines": [],
+                            "code_snippet": "",
+                            "feedback": desc,
+                            "agent_source": agent_name,
+                            "severity": "info",
+                            "is_valid": True,
+                        })
+                    else:
+                        rejected.append(f"[{agent_name}] '{desc[:80]}' -- kodda dogrulanamadi")
+
+            for indicator in findings.get("immaturity_indicators", []):
+                total += 1
+                claim = self._validate_text_claim(indicator, lines, agent_name, "medium")
+                if claim:
+                    validated.append(claim)
+                else:
+                    validated.append({
+                        "lines": [],
+                        "code_snippet": "",
+                        "feedback": indicator,
+                        "agent_source": agent_name,
+                        "severity": "medium",
+                        "is_valid": True,
+                    })
+
+            for indicator in findings.get("maturity_indicators", []):
+                total += 1
+                claim = self._validate_text_claim(indicator, lines, agent_name, "info")
+                if claim:
+                    validated.append(claim)
+                else:
+                    validated.append({
+                        "lines": [],
+                        "code_snippet": "",
+                        "feedback": indicator,
+                        "agent_source": agent_name,
+                        "severity": "info",
+                        "is_valid": True,
+                    })
+
+            for ap in findings.get("antipatterns", []):
+                total += 1
+                line_num = ap.get("line", 0)
+                if 1 <= line_num <= len(lines):
+                    validated.append({
+                        "lines": [line_num],
+                        "code_snippet": lines[line_num - 1].rstrip(),
+                        "feedback": ap.get("description", "Anti-pattern tespit edildi"),
+                        "agent_source": agent_name,
+                        "severity": ap.get("severity", "medium"),
+                        "is_valid": True,
+                    })
+
+            for fail in findings.get("test_failures", []):
+                total += 1
+                validated.append({
+                    "lines": [],
+                    "code_snippet": "",
+                    "feedback": f"Test hatasi: {fail.get('reason', fail.get('test_name', 'unknown'))}",
+                    "agent_source": agent_name,
+                    "severity": "high",
+                    "is_valid": True,
+                })
+
+            for err in findings.get("runtime_errors", []):
+                total += 1
+                validated.append({
+                    "lines": [],
+                    "code_snippet": "",
+                    "feedback": f"Runtime hatasi: {err}",
+                    "agent_source": agent_name,
+                    "severity": "high",
+                    "is_valid": True,
+                })
+
+            for threat in findings.get("threats", []):
+                if not isinstance(threat, dict):
+                    continue
+                total += 1
+                line_num = int(threat.get("line") or 0)
+                snippet = ""
+                if 1 <= line_num <= len(lines):
+                    snippet = lines[line_num - 1].rstrip()
+                validated.append({
+                    "lines": [line_num] if line_num else [],
+                    "code_snippet": snippet,
+                    "feedback": threat.get("description", "Guvenlik tehdidi"),
+                    "agent_source": agent_name,
+                    "severity": threat.get("severity", "high"),
+                    "is_valid": True,
+                })
+
+        return {
+            "validated_claims": validated,
+            "rejected_claims": rejected,
+            "total_claims_received": total,
+            "total_claims_validated": len(validated),
+        }
+
+    def _validate_issue(self, issue: dict, lines: list[str], metrics, agent: str) -> dict | None:
+        """Code quality issue'sunu satirlarla eslestirir."""
+        desc = issue.get("description", "")
+
+        line_nums = re.findall(r'satir\s*(\d+)', desc, re.IGNORECASE)
+        line_nums += re.findall(r'line\s*(\d+)', desc, re.IGNORECASE)
+
+        if issue.get("line"):
+            try:
+                line_nums.append(str(issue["line"]))
+            except (TypeError, ValueError):
+                pass
+
+        line_nums = [int(n) for n in line_nums if 1 <= int(n) <= len(lines)]
+
+        if not line_nums:
+            line_nums = self._find_relevant_lines(desc, lines)
+
+        if line_nums:
+            snippets = [lines[n-1].rstrip() for n in line_nums[:4] if n <= len(lines)]
+            return {
+                "lines": line_nums[:4],
+                "code_snippet": "\n".join(snippets),
+                "feedback": desc,
+                "agent_source": agent,
+                "severity": issue.get("severity", "medium"),
+                "is_valid": True,
+            }
+        return None
+
+    def _validate_violation(self, viol: dict, lines: list[str], metrics, agent: str) -> dict | None:
+        """Style violation'i satirlarla eslestirir."""
+        raw_desc = viol.get("description", viol.get("rule", ""))
+        if isinstance(raw_desc, list):
+            desc = " ".join(str(x) for x in raw_desc)
+        else:
+            desc = str(raw_desc or "")
+        raw_hint = viol.get("line_hint", "")
+
+        line_nums: list[int] = []
+        if isinstance(raw_hint, list):
+            for item in raw_hint:
+                if isinstance(item, int):
+                    line_nums.append(item)
+                elif isinstance(item, str):
+                    line_nums.extend(int(n) for n in re.findall(r'(\d+)', item))
+            line_hint = " ".join(str(x) for x in raw_hint)
+        elif isinstance(raw_hint, int):
+            line_nums.append(raw_hint)
+            line_hint = str(raw_hint)
+        else:
+            line_hint = str(raw_hint or "")
+            line_nums = [int(n) for n in re.findall(r'(\d+)', line_hint)]
+
+        line_nums = [n for n in line_nums if 1 <= n <= len(lines)]
+
+        if not line_nums:
+            line_nums = self._find_relevant_lines(desc, lines)
+
+        if line_nums:
+            snippets = [lines[n-1].rstrip() for n in line_nums[:4] if n <= len(lines)]
+            return {
+                "lines": line_nums[:4],
+                "code_snippet": "\n".join(snippets),
+                "feedback": desc,
+                "agent_source": agent,
+                "severity": viol.get("severity", "low"),
+                "is_valid": True,
+            }
+        elif (
+            "tum dosya" in line_hint.lower()
+            or "tum dosya" in desc.lower()
+            or "whole file" in line_hint.lower()
+            or "whole file" in desc.lower()
+            or "entire file" in desc.lower()
+        ):
+            return {
+                "lines": [1],
+                "code_snippet": lines[0].rstrip() if lines else "",
+                "feedback": desc,
+                "agent_source": agent,
+                "severity": viol.get("severity", "medium"),
+                "is_valid": True,
+            }
+        return None
+
+    def _validate_text_claim(self, text: str, lines: list[str], agent: str, severity: str) -> dict | None:
+        """Metin tabanli bir iddiay kodda dogrular."""
+        found_lines = self._find_relevant_lines(text, lines)
+        if found_lines:
+            snippets = [lines[n-1].rstrip() for n in found_lines[:3] if n <= len(lines)]
+            return {
+                "lines": found_lines[:3],
+                "code_snippet": "\n".join(snippets),
+                "feedback": text,
+                "agent_source": agent,
+                "severity": severity,
+                "is_valid": True,
+            }
+        return None
+
+    def _find_relevant_lines(self, text: str, lines: list[str]) -> list[int]:
+        """Metindeki anahtar kelimeleri kodda arar."""
+        keywords = []
+
+        func_names = re.findall(r'(\w+)\(\)', text)
+        keywords.extend(func_names)
+
+        code_refs = re.findall(r'`([^`]+)`', text)
+        keywords.extend(code_refs)
+
+        identifiers = re.findall(r'\b([a-z_]\w{2,})\b', text)
+        for ident in identifiers:
+            if ident not in ("bir", "var", "yok", "ile", "icin", "gibi", "daha",
+                             "cok", "kisa", "uzun", "iyi", "kotu", "satir", "line",
+                             "kod", "code", "fonksiyon", "function", "degisken",
+                             "sinif", "class", "metot", "method", "dosya", "file",
+                             "kullanilmis", "kullanilmamis", "tespit", "edildi",
+                             "olmali", "olmasi", "gerekir", "eksik", "mevcut",
+                             "ogrenci", "odev", "analiz", "sonuc", "puan"):
+                keywords.append(ident)
+
+        py_keywords = ["for ", "while ", "def ", "class ", "import ", "range(", "len(",
+                       "append(", "set(", "dict(", "enumerate(", "sorted(", "try:", "except",
+                       "__init__", "__name__", "self.", "return ", "if ", "elif ", "else:"]
+        for pk in py_keywords:
+            if pk.strip("( :") in text.lower():
+                keywords.append(pk.rstrip("(: "))
+
+        found = []
+        seen = set()
+        for kw in keywords:
+            for i, line in enumerate(lines):
+                if kw in line and (i + 1) not in seen:
+                    found.append(i + 1)
+                    seen.add(i + 1)
+
+        return found[:8]
