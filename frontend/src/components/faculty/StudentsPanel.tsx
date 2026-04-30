@@ -50,9 +50,10 @@ interface StudentFormState {
   first_name: string;
   last_name: string;
   department_id: string;
+  class_year: string;
 }
 
-type SortKey = "student_no" | "tc_no" | "name" | "department";
+type SortKey = "student_no" | "tc_no" | "name" | "department" | "class_year";
 
 const emptyForm = (): StudentFormState => ({
   student_no: "",
@@ -60,6 +61,7 @@ const emptyForm = (): StudentFormState => ({
   first_name: "",
   last_name: "",
   department_id: "",
+  class_year: "",
 });
 
 const normalize = (value: string) =>
@@ -135,6 +137,7 @@ const StudentsPanel = ({ departments }: StudentsPanelProps) => {
       first_name: editingStudent.first_name,
       last_name: editingStudent.last_name,
       department_id: editingStudent.department_id || "",
+      class_year: editingStudent.class_year ? String(editingStudent.class_year) : "",
     });
   }, [editingStudent]);
 
@@ -149,7 +152,7 @@ const StudentsPanel = ({ departments }: StudentsPanelProps) => {
     if (!query) return students;
     return students.filter((student) => {
       const department = student.department_name || departmentLookup.get(student.department_id || "")?.name || "";
-      return [student.student_no, student.tc_no, student.first_name, student.last_name, department]
+      return [student.student_no, student.tc_no, student.first_name, student.last_name, department, student.class_year]
         .map((value) => normalize(String(value)))
         .some((value) => value.includes(query));
     });
@@ -160,6 +163,7 @@ const StudentsPanel = ({ departments }: StudentsPanelProps) => {
       if (sortKey === "student_no") return student.student_no;
       if (sortKey === "tc_no") return student.tc_no;
       if (sortKey === "name") return `${student.first_name} ${student.last_name}`;
+      if (sortKey === "class_year") return String(student.class_year || 0);
       return student.department_name || departmentLookup.get(student.department_id || "")?.name || "";
     };
 
@@ -198,8 +202,13 @@ const StudentsPanel = ({ departments }: StudentsPanelProps) => {
     if (!form.department_id.trim()) {
       return "Bölüm seçimi zorunludur";
     }
+    if (!form.class_year.trim()) {
+      return "Sınıf seçimi zorunludur";
+    }
     return "";
   };
+
+  const parseClassYear = (value: string) => (value.trim() ? Number(value) : null);
 
   const handleManualCreate = async () => {
     const validationError = validateForm(manualForm);
@@ -215,6 +224,7 @@ const StudentsPanel = ({ departments }: StudentsPanelProps) => {
         first_name: manualForm.first_name.trim(),
         last_name: manualForm.last_name.trim(),
         department_id: manualForm.department_id,
+        class_year: parseClassYear(manualForm.class_year),
       });
       toast.success("Öğrenci eklendi");
       resetManualForm();
@@ -268,6 +278,7 @@ const StudentsPanel = ({ departments }: StudentsPanelProps) => {
         first_name: editForm.first_name.trim(),
         last_name: editForm.last_name.trim(),
         department_id: editForm.department_id,
+        class_year: parseClassYear(editForm.class_year),
       });
       toast.success("Öğrenci güncellendi");
       setEditingStudent(null);
@@ -333,7 +344,7 @@ const StudentsPanel = ({ departments }: StudentsPanelProps) => {
             Öğrenci Ekle
           </div>
 
-          <div className="grid gap-2 sm:grid-cols-2">
+            <div className="grid gap-2 sm:grid-cols-2">
             <input
               type="text"
               value={manualForm.student_no}
@@ -362,8 +373,8 @@ const StudentsPanel = ({ departments }: StudentsPanelProps) => {
               placeholder="Soyad"
               className="w-full rounded-lg border border-input bg-background px-3 py-1.5 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
             />
+            
           </div>
-
           <div className="grid gap-2 sm:grid-cols-2">
             <select
               value={manualForm.department_id}
@@ -377,12 +388,26 @@ const StudentsPanel = ({ departments }: StudentsPanelProps) => {
                 </option>
               ))}
             </select>
-            <button
-              onClick={handleManualCreate}
-              className="inline-flex h-9 w-1/2 items-center justify-center justify-self-center rounded-lg bg-primary px-3 text-sm font-medium text-primary-foreground transition-all hover:brightness-110"
-            >
-              Kaydet
-            </button>
+
+            <div className="flex items-center gap-2 w-full">
+              <select
+                value={manualForm.class_year}
+                onChange={(e) => setManualForm((current) => ({ ...current, class_year: e.target.value }))}
+                className="flex-1 h-9 min-w-0 rounded-lg border border-input bg-background px-3 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
+              >
+                <option value="">Sınıf seçin</option>
+                <option value="1">1. sınıf</option>
+                <option value="2">2. sınıf</option>
+                <option value="3">3. sınıf</option>
+                <option value="4">4. sınıf</option>
+              </select>
+              <button
+                onClick={handleManualCreate}
+                className="inline-flex h-9 min-w-0 items-center justify-center rounded-lg bg-primary px-4 text-sm font-medium text-primary-foreground transition-all hover:brightness-110"
+              >
+                Kaydet
+              </button>
+            </div>
           </div>
         </div>
 
@@ -392,7 +417,7 @@ const StudentsPanel = ({ departments }: StudentsPanelProps) => {
             CSV ile Ekle
           </div>
           <p className="text-xs text-muted-foreground leading-relaxed">
-            ogrenci no, tc, ad, soyad, bolum. Bölüm adı mevcut bölümlerle eşleşmelidir.
+            ogrenci no, tc, ad, soyad, bolum, sinif. Bölüm adı mevcut bölümlerle, sınıf 1-4 arasında olmalıdır.
           </p>
           <div className="flex items-center gap-2 rounded-lg border border-dashed border-border bg-background px-3 py-2">
             <FileUp className="h-4 w-4 text-muted-foreground" />
@@ -451,6 +476,7 @@ const StudentsPanel = ({ departments }: StudentsPanelProps) => {
                   <TableHead>{renderSortHeader("Öğrenci No", "student_no")}</TableHead>
                   <TableHead>{renderSortHeader("TC", "tc_no")}</TableHead>
                   <TableHead>{renderSortHeader("Ad Soyad", "name")}</TableHead>
+                  <TableHead>{renderSortHeader("Sınıf", "class_year")}</TableHead>
                   <TableHead>{renderSortHeader("Bölüm", "department")}</TableHead>
                   <TableHead className="text-right"></TableHead>
                 </TableRow>
@@ -466,6 +492,9 @@ const StudentsPanel = ({ departments }: StudentsPanelProps) => {
                       <div>
                         <p className="font-medium text-foreground">{student.first_name} {student.last_name}</p>
                       </div>
+                    </TableCell>
+                    <TableCell className="py-2 text-muted-foreground">
+                      {student.class_year ? `${student.class_year}. sınıf` : "—"}
                     </TableCell>
                     <TableCell className="py-2">
                       <Badge variant="outline" className="rounded-full">
@@ -535,47 +564,59 @@ const StudentsPanel = ({ departments }: StudentsPanelProps) => {
       </div>
 
       <Dialog open={Boolean(editingStudent)} onOpenChange={(open) => !open && setEditingStudent(null)}>
-        <DialogContent className="sm:max-w-xl">
+        <DialogContent className="sm:max-w-md py-3 px-4">
           <DialogHeader>
             <DialogTitle>Öğrenci Düzenle</DialogTitle>
           </DialogHeader>
 
-          <div className="grid gap-3 sm:grid-cols-2">
+            <div className="grid gap-2 sm:grid-cols-2">
             <input
               type="text"
               value={editForm.student_no}
               onChange={(e) => setEditForm((current) => ({ ...current, student_no: e.target.value }))}
               placeholder="Öğrenci no"
-              className="w-full rounded-lg border border-input bg-background px-3 py-2 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
+              className="w-full rounded-lg border border-input bg-background px-2 py-1.5 text-xs text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
             />
             <input
               type="text"
               value={editForm.tc_no}
               onChange={(e) => setEditForm((current) => ({ ...current, tc_no: e.target.value }))}
               placeholder="TC kimlik no"
-              className="w-full rounded-lg border border-input bg-background px-3 py-2 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
+              className="w-full rounded-lg border border-input bg-background px-2 py-1.5 text-xs text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
             />
             <input
               type="text"
               value={editForm.first_name}
               onChange={(e) => setEditForm((current) => ({ ...current, first_name: e.target.value }))}
               placeholder="Ad"
-              className="w-full rounded-lg border border-input bg-background px-3 py-2 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
+              className="w-full rounded-lg border border-input bg-background px-2 py-1.5 text-xs text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
             />
             <input
               type="text"
               value={editForm.last_name}
               onChange={(e) => setEditForm((current) => ({ ...current, last_name: e.target.value }))}
               placeholder="Soyad"
-              className="w-full rounded-lg border border-input bg-background px-3 py-2 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
+              className="w-full rounded-lg border border-input bg-background px-2 py-1.5 text-xs text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
             />
+            
           </div>
+          <div className="grid gap-1 sm:grid-cols-2 sm:items-end -mt-1">
+            <select
+              value={editForm.class_year}
+              onChange={(e) => setEditForm((current) => ({ ...current, class_year: e.target.value }))}
+              className="h-8 w-full rounded-lg border border-input bg-background px-2 text-xs text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
+            >
+              <option value="">Sınıf seçin</option>
+              <option value="1">1. sınıf</option>
+              <option value="2">2. sınıf</option>
+              <option value="3">3. sınıf</option>
+              <option value="4">4. sınıf</option>
+            </select>
 
-          <div className="grid gap-2 sm:grid-cols-2 sm:items-end">
             <select
               value={editForm.department_id}
               onChange={(e) => setEditForm((current) => ({ ...current, department_id: e.target.value }))}
-              className="h-9 w-full rounded-lg border border-input bg-background px-3 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
+              className="h-8 w-full rounded-lg border border-input bg-background px-2 text-xs text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
             >
               <option value="">Bölüm seçin</option>
               {departments.map((department) => (
@@ -584,23 +625,23 @@ const StudentsPanel = ({ departments }: StudentsPanelProps) => {
                 </option>
               ))}
             </select>
+          </div>
 
-            <div className="flex items-center justify-center gap-5">
-              <button
-                type="button"
-                onClick={() => setEditingStudent(null)}
-                className="inline-flex h-9 min-w-0 items-center justify-center gap-2 rounded-lg border border-border px-3 text-sm font-medium text-muted-foreground transition-colors hover:bg-muted/50 hover:text-foreground"
-              >
-                <X className="h-4 w-4" /> Vazgeç
-              </button>
-              <button
-                type="button"
-                onClick={handleSaveEdit}
-                className="inline-flex h-9 min-w-0 items-center justify-center gap-2 rounded-lg bg-primary px-3 text-sm font-medium text-primary-foreground transition-all hover:brightness-110"
-              >
-                <Pencil className="h-4 w-4" /> Kaydet
-              </button>
-            </div>
+          <div className="flex items-center justify-end gap-2 mt-0">
+            <button
+              type="button"
+              onClick={() => setEditingStudent(null)}
+              className="inline-flex h-8 min-w-0 items-center justify-center gap-1 rounded-lg border border-border px-2 text-xs font-medium text-muted-foreground transition-colors hover:bg-muted/50 hover:text-foreground"
+            >
+              <X className="h-4 w-4" /> Vazgeç
+            </button>
+            <button
+              type="button"
+              onClick={handleSaveEdit}
+              className="inline-flex h-8 min-w-0 items-center justify-center gap-1 rounded-lg bg-primary px-2 text-xs font-medium text-primary-foreground transition-all hover:brightness-110"
+            >
+              <Pencil className="h-4 w-4" /> Kaydet
+            </button>
           </div>
         </DialogContent>
       </Dialog>
