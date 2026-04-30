@@ -57,6 +57,8 @@ export interface Student {
   department_id?: string | null;
   department_name?: string | null;
   created_at?: string;
+
+  class_year?: number | null;
 }
 
 export interface StudentImportSkippedRow {
@@ -66,6 +68,8 @@ export interface StudentImportSkippedRow {
   last_name: string;
   department_name: string;
   reason: string;
+
+  class_year?: number | null;
 }
 
 export interface StudentImportResponse {
@@ -79,6 +83,8 @@ export interface Course {
   code: string;
   department_id?: string | null;
   created_at?: string;
+
+  class_year?: number | null;
 }
 
 export interface Assignment {
@@ -103,6 +109,15 @@ export interface Department {
   name: string;
   created_by?: string | null;
   created_at?: string;
+}
+
+export interface QuestionItem {
+  id: string;
+  content: string;
+  color: "blue" | "green" | "pink" | "yellow";
+  created_by?: string | null;
+  created_at?: string;
+  updated_at?: string;
 }
 
 export interface RubricCriterion {
@@ -232,6 +247,7 @@ export async function createStudent(payload: {
   first_name: string;
   last_name: string;
   department_id: string;
+  class_year?: number | null;
 }): Promise<Student> {
   const response = await fetch(`${API_BASE_URL}/api/students`, {
     method: "POST",
@@ -250,6 +266,7 @@ export async function updateStudent(studentId: string, payload: {
   tc_no: string;
   first_name: string;
   last_name: string;
+  class_year?: number | null;
   department_id: string;
 }): Promise<Student> {
   const response = await fetch(`${API_BASE_URL}/api/students/${studentId}`, {
@@ -443,7 +460,7 @@ export async function getCourses(): Promise<Course[]> {
   return response.json();
 }
 
-export async function createCourse(payload: { name: string; code: string; department_id?: string | null }): Promise<Course> {
+export async function createCourse(payload: { name: string; code: string; department_id?: string | null; class_year?: number | null }): Promise<Course> {
   const response = await fetch(`${API_BASE_URL}/api/courses`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -589,6 +606,63 @@ export async function fetchAssignmentSuggestions(
     throw new Error(`Ödev önerileri hatası (${response.status}): ${errorText}`);
   }
   return response.json();
+}
+
+export async function getQuestions(): Promise<QuestionItem[]> {
+  const response = await fetch(`${API_BASE_URL}/api/questions`);
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new Error(`Sorular listesi hatası (${response.status}): ${errorText}`);
+  }
+  return response.json();
+}
+
+export async function createQuestion(payload: {
+  content: string;
+  color: "blue" | "green" | "pink" | "yellow";
+}): Promise<QuestionItem> {
+  const response = await fetch(`${API_BASE_URL}/api/questions`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new Error(`Soru ekleme hatası (${response.status}): ${errorText}`);
+  }
+  return response.json();
+}
+
+export async function deleteQuestion(questionId: string): Promise<void> {
+  const response = await fetch(`${API_BASE_URL}/api/questions/${questionId}`, { method: "DELETE" });
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new Error(`Soru silme hatası (${response.status}): ${errorText}`);
+  }
+}
+
+export async function getAssignmentQuestions(assignmentId: string): Promise<QuestionItem[]> {
+  const response = await fetch(`${API_BASE_URL}/api/assignments/${assignmentId}/questions`);
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new Error(`Atanan sorular hatası (${response.status}): ${errorText}`);
+  }
+  return response.json();
+}
+
+export async function updateAssignmentQuestions(payload: {
+  assignment_id: string;
+  question_ids: string[];
+}): Promise<void> {
+  const response = await fetch(`${API_BASE_URL}/api/assignment-questions/update`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new Error(`Sorular güncelleme hatası (${response.status}): ${errorText}`);
+  }
 }
 
 export async function updateTeacherEmail(teacherId: string, email: string): Promise<Teacher> {

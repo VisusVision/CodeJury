@@ -121,7 +121,7 @@ const AssignmentChatbot = ({ open, onClose, courses, teacherId, onCreated }: Pro
                   className="flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-primary/10 text-primary text-xs font-medium hover:bg-primary/20 transition-all hover:scale-105"
                 >
                   <BookOpen className="h-3 w-3" />
-                  {c.name} <span className="opacity-60">({c.code})</span>
+                  {c.name} <span className="opacity-60">({c.code}) - {c.class_year ? `${c.class_year}. sınıf` : "Genel"}</span>
                 </button>
               ))
             )}
@@ -154,7 +154,7 @@ const AssignmentChatbot = ({ open, onClose, courses, teacherId, onCreated }: Pro
 
   const handleCourseSelect = (c: Course) => {
     setCourse(c);
-    addMsg({ from: "user", text: `${c.name} (${c.code})` });
+    addMsg({ from: "user", text: `${c.name} (${c.code}) - ${c.class_year ? `${c.class_year}. sınıf` : "Genel"}` });
     addMsg({
       from: "bot",
       text: "Harika seçim! 🎯 Hangi konu ya da kavram üzerinde çalışmak istersiniz? Birkaç anahtar kelime yeter (ör: linked list, dosya sistemi, REST API).",
@@ -259,7 +259,7 @@ const AssignmentChatbot = ({ open, onClose, courses, teacherId, onCreated }: Pro
     const dueLabel = `${format(date!, "dd MMM yyyy", { locale: tr })} - ${time}`;
     addMsg({
       from: "bot",
-      text: `Tamamdır! 📋 Aşağıdaki ödevi oluşturmak istediğinizi onaylıyor musunuz?\n\n• Ders: ${course?.name}\n• Başlık: ${title}\n• Son Teslim: ${dueLabel}`,
+      text: `Tamamdır! 📋 Aşağıdaki ödevi oluşturmak istediğinizi onaylıyor musunuz?\n\n• Ders: ${course?.name}${course?.class_year ? ` (${course.class_year}. sınıf)` : ""}\n• Başlık: ${title}\n• Son Teslim: ${dueLabel}`,
     });
     setStep("confirm");
   };

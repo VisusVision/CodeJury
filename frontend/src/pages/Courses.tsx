@@ -9,12 +9,14 @@ interface Student {
   last_name: string;
   student_no: string;
   department_name?: string | null;
+  class_year?: number | null;
 }
 
 interface Course {
   id: string;
   name: string;
   code: string;
+  class_year?: number | null;
 }
 
 const Courses = () => {
@@ -69,6 +71,7 @@ const Courses = () => {
           <p className="text-xs text-muted-foreground mt-1">
             {student.student_no}
             {student.department_name ? ` - ${student.department_name}` : ""}
+            {student.class_year ? ` - ${student.class_year}. sınıf` : ""}
           </p>
         </div>
 
@@ -130,6 +133,9 @@ const Courses = () => {
                 <div>
                   <p className="font-medium text-foreground">{course.name}</p>
                   <p className="text-xs text-muted-foreground">{course.code}</p>
+                  <p className="text-xs text-muted-foreground">
+                    {course.class_year ? `${course.class_year}. sınıf` : "Genel"}
+                  </p>
                 </div>
               </button>
             ))}

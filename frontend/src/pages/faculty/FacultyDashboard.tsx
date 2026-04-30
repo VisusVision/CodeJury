@@ -44,6 +44,7 @@ interface Course {
   name: string;
   code: string;
   department_id?: string | null;
+  class_year?: number | null;
 }
 
 interface Assignment {
@@ -78,6 +79,7 @@ const FacultyDashboard = () => {
   const [newCourseName, setNewCourseName] = useState("");
   const [newCourseCode, setNewCourseCode] = useState("");
   const [selectedDeptId, setSelectedDeptId] = useState("");
+  const [selectedClassYear, setSelectedClassYear] = useState("");
   const [newAssignmentName, setNewAssignmentName] = useState("");
   const [newAssignmentDesc, setNewAssignmentDesc] = useState("");
   const [selectedCourseId, setSelectedCourseId] = useState("");
@@ -146,17 +148,19 @@ const FacultyDashboard = () => {
   };
 
   const addCourse = async () => {
-    if (!newCourseName.trim() || !newCourseCode.trim()) return;
+    if (!newCourseName.trim() || !newCourseCode.trim() || !selectedClassYear.trim()) return;
     try {
       await createCourse({
         name: newCourseName.trim(),
         code: newCourseCode.trim(),
         department_id: selectedDeptId || null,
+        class_year: Number(selectedClassYear),
       });
       toast.success("Ders eklendi");
       setNewCourseName("");
       setNewCourseCode("");
       setSelectedDeptId("");
+      setSelectedClassYear("");
       await fetchAll();
     } catch (err: any) {
       toast.error(err.message || "Ders eklenemedi");
@@ -217,7 +221,7 @@ const FacultyDashboard = () => {
       toast.success("Ödev onaylandı");
       await fetchAll();
     } catch (err: any) {
-      toast.error(err.message || "Onaylama basarisiz");
+      toast.error(err.message || "Onaylama başarısız");
     }
   };
 
@@ -326,7 +330,7 @@ const FacultyDashboard = () => {
         {activeTab === "courses" && (
           <>
             <h1 className="text-2xl font-bold tracking-tight text-foreground mb-1">Dersler</h1>
-            <p className="text-sm text-muted-foreground mb-6">Ders ekleyin.</p>
+            <p className="text-sm text-muted-foreground mb-6">Ders ekleyin veya mevcut dersleri yönetin.</p>
 
             <div className="flex flex-col gap-3 mb-6 max-w-lg">
               <div className="grid grid-cols-2 gap-2">
@@ -345,20 +349,34 @@ const FacultyDashboard = () => {
                   className="px-3 py-2 rounded-lg border border-input bg-background text-foreground text-sm focus:outline-none focus:ring-2 focus:ring-ring"
                 />
               </div>
-              <div className="flex gap-2">
+              <div className="grid grid-cols-2 gap-2">
                 <select
                   value={selectedDeptId}
                   onChange={(e) => setSelectedDeptId(e.target.value)}
-                  className="flex-1 px-3 py-2 rounded-lg border border-input bg-background text-foreground text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                  className="w-full px-3 py-2 rounded-lg border border-input bg-background text-foreground text-sm focus:outline-none focus:ring-2 focus:ring-ring"
                 >
                   <option value="">Bölüm seçin</option>
                   {departments.map((d) => (
                     <option key={d.id} value={d.id}>{d.name}</option>
                   ))}
                 </select>
-                <button onClick={addCourse} className="flex items-center gap-1 px-4 py-2 rounded-lg bg-primary text-primary-foreground text-sm font-medium hover:brightness-110 transition-all">
-                  <Plus className="h-4 w-4" /> Ekle
-                </button>
+
+                <div className="flex items-center gap-2 w-full">
+                  <select
+                    value={selectedClassYear}
+                    onChange={(e) => setSelectedClassYear(e.target.value)}
+                    className="flex-1 min-w-0 px-3 py-2 rounded-lg border border-input bg-background text-foreground text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                  >
+                    <option value="">Sınıf seçin</option>
+                    <option value="1">1. sınıf</option>
+                    <option value="2">2. sınıf</option>
+                    <option value="3">3. sınıf</option>
+                    <option value="4">4. sınıf</option>
+                  </select>
+                  <button onClick={addCourse} className="flex items-center gap-1 px-4 py-2 rounded-lg bg-primary text-primary-foreground text-sm font-medium hover:brightness-110 transition-all">
+                    <Plus className="h-4 w-4" /> Ekle
+                  </button>
+                </div>
               </div>
             </div>
 
@@ -370,6 +388,9 @@ const FacultyDashboard = () => {
                     <div>
                       <span className="text-sm font-medium text-foreground">{c.name}</span>
                       <span className="text-xs text-muted-foreground ml-2">{c.code}</span>
+                      <span className="text-xs text-muted-foreground ml-2">
+                        {c.class_year ? `${c.class_year}. sınıf` : "Genel"}
+                      </span>
                     </div>
                   </div>
                   <button onClick={() => deleteCourse(c.id)} className="text-muted-foreground hover:text-destructive transition-colors">
@@ -410,7 +431,7 @@ const FacultyDashboard = () => {
                   >
                     <option value="">Ders seçin</option>
                     {courses.map((c) => (
-                      <option key={c.id} value={c.id}>{c.name} ({c.code})</option>
+                      <option key={c.id} value={c.id}>{c.name} ({c.code}) - {c.class_year ? `${c.class_year}. sınıf` : "Genel"}</option>
                     ))}
                   </select>
                   <input
@@ -538,7 +559,7 @@ const FacultyDashboard = () => {
                                 )}
                               </div>
                               <p className="text-xs text-muted-foreground">
-                                {course?.name || "—"}
+                                {course?.name || "—"}{course?.code ? ` (${course.code})` : ""}{course?.class_year ? ` - ${course.class_year}. sınıf` : ""}
                                 {a.due_date && ` · ${format(new Date(a.due_date), "dd MMM yyyy HH:mm", { locale: tr })}`}
                               </p>
                             </div>

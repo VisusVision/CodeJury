@@ -119,6 +119,33 @@ _DEMO_STORE: dict[str, Any] = {
             "updated_at": datetime.utcnow().isoformat(),
         }
     ],
+    "questions": [
+        {
+            "id": "77777777-7777-4777-8777-777777777777",
+            "content": "Dogru sekilde hata kontrolu yapiliyor mu?",
+            "color": "blue",
+            "created_by": "11111111-1111-4111-8111-111111111111",
+            "created_at": datetime.utcnow().isoformat(),
+            "updated_at": datetime.utcnow().isoformat(),
+        },
+        {
+            "id": "88888888-8888-4888-8888-888888888888",
+            "content": "Degisken isimlendirmesi tutarli mi?",
+            "color": "green",
+            "created_by": "11111111-1111-4111-8111-111111111111",
+            "created_at": datetime.utcnow().isoformat(),
+            "updated_at": datetime.utcnow().isoformat(),
+        },
+        {
+            "id": "99999999-9999-4999-8999-999999999999",
+            "content": "Bellek sizdirmasi riski var mi?",
+            "color": "pink",
+            "created_by": "11111111-1111-4111-8111-111111111111",
+            "created_at": datetime.utcnow().isoformat(),
+            "updated_at": datetime.utcnow().isoformat(),
+        },
+    ],
+    "assignment_questions": {},
     "upload_history": [],
 }
 
@@ -2357,6 +2384,144 @@ async def assignment_assistant_suggestions(req: AssignmentAssistantSuggestionsRe
             for i, row in enumerate(merged)
         ],
     }
+
+
+@app.get("/api/questions")
+async def list_questions():
+    """Tum sorulari listele"""
+    if _DEMO_MODE:
+        return _DEMO_STORE.get("questions", [])
+    
+    pool = await _get_db_pool()
+    rows = await pool.fetch(
+        """
+        SELECT id, content, color, created_by, created_at, updated_at
+        FROM public.question_bank
+        ORDER BY created_at DESC
+        """
+    )
+    return [dict(row) for row in rows]
+
+
+@app.post("/api/questions")
+async def create_question(req: dict[str, Any]):
+    """Yeni soru olustur"""
+    content = req.get("content", "").strip()
+    color = req.get("color", "blue")
+    
+    if not content:
+        raise HTTPException(status_code=400, detail="Soru icerigi zorunludur")
+    
+    if color not in {"blue", "green", "pink", "yellow"}:
+        color = "blue"
+    
+    question_id = str(uuid.uuid4())
+    now = datetime.utcnow().isoformat()
+    
+    if _DEMO_MODE:
+        if "questions" not in _DEMO_STORE:
+            _DEMO_STORE["questions"] = []
+        question = {
+            "id": question_id,
+            "content": content,
+            "color": color,
+            "created_by": None,
+            "created_at": now,
+            "updated_at": now
+        }
+        _DEMO_STORE["questions"].append(question)
+        return question
+    
+    pool = await _get_db_pool()
+    row = await pool.fetchrow(
+        """
+        INSERT INTO public.question_bank (id, content, color, updated_at)
+        VALUES ($1, $2, $3, $4)
+        RETURNING id, content, color, created_by, created_at, updated_at
+        """,
+        question_id,
+        content,
+        color,
+        now
+    )
+    return dict(row) if row else {}
+
+
+@app.delete("/api/questions/{question_id}")
+async def delete_question(question_id: str):
+    """Soruyu sil"""
+    if _DEMO_MODE:
+        if "questions" in _DEMO_STORE:
+            _DEMO_STORE["questions"] = [q for q in _DEMO_STORE["questions"] if q["id"] != question_id]
+        return {"status": "ok"}
+    
+    pool = await _get_db_pool()
+    await pool.execute(
+        "DELETE FROM public.question_bank WHERE id = $1",
+        question_id
+    )
+    return {"status": "ok"}
+
+
+@app.get("/api/assignments/{assignment_id}/questions")
+async def get_assignment_questions(assignment_id: str):
+    """Odev icin secili sorulari getir"""
+    if _DEMO_MODE:
+        assignment_questions = _DEMO_STORE.get("assignment_questions", {}).get(assignment_id, [])
+        all_questions = _DEMO_STORE.get("questions", [])
+        return [q for q in all_questions if q["id"] in assignment_questions]
+    
+    pool = await _get_db_pool()
+    rows = await pool.fetch(
+        """
+        SELECT qb.id, qb.content, qb.color, qb.created_by, qb.created_at, qb.updated_at
+        FROM public.question_bank qb
+        INNER JOIN public.assignment_questions aq ON qb.id = aq.question_id
+        WHERE aq.assignment_id = $1
+        ORDER BY aq.display_order ASC
+        """,
+        assignment_id
+    )
+    return [dict(row) for row in rows]
+
+
+@app.post("/api/assignment-questions/update")
+async def update_assignment_questions(req: dict[str, Any]):
+    """Odev icin sorulari guncelle"""
+    assignment_id = req.get("assignment_id", "").strip()
+    question_ids = req.get("question_ids", [])
+    
+    if not assignment_id:
+        raise HTTPException(status_code=400, detail="assignment_id zorunludur")
+    
+    if _DEMO_MODE:
+        if "assignment_questions" not in _DEMO_STORE:
+            _DEMO_STORE["assignment_questions"] = {}
+        _DEMO_STORE["assignment_questions"][assignment_id] = question_ids
+        return {"status": "ok"}
+    
+    pool = await _get_db_pool()
+    
+    # Onceki sorulari sil
+    await pool.execute(
+        "DELETE FROM public.assignment_questions WHERE assignment_id = $1",
+        assignment_id
+    )
+    
+    # Yeni sorulari ekle
+    for i, question_id in enumerate(question_ids):
+        await pool.execute(
+            """
+            INSERT INTO public.assignment_questions (assignment_id, question_id, display_order)
+            VALUES ($1, $2, $3)
+            ON CONFLICT (assignment_id, question_id) DO NOTHING
+            """,
+            assignment_id,
+            question_id,
+            i + 1
+        )
+    
+    return {"status": "ok"}
 
 
 @app.patch("/api/teacher/{teacher_id}/email")
