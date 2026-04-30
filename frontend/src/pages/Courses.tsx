@@ -69,9 +69,10 @@ const Courses = () => {
             </h1>
           </div>
           <p className="text-xs text-muted-foreground mt-1">
-            {student.student_no}
-            {student.department_name ? ` - ${student.department_name}` : ""}
-            {student.class_year ? ` - ${student.class_year}. sınıf` : ""}
+            {student.student_no}{student.class_year ? ` - ${student.class_year}. sınıf` : ""}
+          </p>
+          <p className="text-xs text-muted-foreground">
+            {student.department_name || "—"}
           </p>
         </div>
 
@@ -120,21 +121,20 @@ const Courses = () => {
         <p className="text-sm text-muted-foreground mb-6">Bir ders seçerek ödevlerinizi görüntüleyebilirsiniz.</p>
 
         {!loading && courses.length > 0 && (
-          <div className="grid gap-3 max-w-2xl">
+          <div className="grid gap-3 max-w-lg">
             {courses.map((course) => (
               <button
                 key={course.id}
                 onClick={() => navigate(`/courses/${course.id}/assignments`)}
-                className="flex items-center gap-4 p-4 rounded-xl border border-border bg-card hover:shadow-md transition-all text-left"
+                className="flex items-center gap-3 p-3 rounded-lg border border-border bg-card hover:shadow-md transition-all text-left"
               >
-                <div className="h-10 w-10 rounded-lg bg-primary/10 flex items-center justify-center shrink-0">
-                  <BookOpen className="h-5 w-5 text-primary" />
+                <div className="h-9 w-9 rounded-lg bg-primary/10 flex items-center justify-center shrink-0">
+                  <BookOpen className="h-4 w-4 text-primary" />
                 </div>
                 <div>
                   <p className="font-medium text-foreground">{course.name}</p>
-                  <p className="text-xs text-muted-foreground">{course.code}</p>
                   <p className="text-xs text-muted-foreground">
-                    {course.class_year ? `${course.class_year}. sınıf` : "Genel"}
+                    {course.code} {course.class_year ? `- ${course.class_year}. sınıf` : "- Genel"}
                   </p>
                 </div>
               </button>

@@ -845,19 +845,103 @@ async def _sync_student_to_all_courses(pool: asyncpg.Pool, student_id: str) -> N
     )
 
 
-def _student_duplicate_message(student_no: str, tc_no: str, first_name: str, last_name: str) -> str:
+def _student_duplicate_message(
+    student_no: str,
+    tc_no: str,
+    first_name: str,
+    last_name: str,
+    conflict_field: str | None = None,
+) -> str:
+    if conflict_field == "student_no":
+        return f"{student_no} ogrenci no zaten kayitli oldugu icin eklenmedi"
+    if conflict_field == "tc_no":
+        return f"{tc_no} TC no zaten kayitli oldugu icin eklenmedi"
     return f"{student_no} / {tc_no} - {first_name} {last_name} zaten kayitli oldugu icin eklenmedi"
 
 
-def _student_csv_message(student_no: str, tc_no: str, first_name: str, last_name: str) -> str:
-    return _student_duplicate_message(student_no, tc_no, first_name, last_name)
+def _student_csv_message(
+    student_no: str,
+    tc_no: str,
+    first_name: str,
+    last_name: str,
+    conflict_field: str | None = None,
+) -> str:
+    return _student_duplicate_message(student_no, tc_no, first_name, last_name, conflict_field)
+
+
+_TC_NO_PATTERN = re.compile(r"^\d{11}$")
+
+
+def _normalize_whitespace(value: str) -> str:
+    return re.sub(r"\s+", " ", value).strip()
+
+
+def _tr_lower(value: str) -> str:
+    return value.translate(str.maketrans({"I": "ı", "İ": "i"})).lower()
+
+
+def _tr_upper(value: str) -> str:
+    return value.translate(str.maketrans({"i": "İ", "ı": "I"})).upper()
+
+
+def _title_case_tr(value: str) -> str:
+    normalized = _normalize_whitespace(value)
+    if not normalized:
+        return ""
+    words = []
+    for word in normalized.split(" "):
+        lowered = _tr_lower(word)
+        words.append((_tr_upper(lowered[:1]) + lowered[1:]) if lowered else "")
+    return " ".join(words)
+
+
+def _normalize_student_first_name(value: str) -> str:
+    return _title_case_tr(value)
+
+
+def _normalize_student_last_name(value: str) -> str:
+    return _tr_upper(_normalize_whitespace(value))
+
+
+def _normalize_department_title(value: str) -> str:
+    return _title_case_tr(value)
+
+
+def _is_valid_tc_no(value: str) -> bool:
+    return _TC_NO_PATTERN.fullmatch(value) is not None
+
+
+def _demo_student_conflict_field(
+    students: list[dict[str, Any]],
+    student_no: str,
+    tc_no: str,
+    exclude_id: str | None = None,
+) -> str | None:
+    for student in students:
+        if exclude_id and student.get("id") == exclude_id:
+            continue
+        if student.get("student_no") == student_no:
+            return "student_no"
+        if student.get("tc_no") == tc_no:
+            return "tc_no"
+    return None
 
 
 def _demo_department_name(department_id: str | None) -> str | None:
     if not department_id:
         return None
     department = next((d for d in _DEMO_STORE["departments"] if d["id"] == department_id), None)
-    return department["name"] if department else None
+    if not department:
+        return None
+    return _normalize_department_title(str(department["name"]))
+
+
+def _normalize_student_record_department(student: dict[str, Any]) -> dict[str, Any]:
+    normalized = dict(student)
+    department_name = normalized.get("department_name")
+    if isinstance(department_name, str) and department_name.strip():
+        normalized["department_name"] = _normalize_department_title(department_name)
+    return normalized
 
 
 def _demo_student_record(student: dict[str, Any]) -> dict[str, Any]:
@@ -881,18 +965,18 @@ async def _fetch_student_row(pool: asyncpg.Pool, student_id: str):
     )
 
 
-async def _student_pair_exists(
+async def _student_conflict_field(
     pool: asyncpg.Pool,
     student_no: str,
     tc_no: str,
     exclude_id: str | None = None,
-) -> bool:
+) -> str | None:
     if exclude_id:
-        found = await pool.fetchval(
+        found = await pool.fetchrow(
             """
-            SELECT 1
+            SELECT student_no, tc_no
             FROM public.students
-            WHERE student_no = $1 AND tc_no = $2 AND id <> $3
+            WHERE (student_no = $1 OR tc_no = $2) AND id <> $3
             LIMIT 1
             """,
             student_no,
@@ -900,17 +984,23 @@ async def _student_pair_exists(
             exclude_id,
         )
     else:
-        found = await pool.fetchval(
+        found = await pool.fetchrow(
             """
-            SELECT 1
+            SELECT student_no, tc_no
             FROM public.students
-            WHERE student_no = $1 AND tc_no = $2
+            WHERE student_no = $1 OR tc_no = $2
             LIMIT 1
             """,
             student_no,
             tc_no,
         )
-    return found is not None
+    if not found:
+        return None
+    if found["student_no"] == student_no:
+        return "student_no"
+    if found["tc_no"] == tc_no:
+        return "tc_no"
+    return None
 
 
 async def _ensure_db_schema(pool: asyncpg.Pool) -> None:
@@ -1870,7 +1960,7 @@ async def list_departments():
 
 @app.post("/api/departments")
 async def create_department(req: DepartmentCreateRequest):
-    name = req.name.strip()
+    name = _normalize_department_title(req.name)
     if not name:
         raise HTTPException(status_code=400, detail="Bolum adi zorunludur")
     if _DEMO_MODE:
@@ -2421,6 +2511,7 @@ async def create_question(req: dict[str, Any]):
     if _DEMO_MODE:
         if "questions" not in _DEMO_STORE:
             _DEMO_STORE["questions"] = []
+        now = datetime.utcnow().isoformat()
         question = {
             "id": question_id,
             "content": content,
@@ -2435,14 +2526,13 @@ async def create_question(req: dict[str, Any]):
     pool = await _get_db_pool()
     row = await pool.fetchrow(
         """
-        INSERT INTO public.question_bank (id, content, color, updated_at)
-        VALUES ($1, $2, $3, $4)
+        INSERT INTO public.question_bank (id, content, color)
+        VALUES ($1, $2, $3)
         RETURNING id, content, color, created_by, created_at, updated_at
         """,
         question_id,
         content,
         color,
-        now
     )
     return dict(row) if row else {}
 
@@ -2617,26 +2707,29 @@ async def list_students():
         ORDER BY s.first_name, s.last_name, s.student_no
         """
     )
-    return [dict(row) for row in rows]
+    return [_normalize_student_record_department(dict(row)) for row in rows]
 
 
 @app.post("/api/students")
 async def create_student(req: StudentCreateRequest):
-    student_no = req.student_no.strip()
-    tc_no = req.tc_no.strip()
-    first_name = req.first_name.strip()
-    last_name = req.last_name.strip()
+    student_no = _normalize_whitespace(req.student_no)
+    tc_no = _normalize_whitespace(req.tc_no)
+    first_name = _normalize_student_first_name(req.first_name)
+    last_name = _normalize_student_last_name(req.last_name)
     department_id = req.department_id.strip() if req.department_id else None
 
     if not student_no or not tc_no or not first_name or not last_name:
         raise HTTPException(status_code=400, detail="Tum alanlar zorunludur")
+    if not _is_valid_tc_no(tc_no):
+        raise HTTPException(status_code=400, detail="TC no 11 haneli sayisal olmalidir")
     if not department_id:
         raise HTTPException(status_code=400, detail="Bolum secimi zorunludur")
     class_year = _parse_class_year(req.class_year)
 
     if _DEMO_MODE:
-        if any(s["student_no"] == student_no and s["tc_no"] == tc_no for s in _DEMO_STORE["students"]):
-            raise HTTPException(status_code=409, detail=_student_duplicate_message(student_no, tc_no, first_name, last_name))
+        conflict_field = _demo_student_conflict_field(_DEMO_STORE["students"], student_no, tc_no)
+        if conflict_field:
+            raise HTTPException(status_code=409, detail=_student_duplicate_message(student_no, tc_no, first_name, last_name, conflict_field))
         if not any(d["id"] == department_id for d in _DEMO_STORE["departments"]):
             raise HTTPException(status_code=400, detail="Gecersiz bolum secimi")
         student = {
@@ -2653,8 +2746,9 @@ async def create_student(req: StudentCreateRequest):
         return _demo_student_record(student)
 
     pool = await _get_db_pool()
-    if await _student_pair_exists(pool, student_no, tc_no):
-        raise HTTPException(status_code=409, detail=_student_duplicate_message(student_no, tc_no, first_name, last_name))
+    conflict_field = await _student_conflict_field(pool, student_no, tc_no)
+    if conflict_field:
+        raise HTTPException(status_code=409, detail=_student_duplicate_message(student_no, tc_no, first_name, last_name, conflict_field))
 
     try:
         row = await pool.fetchrow(
@@ -2676,19 +2770,21 @@ async def create_student(req: StudentCreateRequest):
         raise HTTPException(status_code=409, detail=_student_duplicate_message(student_no, tc_no, first_name, last_name)) from exc
 
     student_row = await _fetch_student_row(pool, str(row["id"]))
-    return dict(student_row)
+    return _normalize_student_record_department(dict(student_row))
 
 
 @app.patch("/api/students/{student_id}")
 async def update_student(student_id: str, req: StudentUpdateRequest):
-    student_no = req.student_no.strip()
-    tc_no = req.tc_no.strip()
-    first_name = req.first_name.strip()
-    last_name = req.last_name.strip()
+    student_no = _normalize_whitespace(req.student_no)
+    tc_no = _normalize_whitespace(req.tc_no)
+    first_name = _normalize_student_first_name(req.first_name)
+    last_name = _normalize_student_last_name(req.last_name)
     department_id = req.department_id.strip() if req.department_id else None
 
     if not student_no or not tc_no or not first_name or not last_name:
         raise HTTPException(status_code=400, detail="Tum alanlar zorunludur")
+    if not _is_valid_tc_no(tc_no):
+        raise HTTPException(status_code=400, detail="TC no 11 haneli sayisal olmalidir")
     if not department_id:
         raise HTTPException(status_code=400, detail="Bolum secimi zorunludur")
     class_year = _parse_class_year(req.class_year)
@@ -2697,8 +2793,9 @@ async def update_student(student_id: str, req: StudentUpdateRequest):
         student = next((s for s in _DEMO_STORE["students"] if s["id"] == student_id), None)
         if student is None:
             raise HTTPException(status_code=404, detail="Ogrenci bulunamadi")
-        if any(s["id"] != student_id and s["student_no"] == student_no and s["tc_no"] == tc_no for s in _DEMO_STORE["students"]):
-            raise HTTPException(status_code=409, detail=_student_duplicate_message(student_no, tc_no, first_name, last_name))
+        conflict_field = _demo_student_conflict_field(_DEMO_STORE["students"], student_no, tc_no, exclude_id=student_id)
+        if conflict_field:
+            raise HTTPException(status_code=409, detail=_student_duplicate_message(student_no, tc_no, first_name, last_name, conflict_field))
         if not any(d["id"] == department_id for d in _DEMO_STORE["departments"]):
             raise HTTPException(status_code=400, detail="Gecersiz bolum secimi")
         student.update({
@@ -2724,8 +2821,9 @@ async def update_student(student_id: str, req: StudentUpdateRequest):
     if existing is None:
         raise HTTPException(status_code=404, detail="Ogrenci bulunamadi")
 
-    if await _student_pair_exists(pool, student_no, tc_no, exclude_id=student_id):
-        raise HTTPException(status_code=409, detail=_student_duplicate_message(student_no, tc_no, first_name, last_name))
+    conflict_field = await _student_conflict_field(pool, student_no, tc_no, exclude_id=student_id)
+    if conflict_field:
+        raise HTTPException(status_code=409, detail=_student_duplicate_message(student_no, tc_no, first_name, last_name, conflict_field))
 
     try:
         await pool.execute(
@@ -2751,7 +2849,7 @@ async def update_student(student_id: str, req: StudentUpdateRequest):
         raise HTTPException(status_code=400, detail="Gecersiz bolum secimi") from exc
 
     student_row = await _fetch_student_row(pool, student_id)
-    return dict(student_row)
+    return _normalize_student_record_department(dict(student_row))
 
 
 @app.delete("/api/students/{student_id}")
@@ -2824,11 +2922,11 @@ async def import_students_csv(file: UploadFile = File(...)):
         created: list[dict[str, Any]] = []
         skipped: list[dict[str, Any]] = []
         for row in reader:
-            student_no = _get(row, "student_no", "student no", "ogrenci_no", "ogrenci no")
-            tc_no = _get(row, "tc_no", "tc", "tc kimlik no", "tc kimlik numarasi")
-            first_name = _get(row, "first_name", "ad", "adi")
-            last_name = _get(row, "last_name", "soyad", "soyadi")
-            department_name = _get(row, "department", "department_name", "bolum", "bölüm")
+            student_no = _normalize_whitespace(_get(row, "student_no", "student no", "ogrenci_no", "ogrenci no"))
+            tc_no = _normalize_whitespace(_get(row, "tc_no", "tc", "tc kimlik no", "tc kimlik numarasi"))
+            first_name = _normalize_student_first_name(_get(row, "first_name", "ad", "adi"))
+            last_name = _normalize_student_last_name(_get(row, "last_name", "soyad", "soyadi"))
+            department_name = _normalize_department_title(_get(row, "department", "department_name", "bolum", "bölüm"))
             class_year_text = _get(row, "class_year", "class", "sinif", "sınıf")
 
             if not student_no or not tc_no or not first_name or not last_name or not department_name or not class_year_text:
@@ -2839,6 +2937,17 @@ async def import_students_csv(file: UploadFile = File(...)):
                     "last_name": last_name,
                     "department_name": department_name,
                     "reason": "Eksik alan nedeniyle kaydedilmedi",
+                })
+                continue
+
+            if not _is_valid_tc_no(tc_no):
+                skipped.append({
+                    "student_no": student_no,
+                    "tc_no": tc_no,
+                    "first_name": first_name,
+                    "last_name": last_name,
+                    "department_name": department_name,
+                    "reason": "TC no 11 haneli sayisal olmalidir",
                 })
                 continue
 
@@ -2866,14 +2975,15 @@ async def import_students_csv(file: UploadFile = File(...)):
                 })
                 continue
 
-            if any(s["student_no"] == student_no and s["tc_no"] == tc_no for s in _DEMO_STORE["students"]):
+            conflict_field = _demo_student_conflict_field(_DEMO_STORE["students"], student_no, tc_no)
+            if conflict_field:
                 skipped.append({
                     "student_no": student_no,
                     "tc_no": tc_no,
                     "first_name": first_name,
                     "last_name": last_name,
                     "department_name": department_name,
-                    "reason": _student_csv_message(student_no, tc_no, first_name, last_name),
+                    "reason": _student_csv_message(student_no, tc_no, first_name, last_name, conflict_field),
                 })
                 continue
 
@@ -2899,11 +3009,11 @@ async def import_students_csv(file: UploadFile = File(...)):
     skipped: list[dict[str, Any]] = []
 
     for row in reader:
-        student_no = _get(row, "student_no", "student no", "ogrenci_no", "ogrenci no")
-        tc_no = _get(row, "tc_no", "tc", "tc kimlik no", "tc kimlik numarasi")
-        first_name = _get(row, "first_name", "ad", "adi")
-        last_name = _get(row, "last_name", "soyad", "soyadi")
-        department_name = _get(row, "department", "department_name", "bolum", "bölüm")
+        student_no = _normalize_whitespace(_get(row, "student_no", "student no", "ogrenci_no", "ogrenci no"))
+        tc_no = _normalize_whitespace(_get(row, "tc_no", "tc", "tc kimlik no", "tc kimlik numarasi"))
+        first_name = _normalize_student_first_name(_get(row, "first_name", "ad", "adi"))
+        last_name = _normalize_student_last_name(_get(row, "last_name", "soyad", "soyadi"))
+        department_name = _normalize_department_title(_get(row, "department", "department_name", "bolum", "bölüm"))
         class_year_text = _get(row, "class_year", "class", "sinif", "sınıf")
 
         if not student_no or not tc_no or not first_name or not last_name or not department_name or not class_year_text:
@@ -2914,6 +3024,17 @@ async def import_students_csv(file: UploadFile = File(...)):
                 "last_name": last_name,
                 "department_name": department_name,
                 "reason": "Eksik alan nedeniyle kaydedilmedi",
+            })
+            continue
+
+        if not _is_valid_tc_no(tc_no):
+            skipped.append({
+                "student_no": student_no,
+                "tc_no": tc_no,
+                "first_name": first_name,
+                "last_name": last_name,
+                "department_name": department_name,
+                "reason": "TC no 11 haneli sayisal olmalidir",
             })
             continue
 
@@ -2941,14 +3062,15 @@ async def import_students_csv(file: UploadFile = File(...)):
             })
             continue
 
-        if await _student_pair_exists(pool, student_no, tc_no):
+        conflict_field = await _student_conflict_field(pool, student_no, tc_no)
+        if conflict_field:
             skipped.append({
                 "student_no": student_no,
                 "tc_no": tc_no,
                 "first_name": first_name,
                 "last_name": last_name,
                 "department_name": department_name,
-                "reason": _student_csv_message(student_no, tc_no, first_name, last_name),
+                "reason": _student_csv_message(student_no, tc_no, first_name, last_name, conflict_field),
             })
             continue
 
@@ -2988,7 +3110,7 @@ async def import_students_csv(file: UploadFile = File(...)):
             continue
 
         student_row = await _fetch_student_row(pool, str(row_result["id"]))
-        created.append(dict(student_row))
+        created.append(_normalize_student_record_department(dict(student_row)))
 
     return {"created": created, "skipped": skipped}
 
