@@ -1,5 +1,5 @@
 import { useState, useCallback, useRef, useEffect } from "react";
-import { Play, StopCircle, ArrowLeft, LogOut } from "lucide-react";
+import { Play, StopCircle, ArrowLeft, LogOut, BookOpen } from "lucide-react";
 import { motion } from "framer-motion";
 import html2canvas from "html2canvas-pro";
 import jsPDF from "jspdf";
@@ -20,10 +20,11 @@ import { type AgentStatus } from "@/components/dashboard/AgentCard";
 import LogPanel, { type LogEntry } from "@/components/dashboard/LogPanel";
 import CodeEditor, { type CodeAnnotation } from "@/components/dashboard/CodeEditor";
 import { type ReportData } from "@/components/dashboard/AnalysisReport";
-import { analyzeCode, createUploadHistoryRecord, getUploadHistoryRecords, type ApiAnalysisResult } from "@/services/api";
+import { analyzeCode, createUploadHistoryRecord, getUploadHistoryRecords, getAssignmentQuestions, type ApiAnalysisResult, type QuestionItem } from "@/services/api";
 import UploadHistory, { type UploadRecord } from "@/components/dashboard/UploadHistory";
 import ExecutionStats from "@/components/dashboard/ExecutionStats";
 import RightPanel from "@/components/dashboard/RightPanel";
+import { cn } from "@/lib/utils";
 
 interface UploadedFile {
   name: string;
@@ -129,6 +130,10 @@ const WorkspacePage = ({ sidebarTitle, sidebarSubtitle, headerTitle, assignmentI
   const [highlightedLine, setHighlightedLine] = useState<number | null>(null);
   const [exporting, setExporting] = useState(false);
   const [hasEverRun, setHasEverRun] = useState(persisted.current?.hasEverRun || false);
+  const [assignmentQuestions, setAssignmentQuestions] = useState<Record<string, QuestionItem[]>>({});
+  const [loadingQuestions, setLoadingQuestions] = useState<Record<string, boolean>>({});
+  const [hoveredAssignmentId, setHoveredAssignmentId] = useState<string | null>(null);
+  const hoverTimeoutRef = useRef<Record<string, number | null>>({});
 
   useEffect(() => {
     const loadUploadHistory = async () => {
@@ -195,6 +200,37 @@ const WorkspacePage = ({ sidebarTitle, sidebarSubtitle, headerTitle, assignmentI
     const ts = `${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}:${String(now.getSeconds()).padStart(2, "0")}`;
     setLogs((prev) => [...prev, { id: `${Date.now()}-${Math.random()}`, timestamp: ts, agent, message, type }]);
   }, []);
+
+  const loadAssignmentQuestions = async () => {
+    if (assignmentQuestions[assignmentId]) return;
+    setLoadingQuestions((prev) => ({ ...prev, [assignmentId]: true }));
+    try {
+      const questions = await getAssignmentQuestions(assignmentId);
+      setAssignmentQuestions((prev) => ({ ...prev, [assignmentId]: questions }));
+    } catch (error) {
+      console.error("Sorular yüklenemedi:", error);
+      setAssignmentQuestions((prev) => ({ ...prev, [assignmentId]: [] }));
+    } finally {
+      setLoadingQuestions((prev) => ({ ...prev, [assignmentId]: false }));
+    }
+  };
+
+  const handleBadgeMouseEnter = () => {
+    const t = hoverTimeoutRef.current[assignmentId];
+    if (t) {
+      window.clearTimeout(t);
+      hoverTimeoutRef.current[assignmentId] = null;
+    }
+    setHoveredAssignmentId(assignmentId);
+    void loadAssignmentQuestions();
+  };
+
+  const handleBadgeMouseLeave = () => {
+    hoverTimeoutRef.current[assignmentId] = window.setTimeout(() => {
+      if (hoveredAssignmentId === assignmentId) setHoveredAssignmentId(null);
+      hoverTimeoutRef.current[assignmentId] = null;
+    }, 150) as unknown as number;
+  };
 
   const runAnalysis = useCallback(async () => {
     if (isPastDue) {
@@ -606,8 +642,63 @@ const WorkspacePage = ({ sidebarTitle, sidebarSubtitle, headerTitle, assignmentI
               <ArrowLeft className="h-4 w-4" /> Ödevlere Dön
             </button>
             <div>
-              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-2 relative">
                 <h1 className="text-lg font-bold tracking-tight text-foreground">{headerTitle}</h1>
+                <button
+                  onMouseEnter={handleBadgeMouseEnter}
+                  onMouseLeave={handleBadgeMouseLeave}
+                  className="p-1 text-muted-foreground hover:text-foreground hover:bg-muted/50 rounded transition-colors"
+                  title="Soruları göster"
+                >
+                  <BookOpen className="h-4 w-4" />
+                </button>
+                {hoveredAssignmentId === assignmentId && (
+                  <div
+                    className="absolute top-full left-0 mt-2 w-64 bg-card border border-border rounded-lg shadow-lg z-40 overflow-hidden animate-in fade-in slide-in-from-top-2 duration-200"
+                    onMouseEnter={handleBadgeMouseEnter}
+                    onMouseLeave={handleBadgeMouseLeave}
+                  >
+                    <div className="flex items-center justify-between px-3 py-2 bg-muted/50 border-b border-border">
+                      <span className="text-xs font-semibold text-muted-foreground">GÖREVLER</span>
+                      <button
+                        onClick={(e) => {
+                          e.preventDefault();
+                          setHoveredAssignmentId(null);
+                        }}
+                        className="text-muted-foreground hover:text-foreground transition-colors"
+                      >
+                        <X className="h-3 w-3" />
+                      </button>
+                    </div>
+                    <div className="max-h-80 overflow-y-auto">
+                      {loadingQuestions[assignmentId] ? (
+                        <div className="p-3 text-xs text-muted-foreground text-center">Sorular yükleniyor...</div>
+                      ) : (assignmentQuestions[assignmentId] || []).length === 0 ? (
+                        <div className="p-3 text-xs text-muted-foreground text-center">Henüz soru atanmamış</div>
+                      ) : (
+                        <div className="divide-y divide-border">
+                          {(assignmentQuestions[assignmentId] || []).map((q) => (
+                            <div
+                              key={q.id}
+                              className={cn(
+                                "px-3 py-2 text-xs border-l-4 border-l-border",
+                                q.color === "blue"
+                                  ? "bg-blue-50 text-blue-700 dark:bg-blue-900/20 dark:text-blue-400"
+                                  : q.color === "green"
+                                    ? "bg-green-50 text-green-700 dark:bg-green-900/20 dark:text-green-400"
+                                    : q.color === "pink"
+                                      ? "bg-pink-50 text-pink-700 dark:bg-pink-900/20 dark:text-pink-400"
+                                      : "bg-yellow-50 text-yellow-700 dark:bg-yellow-900/20 dark:text-yellow-400"
+                              )}
+                            >
+                              {q.content}
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )}
               </div>
               <p className="text-xs text-muted-foreground">
                 {!hasFiles

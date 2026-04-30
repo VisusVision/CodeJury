@@ -27,6 +27,7 @@ import {
 } from "@/services/api";
 import {
   FileUp,
+  CircleHelp,
   ChevronLeft,
   ChevronRight,
   ChevronsUpDown,
@@ -231,7 +232,7 @@ const StudentsPanel = ({ departments }: StudentsPanelProps) => {
       await loadStudents();
     } catch (error) {
       const detail = extractDetailMessage(error);
-      if (detail.toLowerCase().includes("zaten kayıtlı")) {
+      if (detail.toLowerCase().includes("zaten kayıtlı") || detail.toLowerCase().includes("zaten kayitli")) {
         toast.error("Aynı öğrenci zaten kayıtlı.");
         return;
       }
@@ -285,7 +286,7 @@ const StudentsPanel = ({ departments }: StudentsPanelProps) => {
       await loadStudents();
     } catch (error) {
       const detail = extractDetailMessage(error);
-      if (detail.toLowerCase().includes("zaten kayıtlı")) {
+      if (detail.toLowerCase().includes("zaten kayıtlı") || detail.toLowerCase().includes("zaten kayitli")) {
         toast.error("Aynı öğrenci zaten kayıtlı.");
         return;
       }
@@ -415,19 +416,36 @@ const StudentsPanel = ({ departments }: StudentsPanelProps) => {
           <div className="flex items-center gap-2 text-sm font-semibold text-foreground">
             <Upload className="h-4 w-4 text-primary" />
             CSV ile Ekle
+            <div className="relative ml-0.5 inline-flex items-center group">
+              <CircleHelp className="h-3.5 w-3.5 text-muted-foreground cursor-help" />
+              <div className="pointer-events-none absolute left-full top-1/2 z-20 ml-2 w-72 -translate-y-1/2 rounded-lg border border-border bg-popover px-3 py-2 text-xs font-normal leading-relaxed text-popover-foreground opacity-0 shadow-lg transition-opacity duration-150 group-hover:opacity-100">
+                ogrenci no, tc, ad, soyad, bolum, sinif. Bolum adi mevcut bolumlerle, sinif 1-4 arasinda olmalidir.
+              </div>
+            </div>
           </div>
-          <p className="text-xs text-muted-foreground leading-relaxed">
-            ogrenci no, tc, ad, soyad, bolum, sinif. Bölüm adı mevcut bölümlerle, sınıf 1-4 arasında olmalıdır.
-          </p>
-          <div className="flex items-center gap-2 rounded-lg border border-dashed border-border bg-background px-3 py-2">
-            <FileUp className="h-4 w-4 text-muted-foreground" />
-            <input
-              type="file"
-              accept=".csv,text/csv"
-              onChange={(e) => setCsvFile(e.target.files?.[0] || null)}
-              className="w-full text-sm text-muted-foreground file:mr-3 file:rounded-md file:border-0 file:bg-primary file:px-3 file:py-1.5 file:text-sm file:font-medium file:text-primary-foreground hover:file:brightness-110"
-            />
-          </div>
+          {csvFile ? (
+            <div className="flex items-center gap-2 rounded-lg border border-dashed border-border bg-background px-3 py-2">
+              <FileUp className="h-4 w-4 text-muted-foreground" />
+              <span className="flex-1 text-sm text-foreground truncate">{csvFile.name}</span>
+              <button
+                onClick={() => setCsvFile(null)}
+                type="button"
+                className="shrink-0 text-muted-foreground hover:text-foreground transition-colors"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+          ) : (
+            <div className="flex items-center gap-2 rounded-lg border border-dashed border-border bg-background px-3 py-2">
+              <FileUp className="h-4 w-4 text-muted-foreground" />
+              <input
+                type="file"
+                accept=".csv,text/csv"
+                onChange={(e) => setCsvFile(e.target.files?.[0] || null)}
+                className="w-full text-sm text-muted-foreground file:mr-3 file:rounded-md file:border-0 file:bg-primary file:px-3 file:py-1.5 file:text-sm file:font-medium file:text-primary-foreground hover:file:brightness-110"
+              />
+            </div>
+          )}
           <button
             onClick={handleImportCsv}
             disabled={!csvFile || importing}

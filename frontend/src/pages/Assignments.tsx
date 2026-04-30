@@ -125,8 +125,10 @@ const Assignments = () => {
             </h1>
           </div>
           <p className="text-xs text-muted-foreground mt-1">
-            {student.student_no}
-            {student.department_name ? ` - ${student.department_name}` : ""}
+            {student.student_no}{student.class_year ? ` - ${student.class_year}. sınıf` : ""}
+          </p>
+          <p className="text-xs text-muted-foreground">
+            {student.department_name || "—"}
           </p>
         </div>
 
@@ -292,14 +294,14 @@ const Assignments = () => {
                                 <div
                                   key={q.id}
                                   className={cn(
-                                    "px-3 py-2 text-xs border-l-4",
+                                    "px-3 py-2 text-xs border-l-4 border-l-border",
                                     q.color === "blue"
-                                      ? "bg-blue-50 border-l-blue-500 text-blue-700 dark:bg-blue-900/20 dark:text-blue-400"
+                                      ? "bg-blue-50 text-blue-700 dark:bg-blue-900/20 dark:text-blue-400"
                                       : q.color === "green"
-                                        ? "bg-green-50 border-l-green-500 text-green-700 dark:bg-green-900/20 dark:text-green-400"
+                                        ? "bg-green-50 text-green-700 dark:bg-green-900/20 dark:text-green-400"
                                         : q.color === "pink"
-                                          ? "bg-pink-50 border-l-pink-500 text-pink-700 dark:bg-pink-900/20 dark:text-pink-400"
-                                          : "bg-yellow-50 border-l-yellow-500 text-yellow-700 dark:bg-yellow-900/20 dark:text-yellow-400"
+                                          ? "bg-pink-50 text-pink-700 dark:bg-pink-900/20 dark:text-pink-400"
+                                          : "bg-yellow-50 text-yellow-700 dark:bg-yellow-900/20 dark:text-yellow-400"
                                   )}
                                 >
                                   {q.content}
