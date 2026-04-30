@@ -71,6 +71,7 @@ _DEMO_STORE: dict[str, Any] = {
             "tc_no": "11111111111",
             "first_name": "Demo",
             "last_name": "Student",
+            "class_year": 2,
             "department_id": "33333333-3333-4333-8333-333333333333",
             "created_at": datetime.utcnow().isoformat(),
         }
@@ -88,6 +89,7 @@ _DEMO_STORE: dict[str, Any] = {
             "id": "44444444-4444-4444-8444-444444444444",
             "name": "Veri Yapilari",
             "code": "BLM201",
+            "class_year": 2,
             "department_id": "33333333-3333-4333-8333-333333333333",
             "created_at": datetime.utcnow().isoformat(),
         }
@@ -277,6 +279,7 @@ class DepartmentCreateRequest(BaseModel):
 class CourseCreateRequest(BaseModel):
     name: str
     code: str
+    class_year: int | None = None
     department_id: str | None = None
 
 
@@ -389,7 +392,7 @@ You reply with a single JSON object only. No markdown, no # headings, no bullet 
 no code fences, no ** bold — plain text inside JSON string values only.
 
 You invent homework topics for undergraduate programming courses (Turkish universities).
-"friendly" Turkish throughout: title, summary, description.
+Friendly Turkish throughout: title, summary, description.
 
 JSON shape exactly:
 {
@@ -402,18 +405,33 @@ JSON shape exactly:
   ]
 }
 
-Generate varied topics (data structures, algorithms, small systems). Each description should be
-detailed enough that an instructor can paste it into a course page as the assignment briefing.
+ABSOLUTE RULE — HINT IS LAW:
+The instructor's hint (course context + free-form keywords) is the primary directive.
+EVERY single suggestion MUST be visibly tied to that hint. The hint topic MUST appear
+in the title or in the first sentence of summary/description. Never produce generic
+"linked list / queue / stack / interface / OOP demo" topics if the hint clearly points
+elsewhere. If the hint is broad (e.g. a domain name like "matematik", "fizik", "web",
+"oyun", "yapay zeka", "veri bilimi", "biyoloji", "kimya"), generate PROGRAMMING homework
+that APPLIES that domain: numerical methods, simulation, data analysis, mini engine,
+mini API, etc. Each suggestion must explicitly mention the domain in title.
 
-IMPORTANT — Turkish wording: In programming homework, "sınıf / sınıflar / sinif" from an instructor
-almost always means OOP "class" (defining classes, objects, __init__, methods), NOT school classroom
-or student grade level. If the user hint points to classes/OOP, EVERY suggestion must center on
-classes, encapsulation, inheritance, composition, or interfaces — not standalone arrays/loops-only tasks.
+If the hint contradicts itself (e.g. "matematik ama OOP istiyorum"), respect both —
+generate object-oriented programming exercises modelled on math (e.g. Vector class,
+Polynomial class, Matrix class, ComplexNumber class).
+
+Generate varied subtopics under the hint umbrella (5 different angles), not 5 copies of
+the same exercise. Each description should be detailed enough that an instructor can
+paste it into a course page as the assignment briefing.
+
+Turkish wording note: In programming homework, "sınıf / sınıflar / sinif" from an instructor
+almost always means OOP "class" (defining classes, objects, __init__, methods), NOT school
+classroom. If the user hint points to classes/OOP, EVERY suggestion must center on classes,
+encapsulation, inheritance, composition, or interfaces — not standalone arrays/loops-only tasks.
 """
 
 
 def _assignment_focus_extra(hint_raw: str) -> str:
-    """Turkce ipucundan OOP / veri yapisi / web vb. odak metni turetir."""
+    """Turkce ipucundan OOP / veri yapisi / domain odak metni turetir."""
     h = (hint_raw or "").lower()
     chunks: list[str] = []
 
@@ -439,6 +457,48 @@ def _assignment_focus_extra(hint_raw: str) -> str:
         chunks.append(
             "ODAK: Veri yapisi odevi istendiyse her oneri ilgili yapinin insert/traverse/silme vb. "
             "islemlerini net gereksinim olarak belirtmeli."
+        )
+
+    math_markers = (
+        "matematik", "matematı", "math", "sayisal", "sayısal", "numerik", "numerical",
+        "matris", "vektör", "vektor", "polinom", "denklem", "integral", "türev",
+        "turev", "lineer cebir", "lineer cebir", "istatistik",
+    )
+    if any(m in h for m in math_markers):
+        chunks.append(
+            "ODAK (ZORUNLU): Konu MATEMATİK uygulamalı programlama. Her öneri başlık ve özetinde "
+            "matematiksel kavramı (matris, vektör, polinom, sayısal türev/integral, denklem çözümü, "
+            "istatistik vb.) açıkça içermeli. Genel veri yapısı veya OOP demosu ÖNERME; öneriler "
+            "matematik problemini kodla çözmeye odaklansın."
+        )
+
+    physics_markers = ("fizik", "physics", "simülasyon", "simulasyon", "kinematik", "dinamik")
+    if any(m in h for m in physics_markers):
+        chunks.append(
+            "ODAK: Konu FİZİK simülasyonu. Her öneri fiziksel bir senaryoyu (sarkac, eğik atış, "
+            "esnek çarpışma, yerçekimi, dalga vb.) sayısal olarak modelleyip simüle etmeli."
+        )
+
+    web_markers = ("web", "rest", "api", "fastapi", "flask", "django", "http", "frontend", "backend")
+    if any(m in h for m in web_markers):
+        chunks.append(
+            "ODAK: Konu WEB/API geliştirme. Her öneri en az 3 endpoint, basit doğrulama, "
+            "hata yönetimi ve kalıcı veri saklama (sqlite/json) içeren mini bir servis olmalı."
+        )
+
+    game_markers = ("oyun", "game", "pygame", "unity", "labirent")
+    if any(m in h for m in game_markers):
+        chunks.append(
+            "ODAK: Konu OYUN programlama. Her öneri kullanıcı girişi, oyun döngüsü ve durum "
+            "güncellemesi içeren mini bir oyun ya da oyun mekaniği olmalı."
+        )
+
+    ml_markers = ("yapay zeka", "yapay zekâ", "machine learning", "ml", "veri bilimi", "data science",
+                  "regresyon", "siniflandirma", "sınıflandırma", "kümeleme", "kumeleme")
+    if any(m in h for m in ml_markers):
+        chunks.append(
+            "ODAK: Konu MAKİNE ÖĞRENMESİ / VERİ BİLİMİ. Her öneri küçük bir veri setiyle eğitim, "
+            "test bölme ve metrik raporlama içeren bir uygulama olmalı."
         )
 
     return "\n".join(chunks)
@@ -626,6 +686,7 @@ class StudentCreateRequest(BaseModel):
     tc_no: str
     first_name: str
     last_name: str
+    class_year: int | None = None
     department_id: str | None = None
 
 
@@ -634,6 +695,7 @@ class StudentUpdateRequest(BaseModel):
     tc_no: str
     first_name: str
     last_name: str
+    class_year: int | None = None
     department_id: str | None = None
 
 
@@ -651,6 +713,18 @@ _SEVERITY_MAP = {
 
 def _map_severity(sev: str) -> str:
     return _SEVERITY_MAP.get(sev, "info")
+
+
+def _parse_class_year(raw_value: int | None) -> int:
+    if raw_value is None:
+        raise HTTPException(status_code=400, detail="Sinif secimi zorunludur")
+    try:
+        class_year = int(raw_value)
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail="Gecersiz sinif secimi") from exc
+    if class_year not in {1, 2, 3, 4}:
+        raise HTTPException(status_code=400, detail="Gecersiz sinif secimi")
+    return class_year
 
 
 async def _get_db_pool() -> asyncpg.Pool:
@@ -721,7 +795,8 @@ async def _sync_course_to_all_students(pool: asyncpg.Pool, course_id: str) -> No
         SELECT s.id, $1
         FROM public.students s
         JOIN public.courses c ON c.id = $1
-        WHERE c.department_id IS NULL OR c.department_id = s.department_id
+        WHERE (c.department_id IS NULL OR c.department_id = s.department_id)
+          AND (c.class_year IS NULL OR c.class_year = s.class_year)
         ON CONFLICT (student_id, course_id) DO NOTHING
         """,
         course_id,
@@ -735,7 +810,8 @@ async def _sync_student_to_all_courses(pool: asyncpg.Pool, student_id: str) -> N
         SELECT $1, c.id
         FROM public.courses c
         JOIN public.students s ON s.id = $1
-        WHERE c.department_id IS NULL OR c.department_id = s.department_id
+        WHERE (c.department_id IS NULL OR c.department_id = s.department_id)
+          AND (c.class_year IS NULL OR c.class_year = s.class_year)
         ON CONFLICT (student_id, course_id) DO NOTHING
         """,
         student_id,
@@ -767,7 +843,7 @@ def _demo_student_record(student: dict[str, Any]) -> dict[str, Any]:
 async def _fetch_student_row(pool: asyncpg.Pool, student_id: str):
     return await pool.fetchrow(
         """
-        SELECT s.id, s.student_no, s.tc_no, s.first_name, s.last_name, s.department_id,
+        SELECT s.id, s.student_no, s.tc_no, s.first_name, s.last_name, s.class_year, s.department_id,
                d.name AS department_name, s.created_at
         FROM public.students s
         LEFT JOIN public.departments d ON d.id = s.department_id
@@ -820,6 +896,7 @@ async def _ensure_db_schema(pool: asyncpg.Pool) -> None:
             tc_no TEXT NOT NULL,
             first_name TEXT NOT NULL,
             last_name TEXT NOT NULL,
+            class_year SMALLINT NULL,
             department_id UUID NULL REFERENCES public.departments(id) ON DELETE SET NULL,
             created_at TIMESTAMPTZ NOT NULL DEFAULT now()
         );
@@ -844,6 +921,7 @@ async def _ensure_db_schema(pool: asyncpg.Pool) -> None:
             id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
             name TEXT NOT NULL,
             code TEXT NOT NULL UNIQUE,
+            class_year SMALLINT NULL,
             created_at TIMESTAMPTZ NOT NULL DEFAULT now()
         );
 
@@ -864,7 +942,13 @@ async def _ensure_db_schema(pool: asyncpg.Pool) -> None:
         );
 
         ALTER TABLE public.students
+            ADD COLUMN IF NOT EXISTS class_year SMALLINT;
+
+        ALTER TABLE public.students
             ADD COLUMN IF NOT EXISTS department_id UUID REFERENCES public.departments(id) ON DELETE SET NULL;
+
+        ALTER TABLE public.courses
+            ADD COLUMN IF NOT EXISTS class_year SMALLINT;
 
         ALTER TABLE public.courses
             ADD COLUMN IF NOT EXISTS department_id UUID REFERENCES public.departments(id) ON DELETE SET NULL;
@@ -1621,7 +1705,7 @@ async def student_login(req: StudentLoginRequest):
     pool = await _get_db_pool()
     row = await pool.fetchrow(
         """
-        SELECT s.id, s.student_no, s.tc_no, s.first_name, s.last_name, s.department_id,
+        SELECT s.id, s.student_no, s.tc_no, s.first_name, s.last_name, s.class_year, s.department_id,
                d.name AS department_name, s.created_at
         FROM public.students s
         LEFT JOIN public.departments d ON d.id = s.department_id
@@ -1819,7 +1903,7 @@ async def list_courses():
     pool = await _get_db_pool()
     rows = await pool.fetch(
         """
-        SELECT id, name, code, department_id, created_at
+        SELECT id, name, code, class_year, department_id, created_at
         FROM public.courses
         ORDER BY name
         """
@@ -1833,6 +1917,7 @@ async def create_course(req: CourseCreateRequest):
     code = req.code.strip()
     if not name or not code:
         raise HTTPException(status_code=400, detail="Ders adi ve kodu zorunludur")
+    class_year = _parse_class_year(req.class_year)
     if _DEMO_MODE:
         if any(c["code"].lower() == code.lower() for c in _DEMO_STORE["courses"]):
             raise HTTPException(status_code=409, detail="Bu ders kodu zaten mevcut")
@@ -1842,6 +1927,7 @@ async def create_course(req: CourseCreateRequest):
             "id": _demo_uuid(),
             "name": name,
             "code": code,
+            "class_year": class_year,
             "department_id": req.department_id,
             "created_at": _demo_now(),
         }
@@ -1853,12 +1939,13 @@ async def create_course(req: CourseCreateRequest):
     try:
         row = await pool.fetchrow(
             """
-            INSERT INTO public.courses (name, code, department_id)
-            VALUES ($1, $2, $3)
-            RETURNING id, name, code, department_id, created_at
+            INSERT INTO public.courses (name, code, class_year, department_id)
+            VALUES ($1, $2, $3, $4)
+            RETURNING id, name, code, class_year, department_id, created_at
             """,
             name,
             code,
+            class_year,
             req.department_id,
         )
         await _sync_course_to_all_students(pool, str(row["id"]))
@@ -2358,7 +2445,7 @@ async def list_students():
     pool = await _get_db_pool()
     rows = await pool.fetch(
         """
-        SELECT s.id, s.student_no, s.tc_no, s.first_name, s.last_name, s.department_id,
+        SELECT s.id, s.student_no, s.tc_no, s.first_name, s.last_name, s.class_year, s.department_id,
                d.name AS department_name, s.created_at
         FROM public.students s
         LEFT JOIN public.departments d ON d.id = s.department_id
@@ -2380,6 +2467,7 @@ async def create_student(req: StudentCreateRequest):
         raise HTTPException(status_code=400, detail="Tum alanlar zorunludur")
     if not department_id:
         raise HTTPException(status_code=400, detail="Bolum secimi zorunludur")
+    class_year = _parse_class_year(req.class_year)
 
     if _DEMO_MODE:
         if any(s["student_no"] == student_no and s["tc_no"] == tc_no for s in _DEMO_STORE["students"]):
@@ -2392,6 +2480,7 @@ async def create_student(req: StudentCreateRequest):
             "tc_no": tc_no,
             "first_name": first_name,
             "last_name": last_name,
+            "class_year": class_year,
             "department_id": department_id,
             "created_at": _demo_now(),
         }
@@ -2405,14 +2494,15 @@ async def create_student(req: StudentCreateRequest):
     try:
         row = await pool.fetchrow(
             """
-            INSERT INTO public.students (student_no, tc_no, first_name, last_name, department_id)
-            VALUES ($1, $2, $3, $4, $5)
+            INSERT INTO public.students (student_no, tc_no, first_name, last_name, class_year, department_id)
+            VALUES ($1, $2, $3, $4, $5, $6)
             RETURNING id
             """,
             student_no,
             tc_no,
             first_name,
             last_name,
+            class_year,
             department_id,
         )
     except asyncpg.ForeignKeyViolationError as exc:
@@ -2436,6 +2526,7 @@ async def update_student(student_id: str, req: StudentUpdateRequest):
         raise HTTPException(status_code=400, detail="Tum alanlar zorunludur")
     if not department_id:
         raise HTTPException(status_code=400, detail="Bolum secimi zorunludur")
+    class_year = _parse_class_year(req.class_year)
 
     if _DEMO_MODE:
         student = next((s for s in _DEMO_STORE["students"] if s["id"] == student_id), None)
@@ -2450,6 +2541,7 @@ async def update_student(student_id: str, req: StudentUpdateRequest):
             "tc_no": tc_no,
             "first_name": first_name,
             "last_name": last_name,
+            "class_year": class_year,
             "department_id": department_id,
         })
         return _demo_student_record(student)
@@ -2478,13 +2570,15 @@ async def update_student(student_id: str, req: StudentUpdateRequest):
                 tc_no = $2,
                 first_name = $3,
                 last_name = $4,
-                department_id = $5
-            WHERE id = $6
+                class_year = $5,
+                department_id = $6
+            WHERE id = $7
             """,
             student_no,
             tc_no,
             first_name,
             last_name,
+            class_year,
             department_id,
             student_id,
         )
@@ -2549,6 +2643,17 @@ async def import_students_csv(file: UploadFile = File(...)):
               return text
         return ""
 
+    def _parse_class_year_text(raw_value: str) -> int | None:
+        if raw_value is None:
+            return None
+        match = re.search(r"\d+", str(raw_value))
+        if not match:
+            return None
+        try:
+            return _parse_class_year(int(match.group(0)))
+        except HTTPException:
+            return None
+
     if _DEMO_MODE:
         department_map = { _norm_key(dep["name"]): dep["id"] for dep in _DEMO_STORE["departments"] }
         created: list[dict[str, Any]] = []
@@ -2559,8 +2664,9 @@ async def import_students_csv(file: UploadFile = File(...)):
             first_name = _get(row, "first_name", "ad", "adi")
             last_name = _get(row, "last_name", "soyad", "soyadi")
             department_name = _get(row, "department", "department_name", "bolum", "bölüm")
+            class_year_text = _get(row, "class_year", "class", "sinif", "sınıf")
 
-            if not student_no or not tc_no or not first_name or not last_name or not department_name:
+            if not student_no or not tc_no or not first_name or not last_name or not department_name or not class_year_text:
                 skipped.append({
                     "student_no": student_no,
                     "tc_no": tc_no,
@@ -2568,6 +2674,18 @@ async def import_students_csv(file: UploadFile = File(...)):
                     "last_name": last_name,
                     "department_name": department_name,
                     "reason": "Eksik alan nedeniyle kaydedilmedi",
+                })
+                continue
+
+            class_year = _parse_class_year_text(class_year_text)
+            if class_year is None:
+                skipped.append({
+                    "student_no": student_no,
+                    "tc_no": tc_no,
+                    "first_name": first_name,
+                    "last_name": last_name,
+                    "department_name": department_name,
+                    "reason": "Gecersiz sinif degeri",
                 })
                 continue
 
@@ -2600,6 +2718,7 @@ async def import_students_csv(file: UploadFile = File(...)):
                 "tc_no": tc_no,
                 "first_name": first_name,
                 "last_name": last_name,
+                "class_year": class_year,
                 "department_id": department_id,
                 "created_at": _demo_now(),
             }
@@ -2620,8 +2739,9 @@ async def import_students_csv(file: UploadFile = File(...)):
         first_name = _get(row, "first_name", "ad", "adi")
         last_name = _get(row, "last_name", "soyad", "soyadi")
         department_name = _get(row, "department", "department_name", "bolum", "bölüm")
+        class_year_text = _get(row, "class_year", "class", "sinif", "sınıf")
 
-        if not student_no or not tc_no or not first_name or not last_name or not department_name:
+        if not student_no or not tc_no or not first_name or not last_name or not department_name or not class_year_text:
             skipped.append({
                 "student_no": student_no,
                 "tc_no": tc_no,
@@ -2629,6 +2749,18 @@ async def import_students_csv(file: UploadFile = File(...)):
                 "last_name": last_name,
                 "department_name": department_name,
                 "reason": "Eksik alan nedeniyle kaydedilmedi",
+            })
+            continue
+
+        class_year = _parse_class_year_text(class_year_text)
+        if class_year is None:
+            skipped.append({
+                "student_no": student_no,
+                "tc_no": tc_no,
+                "first_name": first_name,
+                "last_name": last_name,
+                "department_name": department_name,
+                "reason": "Gecersiz sinif degeri",
             })
             continue
 
@@ -2658,14 +2790,15 @@ async def import_students_csv(file: UploadFile = File(...)):
         try:
             row_result = await pool.fetchrow(
                 """
-                INSERT INTO public.students (student_no, tc_no, first_name, last_name, department_id)
-                VALUES ($1, $2, $3, $4, $5)
+                INSERT INTO public.students (student_no, tc_no, first_name, last_name, class_year, department_id)
+                VALUES ($1, $2, $3, $4, $5, $6)
                 RETURNING id
                 """,
                 student_no,
                 tc_no,
                 first_name,
                 last_name,
+                class_year,
                 department_id,
             )
         except asyncpg.ForeignKeyViolationError:
@@ -2702,22 +2835,25 @@ async def student_courses(student_id: str):
         if student is None:
             return []
         department_id = student.get("department_id")
+        class_year = student.get("class_year")
         return [
             dict(c)
             for c in _DEMO_STORE["courses"]
-            if c.get("department_id") is None or c.get("department_id") == department_id
+            if (c.get("department_id") is None or c.get("department_id") == department_id)
+            and (c.get("class_year") is None or c.get("class_year") == class_year)
         ]
 
     pool = await _get_db_pool()
     await _sync_student_to_all_courses(pool, student_id)
     rows = await pool.fetch(
         """
-        SELECT c.id, c.name, c.code, c.created_at
+        SELECT c.id, c.name, c.code, c.class_year, c.created_at
         FROM public.student_courses sc
         JOIN public.courses c ON c.id = sc.course_id
                 JOIN public.students s ON s.id = sc.student_id
                 WHERE sc.student_id = $1
                     AND (c.department_id IS NULL OR c.department_id = s.department_id)
+                    AND (c.class_year IS NULL OR c.class_year = s.class_year)
         ORDER BY c.name
         """,
         student_id,
@@ -2736,7 +2872,7 @@ async def course_detail(course_id: str):
     pool = await _get_db_pool()
     row = await pool.fetchrow(
         """
-        SELECT id, name, code, created_at
+        SELECT id, name, code, class_year, created_at
         FROM public.courses
         WHERE id = $1
         LIMIT 1

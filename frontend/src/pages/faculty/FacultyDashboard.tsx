@@ -9,7 +9,7 @@ import { cn } from "@/lib/utils";
 import { Calendar } from "@/components/ui/calendar";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import RubricModal from "@/components/faculty/RubricModal";
-import AssignmentAssistantPanel from "@/components/faculty/AssignmentAssistantPanel";
+import AssignmentChatbot from "@/components/faculty/AssignmentChatbot";
 import SettingsPanel from "@/components/faculty/SettingsPanel";
 import StudentsPanel from "@/components/faculty/StudentsPanel";
 import { toast } from "sonner";
@@ -71,6 +71,7 @@ const FacultyDashboard = () => {
   const [rubricStatuses, setRubricStatuses] = useState<Record<string, string>>({});
   const [loading, setLoading] = useState(true);
   const [rubricModal, setRubricModal] = useState<RubricModalState>({ open: false, assignment: null });
+  const [chatbotOpen, setChatbotOpen] = useState(false);
 
   // Form states
   const [newDeptName, setNewDeptName] = useState("");
@@ -383,14 +384,24 @@ const FacultyDashboard = () => {
         {activeTab === "assignments" && (
           <>
             <h1 className="text-2xl font-bold tracking-tight text-foreground mb-1">Ödevler</h1>
-            <p className="text-sm text-muted-foreground mb-6">
-              Ödev oluşturun, rubrik için AI önerisi alın. Sağdan konu önerileri listesinden birini seçerek başlık ve açıklamayı forma doldurun (Ollama açık olmalı).
-            </p>
+            <p className="text-sm text-muted-foreground mb-6">Ödev oluşturun ve düzenleyin.</p>
 
-            <div className="grid grid-cols-1 xl:grid-cols-3 gap-6 items-start">
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
               {/* Left: Add form */}
-              <div className="xl:col-span-1">
-                <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wider mb-3">Yeni Ödev</h2>
+              <div>
+                <div className="flex items-center justify-between mb-3">
+                  <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wider">Yeni Ödev</h2>
+                  <button
+                    onClick={() => setChatbotOpen(true)}
+                    className="group relative flex items-center gap-1.5 pl-2 pr-3 py-1.5 rounded-full bg-gradient-to-r from-primary to-purple-600 text-primary-foreground text-xs font-semibold shadow-lg hover:shadow-xl transition-all hover:scale-105 hover:-translate-y-0.5"
+                    title="AI ile ödev oluştur"
+                  >
+                    <span className="text-base leading-none animate-bounce">🤖</span>
+                    <span>AI ile Oluştur</span>
+                    <span className="absolute -top-1 -right-1 h-2 w-2 rounded-full bg-emerald-400 animate-ping" />
+                    <span className="absolute -top-1 -right-1 h-2 w-2 rounded-full bg-emerald-400" />
+                  </button>
+                </div>
                 <div className="flex flex-col gap-3">
                   <select
                     value={selectedCourseId}
@@ -458,8 +469,8 @@ const FacultyDashboard = () => {
                 </div>
               </div>
 
-              {/* Center: Assignment list */}
-              <div className="xl:col-span-1">
+              {/* Right: Assignment list */}
+              <div>
                 <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wider mb-3">Düzenleyici</h2>
                 <div className="space-y-2">
                   {assignments.length === 0 ? (
@@ -550,15 +561,6 @@ const FacultyDashboard = () => {
                 </div>
               </div>
 
-              {/* Right: AI assignment assistant */}
-              <div className="xl:col-span-1 xl:sticky xl:top-4">
-                <AssignmentAssistantPanel
-                  onApplyDraft={(title, description) => {
-                    setNewAssignmentName(title);
-                    setNewAssignmentDesc(description);
-                  }}
-                />
-              </div>
             </div>
 
             {/* Rubric Modal */}
@@ -570,6 +572,14 @@ const FacultyDashboard = () => {
                 onClose={() => { setRubricModal({ open: false, assignment: null }); fetchAll(); }}
               />
             )}
+
+            <AssignmentChatbot
+              open={chatbotOpen}
+              onClose={() => setChatbotOpen(false)}
+              courses={courses}
+              teacherId={teacher!.id}
+              onCreated={fetchAll}
+            />
           </>
         )}
 
