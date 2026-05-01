@@ -180,6 +180,33 @@ const networkHint =
   "`npm run dev` hem Vite hem API'yi baslatir; yalnizca arayuz icin `npm run dev:vite`. " +
   "Hata suruyorsa `npm run dev` ile API'yi baslatin (varsayilan port 8001) veya DEV_API_PORT ile uyumlu Vite proxy kullanin.";
 
+function apiErrorMessage(errorText: string, fallback: string): string {
+  try {
+    const parsed = JSON.parse(errorText) as { detail?: unknown };
+    const detail = parsed.detail;
+    if (typeof detail === "string" && detail.trim()) {
+      return detail;
+    }
+    if (detail && typeof detail === "object") {
+      const record = detail as Record<string, unknown>;
+      if (typeof record.message === "string" && record.message.trim()) {
+        return record.message;
+      }
+      if (Array.isArray(record.issues)) {
+        const messages = record.issues
+          .map((item) => (item && typeof item === "object" ? (item as Record<string, unknown>).message : null))
+          .filter((message): message is string => typeof message === "string" && Boolean(message.trim()));
+        if (messages.length) {
+          return messages.join(" ");
+        }
+      }
+    }
+  } catch {
+    // Fall through to the raw text below.
+  }
+  return errorText || fallback;
+}
+
 export async function analyzeCode(fileName: string, fileContent: string, assignmentId?: string): Promise<ApiAnalysisResult> {
   let response: Response;
   try {
@@ -505,7 +532,7 @@ export async function createAssignment(payload: {
   });
   if (!response.ok) {
     const errorText = await response.text();
-    throw new Error(`Odev ekleme hatasi (${response.status}): ${errorText}`);
+    throw new Error(`Odev ekleme hatasi (${response.status}): ${apiErrorMessage(errorText, "Odev eklenemedi")}`);
   }
   return response.json();
 }

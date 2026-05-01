@@ -40,6 +40,7 @@ from backend.agents.security import SecurityAgent
 from backend.agents.test_agent import TestAgent
 from backend.agents.evidence import EvidenceAgent
 from backend.agents.master_evaluator import MasterEvaluatorAgent
+from backend.agents.assignment_safety import AssignmentSafetyAgent
 from backend.llm.ollama_client import chat_json
 
 logger = logging.getLogger(__name__)
@@ -152,6 +153,7 @@ _DEMO_STORE: dict[str, Any] = {
 _DEMO_STORE_FILE = Path(
     os.getenv("DEMO_STORE_FILE", str(_MAIN_FILE.parent.parent.parent / ".demo_store.json"))
 )
+_ASSIGNMENT_SAFETY_AGENT = AssignmentSafetyAgent()
 
 
 def _load_demo_store_from_disk() -> None:
@@ -678,10 +680,10 @@ _OOP_FALLBACK_SUGGESTIONS: list[dict[str, str]] = [
     },
     {
         "title": "Oyun karakteri ve seviye yonetimi (OOP)",
-        "summary": "Oyuncu, dusman, Silah arayuzu veya temel envanter.",
+        "summary": "Oyuncu, NPC, esya arayuzu veya temel envanter.",
         "description": (
-            "Oyuncu ve Dusman ortak bir Karakter tabanindan turer; hasar, can ve hareket metotlari ayrilir. "
-            "Basit bir OyunMotoru sinifi turleri dondurur ve carpisma/saldiri olaylarini koordine eder."
+            "Oyuncu ve NPC ortak bir Karakter tabanindan turer; enerji, konum ve hareket metotlari ayrilir. "
+            "Basit bir OyunMotoru sinifi turleri dondurur ve etkilesim olaylarini koordine eder."
         ),
     },
     {
@@ -2399,19 +2401,43 @@ async def list_assignments():
     return [dict(r) for r in rows]
 
 
+def _course_context_for_assignment_safety(course: dict[str, Any] | asyncpg.Record | None) -> str:
+    if course is None:
+        return ""
+    record = dict(course)
+    name = str(record.get("name", "")).strip()
+    code = str(record.get("code", "")).strip()
+    class_year = record.get("class_year")
+    parts = [part for part in (name, code, f"{class_year}. sinif" if class_year else "") if part]
+    return " ".join(parts)
+
+
+async def _ensure_assignment_safety(name: str, description: str | None, course_context: str) -> None:
+    result = await _ASSIGNMENT_SAFETY_AGENT.analyze_hybrid(
+        title=name,
+        description=description,
+        course_context=course_context,
+    )
+    if not result.allowed:
+        raise HTTPException(status_code=400, detail=result.to_api_error())
+
+
 @app.post("/api/assignments")
 async def create_assignment(req: AssignmentCreateRequest):
     name = req.name.strip()
     if not name or not req.course_id:
         raise HTTPException(status_code=400, detail="Odev adi ve ders zorunludur")
+    description = req.description.strip() if req.description else None
     if _DEMO_MODE:
-        if not any(c["id"] == req.course_id for c in _DEMO_STORE["courses"]):
+        course = next((c for c in _DEMO_STORE["courses"] if c["id"] == req.course_id), None)
+        if course is None:
             raise HTTPException(status_code=400, detail="Gecersiz ders secimi")
+        await _ensure_assignment_safety(name, description, _course_context_for_assignment_safety(course))
         assignment = {
             "id": _demo_uuid(),
             "course_id": req.course_id,
             "name": name,
-            "description": req.description.strip() if req.description else None,
+            "description": description,
             "due_date": req.due_date,
             "created_at": _demo_now(),
         }
@@ -2421,6 +2447,18 @@ async def create_assignment(req: AssignmentCreateRequest):
 
     pool = await _get_db_pool()
     try:
+        course = await pool.fetchrow(
+            """
+            SELECT id, name, code, class_year
+            FROM public.courses
+            WHERE id = $1
+            LIMIT 1
+            """,
+            req.course_id,
+        )
+        if course is None:
+            raise HTTPException(status_code=400, detail="Gecersiz ders secimi")
+        await _ensure_assignment_safety(name, description, _course_context_for_assignment_safety(course))
         due_date = _parse_optional_datetime(req.due_date)
         row = await pool.fetchrow(
             """
@@ -2430,12 +2468,14 @@ async def create_assignment(req: AssignmentCreateRequest):
             """,
             req.course_id,
             name,
-            req.description.strip() if req.description else None,
+            description,
             due_date,
         )
         return dict(row)
     except asyncpg.ForeignKeyViolationError as exc:
         raise HTTPException(status_code=400, detail="Gecersiz ders secimi") from exc
+    except HTTPException:
+        raise
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Odev olusturma hatasi: {exc}") from exc
 
