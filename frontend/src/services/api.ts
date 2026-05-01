@@ -46,6 +46,8 @@ export interface ApiAnalysisResult {
   peakMemoryMb: number;
   /** Backend rubrik duzeltmeleri; sessionStorage surumu ile eslestirmek icin */
   analysisEngine?: string;
+  /** Dusuk not + zayif gorev uyumu (backend kosullu) */
+  relevanceScoreWarning?: string | null;
 }
 
 export interface Student {

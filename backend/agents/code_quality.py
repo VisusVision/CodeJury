@@ -10,6 +10,7 @@ Cikti:  CodeQualityOutput dict
 import json
 
 from backend.agents.base import BaseAgent, build_llm_user_suffix, format_assignment_context_for_prompt
+from backend.agents.json_output_schema import CODE_QUALITY_OUTPUT_SCHEMA
 from backend.agents.code_utils import get_code_metrics, strip_comments
 
 _COMPLEXITY_RANK = {
@@ -99,6 +100,11 @@ Rules:
   premature_optimization, copy_in_loop, n_plus_one, expected_complexity.
 - If none of the canonical labels fit, use a short snake_case label of your own.
 - Do not heavily penalize standard algorithms (sorting, tree traversals, etc.) for expected recursion or O(n^2) where appropriate.
+- If an ASSIGNMENT BRIEF block requires a specific deliverable (e.g. factorial, Fibonacci) and the
+  source clearly implements a different domain (e.g. library management, unrelated OOP app),
+  the score must be very low (roughly 0–30). Explain this as **task / brief mismatch** in
+  algorithm_analysis — do **not** frame it as generic Big-O failure unless complexity is genuinely
+  the main problem for the stated task.
 - "time_complexity" and "space_complexity" must use Big-O notation.
 
 Reply with ONLY this JSON shape, no other text:
@@ -158,6 +164,7 @@ class CodeQualityAgent(BaseAgent):
             system_prompt=_SYSTEM_PROMPT,
             user_prompt=user_prompt,
             required_keys=["time_complexity", "score"],
+            output_json_schema=CODE_QUALITY_OUTPUT_SCHEMA,
         )
 
         llm_result["score"] = self._safe_int(llm_result.get("score"), 50)

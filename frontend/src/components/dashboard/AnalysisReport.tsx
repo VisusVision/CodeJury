@@ -66,6 +66,8 @@ export interface ReportData {
   executionTimeMs: number;
   memoryUsageMb: number;
   peakMemoryMb: number;
+  /** Düşük not + zayıf görev uyumu uyarısı (API) */
+  relevanceScoreWarning?: string | null;
 }
 
 /* ─── Mock report generator ─── */
@@ -433,6 +435,16 @@ const AnalysisReport = ({ report, onClose }: AnalysisReportProps) => {
           memoryUsageMb={report.memoryUsageMb}
           peakMemoryMb={report.peakMemoryMb}
         />
+
+        {report.relevanceScoreWarning ? (
+          <div
+            className="rounded-xl border border-amber-500/40 bg-amber-500/10 px-4 py-3 text-sm text-amber-950 dark:text-amber-100 flex gap-3 items-start"
+            role="status"
+          >
+            <AlertTriangle className="h-5 w-5 shrink-0 text-amber-600 dark:text-amber-400 mt-0.5" />
+            <p className="leading-relaxed">{report.relevanceScoreWarning}</p>
+          </div>
+        ) : null}
 
         {/* Score overview */}
         <div className="rounded-xl bg-card shadow-card p-6">

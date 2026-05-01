@@ -10,6 +10,7 @@ import logging
 from abc import ABC, abstractmethod
 from typing import Any
 
+from backend.agents.json_output_schema import collect_validation_messages
 from backend.core.config import settings
 from backend.llm.ollama_client import chat_json
 
@@ -125,6 +126,7 @@ class BaseAgent(ABC):
         user_prompt: str,
         *,
         required_keys: list[str] | None = None,
+        output_json_schema: dict | None = None,
         temperature: float = 0.3,
         num_predict: int | None = None,
     ) -> dict:
@@ -148,9 +150,8 @@ class BaseAgent(ABC):
             raise LLMInferenceError(f"[{self.name}] LLM bos veya cozumlenemeyen yanit dondu.")
 
         if required_keys:
-            # Doküman Bölüm 5 -- "3. denemede başarısız olursa Error bayrağı".
-            # 1 ilk çağrı + 2 schema-repair retry = toplam 3 deneme.
-            max_repair_attempts = 2
+            # 1 ilk çağrı + en fazla 3 onarım çağrısı (eksik üst seviye anahtarlar).
+            max_repair_attempts = 3
             for attempt in range(1, max_repair_attempts + 1):
                 missing = [k for k in required_keys if k not in result]
                 if not missing:
@@ -193,6 +194,52 @@ class BaseAgent(ABC):
                 raise LLMInferenceError(
                     f"[{self.name}] LLM yanitinda eksik alanlar: {', '.join(missing)}"
                 )
+
+        if output_json_schema:
+            max_schema_repair_attempts = 3
+            for attempt in range(max_schema_repair_attempts + 1):
+                schema_msgs = collect_validation_messages(result, output_json_schema)
+                if not schema_msgs:
+                    break
+                if attempt >= max_schema_repair_attempts:
+                    raise LLMInferenceError(
+                        f"[{self.name}] JSON Schema dogrulanamadi: "
+                        + "; ".join(schema_msgs[:8])
+                    )
+                logger.warning(
+                    "[%s] JSON Schema ihlali; onarim denemesi %d/%d: %s",
+                    self.name,
+                    attempt + 1,
+                    max_schema_repair_attempts,
+                    "; ".join(schema_msgs[:4]),
+                )
+                repair_prompt = (
+                    f"{user_prompt}\n\n"
+                    "[SCHEMA REPAIR — JSON Schema]\n"
+                    f"Attempt {attempt + 1}/{max_schema_repair_attempts}. Your JSON failed validation:\n"
+                    + "\n".join(schema_msgs)
+                    + "\nReturn the complete JSON object again, fully conforming to the schema described "
+                    "in the system prompt. Fix types (booleans not strings, integers where required, "
+                    "required object fields in each issue, enum values exactly as allowed). "
+                    "Return ONLY valid JSON."
+                )
+                try:
+                    repaired = await chat_json(
+                        system_prompt=system_prompt,
+                        user_prompt=repair_prompt,
+                        temperature=0.1,
+                        num_predict=num_predict,
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "[%s] JSON Schema onarim cagrisi basarisiz (deneme %d): %s",
+                        self.name,
+                        attempt + 1,
+                        exc,
+                    )
+                    repaired = None
+                if isinstance(repaired, dict):
+                    result = {**result, **repaired}
 
         return result
 
