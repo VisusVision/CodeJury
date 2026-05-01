@@ -412,6 +412,8 @@ class AssignmentAssistantSuggestionsRequest(BaseModel):
 
     course_hint: str = ""
     count: int = 5
+    difficulty: str | None = None  # "easy" | "medium" | "hard"
+    prefer_fresh: bool = False  # True → Ollama önbelleğini atl (yeniden öner)
 
 
 _ASSIGNMENT_SUGGEST_SYSTEM = """\
@@ -449,6 +451,10 @@ Polynomial class, Matrix class, ComplexNumber class).
 Generate varied subtopics under the hint umbrella (5 different angles), not 5 copies of
 the same exercise. Each description should be detailed enough that an instructor can
 paste it into a course page as the assignment briefing.
+
+If the user message specifies a mandatory difficulty tier (easy / medium / hard),
+you MUST follow that tier strictly: easy homework must genuinely be beginner-sized;
+hard homework must noticeably exceed medium in scope (multi-part design, edge cases).
 
 Turkish wording note: In programming homework, "sınıf / sınıflar / sinif" from an instructor
 almost always means OOP "class" (defining classes, objects, __init__, methods), NOT school
@@ -529,6 +535,64 @@ def _assignment_focus_extra(hint_raw: str) -> str:
         )
 
     return "\n".join(chunks)
+
+
+def _normalize_assignment_difficulty(raw: str | None) -> str:
+    """API'den gelen zorluğu dahili üç kademeye indirger."""
+    s = (raw or "").strip().lower()
+    if s in {"easy", "kolay", "k", "e", "basit", "1"}:
+        return "easy"
+    if s in {"hard", "zor", "h", "z", "advanced", "3"}:
+        return "hard"
+    if s in {"medium", "orta", "o", "m", "normal", "2"}:
+        return "medium"
+    return "medium"
+
+
+def _assignment_difficulty_prompt_block(tier: str) -> str:
+    """LLM kullanıcı prompt'una eklenecek zorunlu zorluk bloğu."""
+    if tier == "easy":
+        return (
+            "ZORUNLU ZORLUK SEVİYESİ: KOLAY (birinci öğretim, gerçekten basit).\n"
+            "- Tek dosya veya iki dosyadan fazlası gerektiren çok-parçalı projeler yazma.\n"
+            "-Öğrenci birkaç kısa fonksiyon veya çok küçük bir nesne yapısı ile bitirebilir (yaklaşık "
+            "30–90 mantıklı kod satırı düzeyi; açıklamada gereksinimleri sıkı sınırlayıcı tut).\n"
+            "-Matematik uygulamalı ise: faktoriyel, küçük N için tam bölünürlük/asallık kontrolü, iki "
+            "tam sayının EBOB–EKOK’u, aritmetik/geometrik dizi ilk n terimi, ikinci derece denklem "
+            "kökeni (diskriminant sıfır/tekil kök), basit ortalama–medyan modu gibi TEK kavram odaklı "
+            "görevler üret. Matris/vektör varsa EN FAZLA 2x2 veya çok kısıtlı boyut; genel N boyutlu "
+            "cebir kütüphanesi, sayısal integral/türev karşılaştırması, optimizasyon veya iteratif "
+            "yakınsama analizi KOLAY seviyede YASAK.\n"
+            "-OOP istenmiyorsa sadece fonksiyon + main yeter; OOP isteniyorsa en fazla 1–2 küçük sınıf, "
+            "kalıtım zorunlu tutma.\n"
+            "Beş önerinin hepsi bu KOLAY tanıma uysun; orta veya zor kapsamda öneri verme.\n"
+        )
+    if tier == "hard":
+        return (
+            "ZORUNLU ZORLUK SEVİYESİ: ZOR (yüksek çaba, çok parçalı).\n"
+            "-Her öneri birden fazla alt görev, net test senaryoları, hata/kenar durumu veya tasarım "
+            "tercihlerini gerekçelendirmeyi içersin (ör. modüler yapı, birim test listesi, rapor bölümü).\n"
+            "-Matematik uygulamalı ise: örneğin trapez ve Simpson ile aynı integral için karşılaştırma ve "
+            "hata eğilimi gözlemı; küçük boyutta Gauss eliminasyonu veya LU fikri (adımları açıkça "
+            "tariflenmiş); gradient iniş ile mini regresyon; basit iteratif doğrusal sistem (Jacobi/"
+            "Gauss–Seidel) yakınsaklık denemesi; küçük veri için PCA veya benzeri matris çarpımları "
+            "zorunlu bileşenlerle — öğrenci algoritma adımlarını kodlamalı.\n"
+            "-KOLAY ile karıştırma: tek fonksiyonluk oyuncak görevleri bu seviyede yeterli değildir.\n"
+            "Beş önerinin hepsi ZOR çerçevesinde yoğunluklu olsun.\n"
+        )
+    # medium
+    return (
+        "ZORUNLU ZORLUK SEVİYESİ: ORTA (tipik homework).\n"
+        "-Birkaç fonksiyon veya 2–3 sınıfa kadar makul yapı; belirgin ama tek parça kod tabanında "
+        "bitebilen görev.\n"
+        "-Küçük dosyadan giriş/çıkış ya da konsol ile net formatlı I/O kombinasyonu olabilir.\n"
+        "-Matematik uygulamalı ise: iki fonksiyonun kökünü bisection/regula falsi ile bulma; 3×3 "
+        "determinant ve küçük (en fazla 5 bilinmeyen) doğrusal sistem; Euler veya iki adımla basit "
+        "ODE yaklaşımı; iki vektörün iç çarpımı, uzunluk ve aralarındaki açı (derece); basit doğrusal "
+        "regresyon (çizgi uydurma) — klasik ara öğrenim iş yükünde kal.\n"
+        "-Tam genel kütüphane veya araştırma projesi yazma.\n"
+        "Beş önerinin hepsi ORTA tanıya uysun.\n"
+    )
 
 
 def _strip_md_leaks(text: str) -> str:
@@ -676,8 +740,160 @@ _DS_FALLBACK_SUGGESTIONS: list[dict[str, str]] = [
 ]
 
 
-def _fallback_assignment_suggestions(course_hint: str) -> list[dict[str, str]]:
+_MATH_FALLBACK_BY_TIER: dict[str, list[dict[str, str]]] = {
+    "easy": [
+        {
+            "title": "Basit faktoriyel ve tam bölünürlük kontrolü",
+            "summary": "Küçük n için n! ve bölen listesi; konsol I/O.",
+            "description": (
+                "Öğrenci doğal sayı n okur, n! değerini (n üst sınırı küçük tutulur, taşma uyarısı yazılır) hesaplar "
+                "ve ayrı bir sayının belirli küçük bölenlerini listeler. Fonksiyonlara bölünmüş iki–üç kısa işlev "
+                "yeterli; tek ana program dosyası ile teslim. Kenar durumu: n sıfır, negatif giriş için net mesaj."
+            ),
+        },
+        {
+            "title": "Ikinci dereceden denklemin kökleri",
+            "summary": "Diskriminant ile gerçek/tekil/kök yok durumları.",
+            "description": (
+                "Katsayılar a, b, c okunur; diskriminant ile kök sayısı ayırt edilir ve varsa kökler yazdırılır. "
+                "Kök yok durumunda kullanıcıya açıklayıcı çıktı verilir. Fonksiyon tabanlı yapı; float girişleri "
+                "kabul edilir. Örnek test değerleri açıklamada verilir."
+            ),
+        },
+        {
+            "title": "EBOB–EKOK hesaplayıcı",
+            "summary": "İki pozitif tam sayı için öklid ve çarpım ilişkisi.",
+            "description": (
+                "İki pozitif tam sayı için EBOB (öklid) ve EKOK hesaplanır. Kullanıcı dostu hata mesajları; "
+                "sıfır veya negatif için reddet. Sonuç tek satırda Özetlenir. Toplamda birkaç kısa fonksiyon ile "
+                "sınırlı kapsamda tutulur."
+            ),
+        },
+        {
+            "title": "Fibonacci dizisinin ilk n terimi",
+            "summary": "Döngü veya iki değişken; n üst sınırı küçük.",
+            "description": (
+                "n okunur (ör. en fazla 30), Fibonacci dizisi üretilir ve yazdırılır. Terimler liste veya dizi "
+                "ile tutulabilir. n=0 veya 1 kenar durumları açıklamada tanımlı olmalıdır. Matematik ile ilgili "
+                "saf ve kısa bir ödev olarak tasarlanır."
+            ),
+        },
+        {
+            "title": "Aritmetik dizi toplamı",
+            "summary": "İlk terim, adım sayısı ve ortak fark ile sum(a1..an).",
+            "description": (
+                "Başlangıç terimi a1, ortak fark d ve terim sayısı k ile aritmetik dizinin ilk k teriminin toplamı "
+                "hesaplanır. Formül n*(2*a1+(n-1)*d)/2 veya döngü ile doğrulanabilir gösterilir. Küçük tamsayı girişleri; "
+                "kenar durumları k≤0 için mesaj verilir."
+            ),
+        },
+    ],
+    "medium": [
+        {
+            "title": "Bölme yöntemi ile kök bulma",
+            "summary": "[a,b] aralığında sürekli f için iki uç işaret kontrolü ve iterasyon.",
+            "description": (
+                "Verilen sürekli f(x) (ör. polinom kodda sabit fonksiyon) için kullanıcı aralığı [a,b] girer; "
+                "f(a)f(b)<0 değilse hata döner. Biseksiyon veya regula falsi ile köke yaklaşım, tolerans veya "
+                "maksimum iterasyon ile durur. Adım sayısı ve son yaklaşık kök raporlanır."
+            ),
+        },
+        {
+            "title": "3×3 matris determinantı",
+            "summary": "Sarrus veya küçük açılım formülü; dosya girişi opsiyonel.",
+            "description": (
+                "9 sayı konsoldan okunur, 3×3 determinant hesaplanır ve yazdırılır. Hatalı girişlerde doğrulama. "
+                "İstenirse matris yazdırma fonksiyonu eklenir. Öğrenci formül seçimini açıklamada kısaca özetler."
+            ),
+        },
+        {
+            "title": "Euler yöntemi ile basit ODE",
+            "summary": "y'=f(x,y), başlangıç ve adım ile birkaç adım çözüm.",
+            "description": (
+                "Örnek f(x,y) (örneğin y'=-y veya sabit düşük karmaşıklıkta ifade) verilir. x0,y0,h ve adım sayısı "
+                "alındıktan sonra Euler güncellenmesi yapılır, her adımda (x,y) tablo şeklinde yazdırılır. "
+                "Kanıt gerektirmeden nümerik yaklaşım odaklı ödevdir."
+            ),
+        },
+        {
+            "title": "İki vektörün iç çarpımı ve aradaki açı",
+            "summary": "Uzunluk ve kosinüs yasası ile derece çıktısı.",
+            "description": (
+                "2D veya 3D iki vektör okunur; iç çarpım, normlar hesaplanır ve aradaki açı radyanı/derecesi olarak "
+                "yazılır. Sıfır vektöründe uyarı üretilir. Fonksiyon modüler yazılır."
+            ),
+        },
+        {
+            "title": "Doğrusal regresyon: en küçük kareler doğrusu",
+            "summary": "Nokta dizisi için eğim ve kesim katsayıları.",
+            "description": (
+                "Küçük n için (xi,yi) çiftleri okunur; ortalamalar kullanılarak en küçük kare doğrusunun eğimi ve "
+                "kesiti hesaplanır. Sonuç y = mx + b biçiminde raporlanır. Görsel şart değildir ama özette "
+                "formüller yazılmalıdır."
+            ),
+        },
+    ],
+    "hard": [
+        {
+            "title": "Trapéz ve Simpson kuralları karşılaştırması",
+            "summary": "Aynı integrali iki yöntemle yaklaşıkla; düğüm sayısı varyasyonu.",
+            "description": (
+                "[a,b] üzerinde verilen sürekli f için kullanıcı n panel sayısı girer (çift gereksinimi Simpson için "
+                "açıklamada sabitlenir). Trapéz ve Simpson yaklaşım değerleri hesaplanır, tabloda sunulur; panel sayısı "
+                "artan iki senaryoda fark gözlenir ve kısa yorum teslim gereksinimi vardır. Modüller ve sabit kod "
+                "yorumları ile çok dosya yapısı teşvik edilir."
+            ),
+        },
+        {
+            "title": "Jacobi veya Gauss–Seidel ile küçük doğrusal sistem",
+            "summary": "3×3 veya 4×4 diyagonal baskın sistem; yakınsama takibi.",
+            "description": (
+                "Katı sıra koşulu sağlayan küçük A matrisi ve b vektörü verilir. İteratif yöntem uygulanır; "
+                "her adımda çözüm vektörü ve uygun norm farkı kaydedilir. Toleransa veya maksimum iterasyona göre durur; "
+                "yakınsamazsa uyarı yazılır. Öğrenci algoritma adımlarını kod olarak açıklar."
+            ),
+        },
+        {
+            "title": "Gradyan iniş ile basit doğrusal regresyon",
+            "summary": "Maliyet fonksiyonu ve öğrenme oranı seçimi ile eğim-kesite yakınsama.",
+            "description": (
+                "(xi,yi) küçük veri kümesinde MSE küçültülerek m ve b güncellenir; iterasyon veya küçük adım dizisi "
+                "çıktılır. Öğrenme oranı ve çıkış kriterleri açıklamada bağlanmış olmalı; son katsayıların analitik çözümle "
+                "karşılaştırması istenir. Kenar örneklerde yakınsamama için kılavuz verilir."
+            ),
+        },
+        {
+            "title": "Boyut küçültme (mini PCA görünümü)",
+            "summary": "Küçük X matrisi için kovaryans ve özvektör fikrine dayalı doğrusal dönüşüm.",
+            "description": (
+                "Öğrenci merkezi matris oluşturur, X^T X veya doğrudan özdeğer ayrışımına denk küçük adımlarla "
+                "yüksek bilgi oranı bileşeni seçilir (Örn. ilk ana bileşene projeksiyon). Veri seti çok küçük tutulur (ör. "
+                "5×3). Matematik adımların kodda uyumunu ve kısa yorum teslim şartını ekleyin."
+            ),
+        },
+        {
+            "title": "Sabit-nokta yinelemesi: iki g(x) ile yakınsama karşılaştırması",
+            "summary": "x=g(x) biçimi için iki seçim ile yakınsama hızı.",
+            "description": (
+                "Aynı köke iki farklı g(x) seçimi tanımlanır; kullanıcı başlangıç ve tolerans verir; her seçim için "
+                "iterasyon sayısı ve son değerler raporlanır. Yakınşamayan seçim için hata yakalama. Çok-parçalı "
+                "işlev yapısı ve test senaryoları zorunludur."
+            ),
+        },
+    ],
+}
+
+
+def _fallback_assignment_suggestions(course_hint: str, difficulty: str | None = None) -> list[dict[str, str]]:
     hint = (course_hint or "").lower()
+    tier = _normalize_assignment_difficulty(difficulty)
+    math_hint = any(
+        m in hint
+        for m in (
+            "matematik", "matematı", "math", "matem", "sayisal", "sayısal", "numerik", "numerical",
+            "matris", "vektör", "vektor", "polinom", "denklem", "integral", "türev", "turev", "lineer cebir",
+        )
+    )
     oop = any(
         m in hint
         for m in (
@@ -690,6 +906,14 @@ def _fallback_assignment_suggestions(course_hint: str) -> list[dict[str, str]]:
     merged = primary + [x for x in secondary if x["title"] not in {p["title"] for p in primary}]
     seen: set[str] = set()
     out: list[dict[str, str]] = []
+    tier_math_rows = list(_MATH_FALLBACK_BY_TIER.get(tier) or _MATH_FALLBACK_BY_TIER["medium"])
+    if math_hint:
+        for row in tier_math_rows:
+            k = row["title"].lower()
+            if k in seen:
+                continue
+            seen.add(k)
+            out.append(dict(row))
     for row in merged:
         k = row["title"].lower()
         if k in seen:
@@ -2407,10 +2631,13 @@ async def assignment_assistant_suggestions(req: AssignmentAssistantSuggestionsRe
     n = max(3, min(8, int(req.count or 5)))
     hint = (req.course_hint or "").strip()
     focus = _assignment_focus_extra(hint)
+    tier = _normalize_assignment_difficulty(req.difficulty)
 
     user_prompt = (
         f"Uretilecek oneri sayisi: {n}.\n"
+        f"Secilen ZORLUK (internal): {tier}\n"
         f"Egitimci baglami (bos olabilir): {hint or '(yok)'}\n"
+        f"{_assignment_difficulty_prompt_block(tier)}\n"
     )
     if focus:
         user_prompt += focus + "\n"
@@ -2418,12 +2645,19 @@ async def assignment_assistant_suggestions(req: AssignmentAssistantSuggestionsRe
         "Her oneri farkli bir teknik konu olsun. Turkce yaz. "
         "Egitimcinin yazdigi ipucuna uy: alakasiz genel konular onerme."
     )
+    if req.prefer_fresh:
+        user_prompt += (
+            "\nBu çağrı YENİDEN ÖNERİ isteğidir: daha önce görülen başlıklardan farklı ve birbirinden "
+            "ayırt edilebilir 5 tamamen yeni ödev konusu öner; tek bir konuyu küçük başlık değişiklikleriyle "
+            "tekrar etme.\n"
+        )
 
     result = await chat_json(
         system_prompt=_ASSIGNMENT_SUGGEST_SYSTEM,
         user_prompt=user_prompt,
         temperature=0.55,
         num_predict=4096,
+        use_cache=not bool(req.prefer_fresh),
     )
 
     raw_list: list[Any] | None = None
@@ -2454,7 +2688,7 @@ async def assignment_assistant_suggestions(req: AssignmentAssistantSuggestionsRe
 
     _extend_unique(cleaned)
     if len(merged) < n:
-        _extend_unique(_fallback_assignment_suggestions(hint))
+        _extend_unique(_fallback_assignment_suggestions(hint, tier))
 
     if len(merged) < 2:
         logger.error("assignment-assistant: LLM ve yedek listesi hala yetersiz (n=%s)", n)

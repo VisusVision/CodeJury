@@ -164,20 +164,24 @@ async def chat_json(
     schema_hint: dict[str, Any] | None = None,
     temperature: float = 0.3,
     num_predict: int | None = None,
+    *,
+    use_cache: bool = True,
 ) -> dict | None:
     """Ollama chat endpoint'ine istek gonderir ve JSON parse eder.
 
     Args:
         num_predict: Token limiti; None ise ayarlardan. Uzun JSON listeleri icin artirin.
+        use_cache: False ise LRU onbellek atlanir (aynı prompt için yeni liste gibi senaryolar).
     """
     if not settings.ollama_enabled:
         return None
 
     predict = int(num_predict) if num_predict is not None else int(settings.ollama_num_predict)
-    c_key = _cache_key(f"{system_prompt}|np={predict}", user_prompt, temperature)
-    cached = _cache_get(c_key)
-    if cached is not None:
-        return cached
+    cache_key = _cache_key(f"{system_prompt}|np={predict}", user_prompt, temperature)
+    if use_cache:
+        cached = _cache_get(cache_key)
+        if cached is not None:
+            return cached
 
     messages = [
         {"role": "system", "content": system_prompt},
@@ -197,8 +201,8 @@ async def chat_json(
     }
 
     result = await _do_request(payload)
-    if result is not None:
-        _cache_put(c_key, result)
+    if result is not None and use_cache:
+        _cache_put(cache_key, result)
     return result
 
 

@@ -589,9 +589,13 @@ export interface AssignmentSuggestion {
   description: string;
 }
 
+export type AssignmentDifficulty = "easy" | "medium" | "hard";
+
 export async function fetchAssignmentSuggestions(
   courseHint?: string,
   count?: number,
+  difficulty?: AssignmentDifficulty | null,
+  preferFresh?: boolean,
 ): Promise<{ suggestions: AssignmentSuggestion[] }> {
   const response = await fetch(`${API_BASE_URL}/api/faculty/assignment-assistant/suggestions`, {
     method: "POST",
@@ -599,6 +603,8 @@ export async function fetchAssignmentSuggestions(
     body: JSON.stringify({
       course_hint: courseHint ?? "",
       count: count ?? 5,
+      difficulty: difficulty ?? "medium",
+      prefer_fresh: Boolean(preferFresh),
     }),
   });
   if (!response.ok) {
