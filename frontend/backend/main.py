@@ -1596,11 +1596,42 @@ async def run_analysis_pipeline(
     if fac:
         print(f"[pipeline] Ogretmen rubrigi: {len(fac)} kriter", flush=True)
 
+    from backend.agents.assignment_alignment import (
+        BRIEF_MIN_LEN,
+        _rubric_criteria_text,
+        compute_brief_code_alignment,
+    )
+    from backend.agents.task_relevance import assess_task_relevance_llm, merge_task_alignment
+
+    prog_f, prog_rs = compute_brief_code_alignment(
+        brief, file_content, rubric_criteria=fac if fac else None
+    )
+    llm_rel = await assess_task_relevance_llm(
+        assignment_description=brief,
+        source_code=file_content,
+        rubric_criteria=fac if fac else None,
+        report_language="tr",
+    )
+    task_alignment = merge_task_alignment(prog_f, prog_rs, llm_rel)
+    if not task_alignment.get("llm_skipped"):
+        print(
+            f"[pipeline] Gorev uyumu: programatik={task_alignment['programmatic_factor']:.3f} "
+            f"llm={task_alignment.get('llm_factor')} birlesik={task_alignment['factor']:.3f}",
+            flush=True,
+        )
+    else:
+        print(
+            f"[pipeline] Gorev uyumu: programatik={task_alignment['programmatic_factor']:.3f} "
+            f"(LLM atlandi veya baglam yetersiz)",
+            flush=True,
+        )
+
     inp = {
         "source_code": file_content,
         "language": language,
         "report_language": "tr",
         "assignment_description": brief,
+        "task_alignment": task_alignment,
     }
 
     from backend.core.config import settings as _cfg
@@ -1630,6 +1661,8 @@ async def run_analysis_pipeline(
             "language": language,
             "report_language": "tr",
             "assignment_description": brief,
+            "faculty_rubric_criteria": fac,
+            "task_alignment": task_alignment,
         })
         return sb, ta
 
@@ -1668,6 +1701,7 @@ async def run_analysis_pipeline(
         "security": sc,
         "report_language": "tr",
         "assignment_description": brief,
+        "task_alignment": task_alignment,
     }
     if fac:
         me_payload["faculty_rubric_criteria"] = fac
@@ -1708,9 +1742,26 @@ async def run_analysis_pipeline(
     evidence_lines = _build_line_evidence(cq, gl, sc, ev, file_content)
 
     total_score = final.get("final_score", 0)
+    total_score_rounded = int(round(float(total_score or 0)))
+
+    _ctx = "\n".join(
+        x for x in (brief, _rubric_criteria_text(fac if fac else None)) if x
+    ).strip()
+    _align_f = float(task_alignment.get("factor", 1.0) or 1.0)
+    relevance_score_warning: str | None = None
+    if (
+        len(_ctx) >= BRIEF_MIN_LEN
+        and total_score_rounded <= 20
+        and _align_f <= 0.35
+    ):
+        relevance_score_warning = (
+            "Nihai puan düşük ve görev uyumu da zayıf: bu genelde teslimin ödev/rubrikle örtüşmediği "
+            "veya yanlış dosyanın yüklendiği anlamına gelebilir. Düşük not her zaman «alakasız kod» "
+            "demek zorunda değildir; konu doğru olsa bile çözüm zayıfsa benzer aralıkta kalınabilir."
+        )
 
     return {
-        "totalScore": round(total_score),
+        "totalScore": total_score_rounded,
         "maxScore": 100,
         "rubric": rubric,
         "agents": agents_list,
@@ -1720,6 +1771,7 @@ async def run_analysis_pipeline(
         "memoryUsageMb": round(current_mem / 1024 / 1024, 1),
         "peakMemoryMb": round(peak_mem / 1024 / 1024, 1),
         "analysisEngine": _ANALYSIS_ENGINE,
+        "relevanceScoreWarning": relevance_score_warning,
     }
 
 

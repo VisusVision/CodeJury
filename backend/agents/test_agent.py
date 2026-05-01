@@ -13,6 +13,7 @@ import ast
 import json
 
 from backend.agents.base import BaseAgent, build_llm_user_suffix, format_assignment_context_for_prompt
+from backend.agents.json_output_schema import TEST_AGENT_OUTPUT_SCHEMA
 from backend.agents.assignment_alignment import (
     BRIEF_MIN_LEN,
     alignment_summary_tr,
@@ -73,6 +74,8 @@ class TestAgent(BaseAgent):
             source_code,
             language,
             input_data.get("assignment_description") or "",
+            rubric_criteria=input_data.get("faculty_rubric_criteria"),
+            task_alignment=input_data.get("task_alignment"),
         )
 
         truncated = self._truncate_code(source_code, max_lines=150)
@@ -108,6 +111,7 @@ class TestAgent(BaseAgent):
             system_prompt=_TEST_SYSTEM_PROMPT,
             user_prompt=user_prompt,
             required_keys=["compilation_success", "score"],
+            output_json_schema=TEST_AGENT_OUTPUT_SCHEMA,
         )
 
         # Sandbox-olgusal alanlar: her zaman programatik (hallucinasyonu onler)
@@ -158,9 +162,19 @@ class TestAgent(BaseAgent):
         source_code: str,
         language: str,
         assignment_description: str = "",
+        rubric_criteria: list | None = None,
+        task_alignment: dict | None = None,
     ) -> dict:
         brief_raw = (assignment_description or "").strip()
-        align_f, align_rs = compute_brief_code_alignment(brief_raw, source_code)
+        if isinstance(task_alignment, dict) and "factor" in task_alignment:
+            align_f = float(task_alignment["factor"])
+            align_rs = list(task_alignment.get("reasons", []))
+        else:
+            align_f, align_rs = compute_brief_code_alignment(
+                brief_raw,
+                source_code,
+                rubric_criteria=rubric_criteria,
+            )
 
         def _finish(d: dict) -> dict:
             d["brief_code_alignment_factor"] = align_f

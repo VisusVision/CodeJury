@@ -90,6 +90,12 @@ Rules:
 - The numeric field brief_code_alignment (0–1) in the compact hint is programmatic: if it is below
   ~0.45, treat functionality / task fit as largely failed even when the sandbox run succeeded; do not
   award high functionality on correctness of an unrelated program.
+- If brief_alignment_flags in the compact hint is non-empty, treat the submission as **off-topic /
+  wrong deliverable** unless evidence proves otherwise. Say so clearly in summary and weaknesses
+  (e.g. code addresses a different problem than the brief).
+- When compact.llm_task_relevance_skipped is false and llm_task_relevance_factor is present: values
+  near 0 mean the automated relevance model judged a serious topic mismatch; align summary and
+  penalties with brief_code_alignment and brief_alignment_flags.
 
 Reply with ONLY this JSON shape, no other text:
 {
@@ -120,6 +126,10 @@ Rules:
   (e.g. scope/requirements/correctness rows).
 - Use brief_code_alignment in the compact hint (0–1): if below ~0.45 and the brief is on record, cap points on
   rows about correctness, scope, or deliverables unless the code clearly matches the brief.
+- If brief_alignment_flags is non-empty, the rubric row names/descriptions still define the **intended
+  task**. Treat the submission as irrelevant / wrong-topic when the code clearly implements a different
+  domain; say so in summary and in justifications for scope or correctness rows (do not praise unrelated work).
+- When llm_task_relevance_skipped is false and llm_task_relevance_factor is low, echo topic mismatch in summary.
 
 Reply with ONLY this JSON shape:
 {
@@ -141,7 +151,7 @@ class MasterEvaluatorAgent(BaseAgent):
         report_language = input_data.get("report_language") or "tr"
         faculty = normalize_faculty_rubric_criteria(input_data.get("faculty_rubric_criteria"))
 
-        programmatic = self._programmatic_analysis(input_data)
+        programmatic = self._programmatic_analysis(input_data, faculty_rubric=faculty)
         compact = {
             "core_weighted_suggestion": programmatic["final_score"],
             "brief_code_alignment": round(float(programmatic.get("brief_alignment_factor", 1.0)), 3),
@@ -153,6 +163,12 @@ class MasterEvaluatorAgent(BaseAgent):
             "strengths": programmatic.get("strengths", [])[:4],
             "weaknesses": programmatic.get("weaknesses", [])[:4],
         }
+        task_meta_in = input_data.get("task_alignment")
+        if isinstance(task_meta_in, dict):
+            compact["llm_task_relevance_factor"] = task_meta_in.get("llm_factor")
+            compact["llm_task_relevance_skipped"] = bool(task_meta_in.get("llm_skipped", True))
+            compact["task_domain_guess"] = task_meta_in.get("task_domain_guess")
+            compact["submission_domain_guess"] = task_meta_in.get("submission_domain_guess")
 
         brief = format_assignment_context_for_prompt(input_data.get("assignment_description"))
 
@@ -292,7 +308,15 @@ class MasterEvaluatorAgent(BaseAgent):
         reasons = programmatic.get("brief_alignment_reasons", [])
         reason_text = alignment_summary_tr(reasons if isinstance(reasons, list) else [])
         if not reason_text:
-            reason_text = "Teslim edilen kod ödev açıklamasıyla yeterince örtüşmüyor."
+            reason_text = (
+                "Teslim, ödev açıklaması ve rubrik kriterleriyle örtüşmüyor; "
+                "kod hedef görevi karşılamıyor olabilir (alakasız veya yanlış teslim)."
+            )
+        expl_guard = programmatic.get("llm_relevance_explanation")
+        if expl_guard and str(expl_guard).strip():
+            extra = str(expl_guard).strip()
+            if extra not in reason_text:
+                reason_text = f"{reason_text} LLM görev uyumu: {extra}"
 
         raw_bd = llm_result.get("rubric_breakdown")
         if isinstance(raw_bd, list):
@@ -403,14 +427,28 @@ class MasterEvaluatorAgent(BaseAgent):
         )
         llm_result["final_score"] = max(0.0, min(100.0, float(llm_result["final_score"])))
 
-    def _programmatic_analysis(self, input_data: dict) -> dict:
+    def _programmatic_analysis(
+        self,
+        input_data: dict,
+        *,
+        faculty_rubric: list[dict[str, Any]] | None = None,
+    ) -> dict:
         """Agirlikli cekirdek ve ozetler -- yalnizca LLM prompt ipucu."""
         evidence = input_data.get("evidence", {})
         sandbox_result = input_data.get("sandbox_result", {})
         rubric = input_data.get("rubric")
         brief_txt = str(input_data.get("assignment_description") or "").strip()
         source_txt = str(input_data.get("source_code") or "")
-        align_f, align_rs = compute_brief_code_alignment(brief_txt, source_txt)
+        task_meta = input_data.get("task_alignment")
+        if isinstance(task_meta, dict) and "factor" in task_meta:
+            align_f = float(task_meta["factor"])
+            align_rs = list(task_meta.get("reasons", []))
+        else:
+            align_f, align_rs = compute_brief_code_alignment(
+                brief_txt,
+                source_txt,
+                rubric_criteria=faculty_rubric,
+            )
         if not rubric or not isinstance(rubric, dict):
             rubric = dict(_DEFAULT_WEIGHTS)
         else:
@@ -523,6 +561,19 @@ class MasterEvaluatorAgent(BaseAgent):
             hum = alignment_summary_tr(align_rs)
             if hum:
                 weaknesses.append(hum)
+        expl: str | None = None
+        if isinstance(task_meta, dict):
+            expl = task_meta.get("llm_explanation")
+        if (
+            align_f < 0.98
+            and expl
+            and str(expl).strip()
+            and isinstance(task_meta, dict)
+            and not task_meta.get("llm_skipped")
+        ):
+            line = f"Görev uyumu (LLM): {str(expl).strip()}"
+            if line not in weaknesses:
+                weaknesses.append(line)
 
         if any(c.get("severity") in ("high", "critical") for c in validated):
             weaknesses.append("High-severity issues were validated")
@@ -531,6 +582,11 @@ class MasterEvaluatorAgent(BaseAgent):
         tv = evidence.get("total_claims_received", 0)
         vv = evidence.get("total_claims_validated", 0)
         hc = sum(1 for c in validated if c.get("severity") in ("high", "critical"))
+        expl_out: str | None = None
+        if isinstance(task_meta, dict):
+            expl_out = task_meta.get("llm_explanation")
+            if expl_out is not None:
+                expl_out = str(expl_out).strip() or None
         summary = (
             f"Hint final score: {final_score}/100. {vv}/{tv} claims validated ({hc} high / critical). "
             f"Functionality: {fs}/100, Efficiency: {as_}/100, Standards: {ss}/100, Security: {se}/100."
@@ -544,6 +600,7 @@ class MasterEvaluatorAgent(BaseAgent):
             "recommendations": recommendations,
             "brief_alignment_factor": align_f,
             "brief_alignment_reasons": list(align_rs),
+            "llm_relevance_explanation": expl_out,
         }
 
 

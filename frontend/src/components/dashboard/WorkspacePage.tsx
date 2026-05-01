@@ -302,6 +302,7 @@ const WorkspacePage = ({ sidebarTitle, sidebarSubtitle, headerTitle, assignmentI
         executionTimeMs: result.executionTimeMs,
         memoryUsageMb: result.memoryUsageMb,
         peakMemoryMb: result.peakMemoryMb,
+        relevanceScoreWarning: result.relevanceScoreWarning ?? undefined,
       };
       setReport(reportData);
 
