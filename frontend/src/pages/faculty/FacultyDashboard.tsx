@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import {
-  GraduationCap, LogOut, Building2, BookOpen, FileText, Plus, Trash2, Pencil, Settings, CalendarIcon, Clock, Check, Users,
+  GraduationCap, LogOut, Building2, BookOpen, FileText, Plus, Trash2, Pencil, Settings, CalendarIcon, Clock, Users, ShieldCheck, Loader2,
 } from "lucide-react";
 import { format, differenceInDays, differenceInHours } from "date-fns";
 import { tr } from "date-fns/locale";
@@ -73,6 +73,7 @@ const FacultyDashboard = () => {
   const [loading, setLoading] = useState(true);
   const [rubricModal, setRubricModal] = useState<RubricModalState>({ open: false, assignment: null });
   const [chatbotOpen, setChatbotOpen] = useState(false);
+  const [assignmentSubmitting, setAssignmentSubmitting] = useState(false);
 
   // Form states
   const [newDeptName, setNewDeptName] = useState("");
@@ -178,7 +179,7 @@ const FacultyDashboard = () => {
   };
 
   const addAssignment = async () => {
-    if (!newAssignmentName.trim() || !selectedCourseId) return;
+    if (assignmentSubmitting || !newAssignmentName.trim() || !selectedCourseId) return;
     let dueDateISO: string | null = null;
     if (dueDate) {
       const [h, m] = dueTime.split(":").map(Number);
@@ -186,6 +187,7 @@ const FacultyDashboard = () => {
       d.setHours(h, m, 0, 0);
       dueDateISO = d.toISOString();
     }
+    setAssignmentSubmitting(true);
     try {
       const created = await createAssignment({
         name: newAssignmentName.trim(),
@@ -207,6 +209,8 @@ const FacultyDashboard = () => {
       await fetchAll();
     } catch (err: any) {
       toast.error(err.message || "Ödev eklenemedi");
+    } finally {
+      setAssignmentSubmitting(false);
     }
   };
 
@@ -448,6 +452,15 @@ const FacultyDashboard = () => {
                     rows={4}
                     className="px-3 py-2 rounded-lg border border-input bg-background text-foreground text-sm placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring resize-none"
                   />
+                  <div className="flex items-start gap-2 rounded-xl border border-emerald-500/25 bg-emerald-500/10 px-3 py-2 text-xs">
+                    <ShieldCheck className="mt-0.5 h-4 w-4 shrink-0 text-emerald-600" />
+                    <div>
+                      <p className="font-semibold text-emerald-700 dark:text-emerald-300">Ödev Güvenlik Ajanı aktif</p>
+                      <p className="text-muted-foreground">
+                        Kayıt öncesi suç, cinsellik, madde kullanımı, terör gibi riskli içerikleri kontrol eder; diğer ödevleri onaylar.
+                      </p>
+                    </div>
+                  </div>
                   {/* Due date & time */}
                   <div className="flex gap-2">
                     <Popover>
@@ -484,8 +497,20 @@ const FacultyDashboard = () => {
                       />
                     </div>
                   </div>
-                  <button onClick={addAssignment} className="flex items-center gap-1 px-4 py-2 rounded-lg bg-primary text-primary-foreground text-sm font-medium hover:brightness-110 transition-all w-fit">
-                    <Plus className="h-4 w-4" /> Ödev Ekle
+                  <button
+                    onClick={addAssignment}
+                    disabled={assignmentSubmitting}
+                    className="flex items-center gap-1 px-4 py-2 rounded-lg bg-primary text-primary-foreground text-sm font-medium hover:brightness-110 transition-all w-fit disabled:opacity-60 disabled:cursor-not-allowed"
+                  >
+                    {assignmentSubmitting ? (
+                      <>
+                        <Loader2 className="h-4 w-4 animate-spin" /> Ajan kontrol ediyor...
+                      </>
+                    ) : (
+                      <>
+                        <Plus className="h-4 w-4" /> Ödev Ekle
+                      </>
+                    )}
                   </button>
                 </div>
               </div>

@@ -307,6 +307,7 @@ const AssignmentChatbot = ({ open, onClose, courses, teacherId, onCreated }: Pro
       return;
     }
     addMsg({ from: "user", text: "✅ Evet, onaylıyorum" });
+    addMsg({ from: "bot", text: "Ödev Güvenlik Ajanı kayıt öncesi son kontrolü yapıyor..." });
     setSubmitting(true);
     try {
       const [h, m] = time.split(":").map(Number);
