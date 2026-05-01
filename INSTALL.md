@@ -109,7 +109,9 @@ npm run setup:demo      # Platforma göre otomatik kurulum (demo mode)
 
 1. **Önkoşul kontrolü**: Python, Node, npm, Docker, docker compose, Ollama — eksikse renkli uyarı verir, zorunlu olanlar eksikse durur.
 2. **`.env` hazırlığı**: `.env` yoksa `.env.example` dosyasından kopyalar.
-3. **Python venv**: `.venv` oluşturur, `pip install -r requirements.txt` çalıştırır.
+3. **Python venv**: `.venv` oluşturur; **bozuk, eksik veya başka bilgisayardan kopyalanmış**
+   `.venv` algılanırsa silinip yeniden oluşturulur. `python -m pip` ile
+   `requirements.txt` kurulur (taşınabilir Python sürümleriyle uyumlu).
 4. **npm install**: `frontend/` klasöründe çalıştırır.
 5. **Sandbox imajı**: `docker build -t agentgrade-sandbox sandbox-images/agentgrade/`.
 6. **PostgreSQL**: `docker compose up -d postgres`.
@@ -232,6 +234,14 @@ Kurulum sonrası kontrol listesi:
 - Şirket VPN/proxy arkasındaysanız pip için sertifika ayarlayın:
   `pip config set global.cert <path-to-corporate-cert.pem>`.
 
+### `.venv` / `pip` “bulunamadı” veya başka PC’deki Python yoluna referans
+
+- Projeyi USB veya zip ile taşıdıysanız eski `.venv` silinmiş Python’a işaret edebilir.
+  Kurulum scripti bunu çoğu durumda otomatik düzeltir; olmazsa `.venv` klasörünü silip
+  `npm run setup` veya `npm run setup:demo` komutunu tekrar çalıştırın.
+- Betiği **depo kökünden** çalıştırın (`npm run setup` bunu garanti eder) veya doğrudan
+  `scripts/install.ps1` / `bash scripts/install.sh` çağırın; script içi olarak kök dizine geçilir.
+
 ### Sandbox build çok yavaş veya OOM
 
 - `SANDBOX_POOL_SIZE`'ı azaltın (örn. 3) ve Docker Desktop için en az 4 GB RAM ayırın.
@@ -269,7 +279,8 @@ Windows PowerShell için `rm -rf` yerine `Remove-Item -Recurse -Force` kullanın
 
 ## 8. Geliştirici Notları
 
-- Scriptlerin tümü idempotenttir; tekrar çalıştırmak güvenlidir.
+- Scriptlerin tümü idempotenttir; tekrar çalıştırmak güvenlidir. Python tarafında bozuk `.venv`
+  otomatik yenilenir; `pip` çağrıları `python -m pip` ile yapılır.
 - `install.ps1` ve `install.sh` zorunlu önkoşullar yoksa **çıkış kodu 1** döner;
   CI ortamlarında doğrudan kullanılabilir.
 - `check-prereqs.mjs` salt okunur; CI smoke test'i olarak da çalışır.

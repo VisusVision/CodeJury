@@ -39,6 +39,9 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+# Her zaman repo kokunden calis (scripts/ klasorunun ust dizini)
+Set-Location -LiteralPath (Split-Path -Parent $PSScriptRoot)
+
 $script:Warnings = @()
 $script:Errors   = @()
 
@@ -191,20 +194,42 @@ function Install-PythonDeps {
     if (-not $script:PythonCmd) { $script:PythonCmd = "python" }
 
     $venv = Join-Path $PWD ".venv"
+    $venvPy = Join-Path $venv "Scripts\python.exe"
+    $needsNewVenv = $false
+
     if (-not (Test-Path $venv)) {
+        $needsNewVenv = $true
+    } elseif (-not (Test-Path $venvPy)) {
+        Write-Info "Eksik .venv (python.exe yok); yeniden olusturuluyor"
+        Remove-Item -Recurse -Force $venv
+        $needsNewVenv = $true
+    } else {
+        $null = & $venvPy -m pip --version 2>&1
+        if ($LASTEXITCODE -ne 0) {
+            Write-Info "Bozuk veya baska PC'den kopyalanmis .venv; yeniden olusturuluyor"
+            Remove-Item -Recurse -Force $venv
+            $needsNewVenv = $true
+        }
+    }
+
+    if ($needsNewVenv) {
         Write-Info "Sanal ortam (.venv) olusturuluyor"
         & $script:PythonCmd -m venv .venv
         if ($LASTEXITCODE -ne 0) { Write-Err2 "venv olusturulamadi"; return }
+        $venvPy = Join-Path $venv "Scripts\python.exe"
     }
 
-    $pip = Join-Path $venv "Scripts\pip.exe"
-    if (-not (Test-Path $pip)) {
-        Write-Err2 "venv pip bulunamadi: $pip"
+    if (-not (Test-Path $venvPy)) {
+        Write-Err2 "venv python bulunamadi: $venvPy"
         return
     }
 
-    & $pip install --upgrade pip
-    & $pip install -r requirements.txt
+    & $venvPy -m pip install --upgrade pip
+    if ($LASTEXITCODE -ne 0) {
+        Write-Warn2 "pip guncelleme uyarisi; bagimlilik kurulumuna devam ediliyor."
+    }
+
+    & $venvPy -m pip install -r requirements.txt
     if ($LASTEXITCODE -eq 0) { Write-Ok "Python bagimliliklari kuruldu." }
     else                     { Write-Err2 "pip install basarisiz." }
 }
