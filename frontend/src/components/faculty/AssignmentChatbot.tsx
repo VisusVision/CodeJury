@@ -5,7 +5,7 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 import { format } from "date-fns";
 import { tr } from "date-fns/locale";
 import { cn } from "@/lib/utils";
-import { createAssignment, fetchAssignmentSuggestions, type AssignmentSuggestion } from "@/services/api";
+import { createAssignment, fetchAssignmentSuggestions, type AssignmentSuggestion, type AssignmentDifficulty } from "@/services/api";
 import { toast } from "sonner";
 
 interface Course { id: string; name: string; code: string; class_year?: number | null }
@@ -20,6 +20,7 @@ interface Props {
 type Step =
   | "greet"
   | "askHint"
+  | "pickDifficulty"
   | "loadingSuggestions"
   | "pickSuggestion"
   | "rateDesc"
@@ -91,6 +92,7 @@ const AssignmentChatbot = ({ open, onClose, courses, teacherId, onCreated }: Pro
   const [course, setCourse] = useState<Course | null>(null);
   const [hintInput, setHintInput] = useState("");
   const [hintMemo, setHintMemo] = useState("");
+  const [difficultyLevel, setDifficultyLevel] = useState<AssignmentDifficulty | null>(null);
   const [suggestions, setSuggestions] = useState<AssignmentSuggestion[]>([]);
   const [selectedSuggestionId, setSelectedSuggestionId] = useState<string | null>(null);
   const [title, setTitle] = useState("");
@@ -136,6 +138,7 @@ const AssignmentChatbot = ({ open, onClose, courses, teacherId, onCreated }: Pro
         setCourse(null);
         setHintInput("");
         setHintMemo("");
+        setDifficultyLevel(null);
         setSuggestions([]);
         setSelectedSuggestionId(null);
         setTitle("");
@@ -157,19 +160,24 @@ const AssignmentChatbot = ({ open, onClose, courses, teacherId, onCreated }: Pro
     addMsg({ from: "user", text: `${c.name} (${c.code}) - ${c.class_year ? `${c.class_year}. sınıf` : "Genel"}` });
     addMsg({
       from: "bot",
-      text: "Harika seçim! 🎯 Hangi konu ya da kavram üzerinde çalışmak istersiniz? Birkaç anahtar kelime yeter (ör: linked list, dosya sistemi, REST API).",
+      text: 'Harika seçim! 🎯 Hangi konu üzerinde çalışmak istersiniz? (örn. matematik, linked list). Konuyu yazdıktan sonra **kolay / orta / zor** seçmenizi isteyeceğim.',
     });
     setStep("askHint");
   };
 
-  const loadSuggestions = async (hint: string) => {
+  const loadSuggestions = async (hint: string, difficulty: AssignmentDifficulty, preferFresh = false) => {
     setStep("loadingSuggestions");
     setSuggestions([]);
     setSelectedSuggestionId(null);
     addMsg({ from: "bot", text: "Sizin için yapay zekâdan ödev önerileri alıyorum... ✨" });
     try {
       const fullHint = formatCourseHint(course, hint);
-      const { suggestions: list } = await fetchAssignmentSuggestions(fullHint || undefined, 5);
+      const { suggestions: list } = await fetchAssignmentSuggestions(
+        fullHint || undefined,
+        5,
+        difficulty,
+        preferFresh,
+      );
       setSuggestions(list);
       if (!list.length) {
         addMsg({ from: "bot", text: "Üzgünüm, öneri üretemedim. İpucunuzu biraz daha detaylandırır mısınız?" });
@@ -186,6 +194,13 @@ const AssignmentChatbot = ({ open, onClose, courses, teacherId, onCreated }: Pro
     }
   };
 
+  const handleDifficultyPick = (d: AssignmentDifficulty) => {
+    setDifficultyLevel(d);
+    const label = d === "easy" ? "🟢 Kolay" : d === "medium" ? "🟡 Orta" : "🔴 Zor";
+    addMsg({ from: "user", text: label });
+    void loadSuggestions(hintMemo, d);
+  };
+
   const handleHintSubmit = () => {
     const text = hintInput.trim();
     if (!text) return;
@@ -199,16 +214,32 @@ const AssignmentChatbot = ({ open, onClose, courses, teacherId, onCreated }: Pro
       nextHint = text;
     } else {
       nextHint = `${previous}, ${text}`;
-      addMsg({ from: "bot", text: `İpucunu güncelliyorum: "${nextHint}". Yeni öneriler hazırlanıyor…` });
+      addMsg({
+        from: "bot",
+        text:
+          difficultyLevel != null
+            ? `İpucunu güncelliyorum: "${nextHint}". Yeni öneriler hazırlanıyor…`
+            : `İpucunu güncelliyorum: "${nextHint}". Tekrar zorluk seçin.`,
+      });
     }
     setHintMemo(nextHint);
-    void loadSuggestions(nextHint);
+
+    if (!difficultyLevel) {
+      addMsg({
+        from: "bot",
+        text:
+          "**Zorluk düzeyi:** Kolay seçersen gerçekten kısıtlı bir ödev (tek dosya / birkaç kısa fonksiyon) üretilir; orta tipik bir ödev; zor çok parçalı ve daha seçici kabul kriterleri ister. Aşağıdan birini seçin.",
+      });
+      setStep("pickDifficulty");
+      return;
+    }
+    void loadSuggestions(nextHint, difficultyLevel);
   };
 
   const refreshSuggestions = () => {
     addMsg({ from: "user", text: "🔁 Yeni öneriler" });
-    addMsg({ from: "bot", text: "Aynı ipucuyla yeni 5 öneri hazırlıyorum…" });
-    void loadSuggestions(hintMemo);
+    addMsg({ from: "bot", text: "Aynı ipucu ve zorlukla yeni 5 öneri hazırlıyorum…" });
+    void loadSuggestions(hintMemo, difficultyLevel ?? "medium", true);
   };
 
   const handlePickSuggestion = (s: AssignmentSuggestion) => {
@@ -334,6 +365,48 @@ const AssignmentChatbot = ({ open, onClose, courses, teacherId, onCreated }: Pro
             </div>
           </div>
         ))}
+
+        {step === "pickDifficulty" && (
+          <div className="flex justify-start animate-fade-in">
+            <div className="max-w-[92%] w-full rounded-2xl rounded-bl-sm border border-border bg-card shadow-sm p-3 space-y-2">
+              <p className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground flex items-center gap-1">
+                <Sparkles className="h-3 w-3 text-primary" /> Zorluk
+              </p>
+              <div className="flex flex-col gap-2">
+                <button
+                  type="button"
+                  onClick={() => handleDifficultyPick("easy")}
+                  className="w-full text-left rounded-xl border border-emerald-500/35 bg-emerald-500/10 px-3 py-2.5 hover:bg-emerald-500/15 transition-colors"
+                >
+                  <span className="text-xs font-semibold text-emerald-800 dark:text-emerald-200">Kolay</span>
+                  <p className="text-[11px] text-muted-foreground mt-0.5 leading-snug">
+                    Küçük kapsam — birkaç kısa fonksiyon, basit matematik/tekrar kodu (örn. factorial, küçük N).
+                  </p>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleDifficultyPick("medium")}
+                  className="w-full text-left rounded-xl border border-amber-500/40 bg-amber-500/10 px-3 py-2.5 hover:bg-amber-500/15 transition-colors"
+                >
+                  <span className="text-xs font-semibold text-amber-900 dark:text-amber-100">Orta</span>
+                  <p className="text-[11px] text-muted-foreground mt-0.5 leading-snug">
+                    Tipik homework — birkaç modül fonksiyon veya küçük sınıf yapısı, biraz veri yapısı veya nümerik adım.
+                  </p>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleDifficultyPick("hard")}
+                  className="w-full text-left rounded-xl border border-red-500/35 bg-red-500/10 px-3 py-2.5 hover:bg-red-500/15 transition-colors"
+                >
+                  <span className="text-xs font-semibold text-red-900 dark:text-red-100">Zor</span>
+                  <p className="text-[11px] text-muted-foreground mt-0.5 leading-snug">
+                    Çok parçalı — kenar örnekler, ek senaryolar, karşılaştırmalı yöntem veya daha ağır algoritma beklentisi.
+                  </p>
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
 
         {step === "loadingSuggestions" && (
           <div className="flex justify-start animate-fade-in">
@@ -527,6 +600,7 @@ const AssignmentChatbot = ({ open, onClose, courses, teacherId, onCreated }: Pro
                 type="button"
                 onClick={() => {
                   setHintMemo("");
+                  setDifficultyLevel(null);
                   setSuggestions([]);
                   setSelectedSuggestionId(null);
                   addMsg({ from: "bot", text: "İpucunu sıfırladım. Yeni baştan konu yaz, lütfen." });
