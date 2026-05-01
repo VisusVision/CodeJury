@@ -17,6 +17,11 @@
 
 set -uo pipefail
 
+# Her zaman repo kokunden calis (scripts/ bir ust dizin)
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+cd "$REPO_ROOT" || { echo "Hata: repo kokune gidilemedi: $REPO_ROOT" >&2; exit 1; }
+
 # Renkler
 C_CYAN='\033[36m'
 C_GREEN='\033[32m'
@@ -177,23 +182,58 @@ set_demo_mode() {
 # 3) Bagimliliklar
 # ---------------------------------------------------------------------------
 
+# Unix venv: .venv/bin/python | Windows venv (Git Bash): .venv/Scripts/python.exe
+venv_python_path() {
+    if [ -x ".venv/bin/python" ]; then
+        printf '%s' ".venv/bin/python"
+    elif [ -x ".venv/Scripts/python.exe" ]; then
+        printf '%s' ".venv/Scripts/python.exe"
+    else
+        printf '%s' ""
+    fi
+}
+
+venv_needs_recreate() {
+    local vp
+    vp="$(venv_python_path)"
+    if [ -z "$vp" ]; then
+        return 0
+    fi
+    if ! "$vp" -m pip --version >/dev/null 2>&1; then
+        return 0
+    fi
+    return 1
+}
+
 install_python_deps() {
     step "Python bagimliliklari kuruluyor (requirements.txt)"
     [ -z "$PYTHON_CMD" ] && PYTHON_CMD="python3"
-    if [ ! -d ".venv" ]; then
+
+    recreate_venv() {
         info "Sanal ortam (.venv) olusturuluyor"
         if ! "$PYTHON_CMD" -m venv .venv; then
             err "venv olusturulamadi"
-            return
+            return 1
         fi
+        return 0
+    }
+
+    if [ ! -d ".venv" ]; then
+        recreate_venv || return
+    elif venv_needs_recreate; then
+        warn "Bozuk, eksik veya baska makineden kopyalanmis .venv; yeniden olusturuluyor"
+        rm -rf .venv
+        recreate_venv || return
     fi
-    PIP=".venv/bin/pip"
-    if [ ! -x "$PIP" ]; then
-        err "venv pip bulunamadi: $PIP"
+
+    VENV_PY="$(venv_python_path)"
+    if [ -z "$VENV_PY" ] || [ ! -x "$VENV_PY" ]; then
+        err "venv python bulunamadi (.venv/bin/python veya Scripts/python.exe)"
         return
     fi
-    "$PIP" install --upgrade pip
-    if "$PIP" install -r requirements.txt; then
+
+    "$VENV_PY" -m pip install --upgrade pip || warn "pip guncelleme uyarisi; devam ediliyor."
+    if "$VENV_PY" -m pip install -r requirements.txt; then
         ok "Python bagimliliklari kuruldu."
     else
         err "pip install basarisiz."
