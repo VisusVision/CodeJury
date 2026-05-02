@@ -216,6 +216,18 @@ class MasterEvaluatorAgent(BaseAgent):
                 raise LLMInferenceError("[master_evaluator] rubric_breakdown gecersiz (faculty mode).")
             self._finalize_faculty_rubric_output(llm_result, faculty)
             self._apply_brief_alignment_guard(llm_result, programmatic, faculty_mode=True)
+            self._apply_runtime_guard(
+                llm_result,
+                input_data.get("sandbox_result", {}),
+                source_code=str(input_data.get("source_code") or ""),
+                language=str(input_data.get("language") or "python"),
+                faculty_mode=True,
+            )
+            self._apply_security_guard(
+                llm_result,
+                input_data.get("security", {}),
+                faculty_mode=True,
+            )
             return llm_result
 
         user_prompt = (
@@ -256,6 +268,18 @@ class MasterEvaluatorAgent(BaseAgent):
         self._recompute_default_final_score(llm_result)
 
         self._apply_brief_alignment_guard(llm_result, programmatic, faculty_mode=False)
+        self._apply_runtime_guard(
+            llm_result,
+            input_data.get("sandbox_result", {}),
+            source_code=str(input_data.get("source_code") or ""),
+            language=str(input_data.get("language") or "python"),
+            faculty_mode=False,
+        )
+        self._apply_security_guard(
+            llm_result,
+            input_data.get("security", {}),
+            faculty_mode=False,
+        )
         return llm_result
 
     @staticmethod
@@ -515,6 +539,206 @@ class MasterEvaluatorAgent(BaseAgent):
             weaknesses = []
         if reason_text not in weaknesses:
             weaknesses.insert(0, reason_text)
+        llm_result["weaknesses"] = weaknesses
+
+    @classmethod
+    def _apply_runtime_guard(
+        cls,
+        llm_result: dict[str, Any],
+        sandbox_result: dict[str, Any],
+        *,
+        source_code: str = "",
+        language: str = "python",
+        faculty_mode: bool,
+    ) -> None:
+        """Runtime facts are hard grading constraints, independent of LLM optimism."""
+        if not isinstance(sandbox_result, dict) or not sandbox_result:
+            return
+
+        compilation_ok = bool(sandbox_result.get("compilation_success", True))
+        exit_code = sandbox_result.get("exit_code", 0)
+        timed_out = bool(sandbox_result.get("timed_out") or sandbox_result.get("timeout"))
+        memory_exceeded = bool(sandbox_result.get("memory_exceeded"))
+
+        cap: float | None = None
+        reason = ""
+        if not compilation_ok:
+            cap = 20.0
+            reason = "Derleme basarisiz oldugu icin nihai not yuksek olamaz."
+        elif timed_out:
+            from backend.agents.test_agent import _looks_like_service_program
+
+            if _looks_like_service_program(source_code, language):
+                return
+            cap = 35.0
+            reason = "Program zaman asimina dustugu icin calisabilirlik ciddi sekilde basarisiz."
+        elif memory_exceeded:
+            cap = 35.0
+            reason = "Program bellek limitini astigi icin calisabilirlik ciddi sekilde basarisiz."
+        else:
+            try:
+                exit_i = int(exit_code)
+            except (TypeError, ValueError):
+                exit_i = 0
+            if exit_i != 0:
+                from backend.agents.test_agent import _looks_like_cli_program, _looks_like_cli_usage_error
+
+                if _looks_like_cli_program(source_code, language) and _looks_like_cli_usage_error(
+                    str(sandbox_result.get("stderr") or "")
+                ):
+                    return
+                cap = 55.0
+                reason = f"Program runtime hatasiyla sonlandi (exit code {exit_i}); calisabilirlik puani sinirlandi."
+
+        if cap is None:
+            return
+
+        raw_bd = llm_result.get("rubric_breakdown")
+        if isinstance(raw_bd, list):
+            for row in raw_bd:
+                if not isinstance(row, dict):
+                    continue
+                label = str(row.get("label", row.get("criterion", ""))).lower()
+                runtime_sensitive = any(
+                    token in label
+                    for token in (
+                        "calis",
+                        "çalis",
+                        "correct",
+                        "dogru",
+                        "test",
+                        "hata",
+                        "kose",
+                        "gereksin",
+                        "islev",
+                        "fonksiyon",
+                        "endpoint",
+                        "api",
+                    )
+                )
+                if not runtime_sensitive:
+                    continue
+                try:
+                    weight = float(row.get("weight", 100))
+                    current = float(row.get("score", 0))
+                except (TypeError, ValueError):
+                    continue
+                if faculty_mode:
+                    row_cap = max(0.0, weight * cap / 100.0)
+                    row["score"] = int(round(min(current, row_cap)))
+                    row["weighted_score"] = float(row["score"])
+                else:
+                    row["score"] = int(round(min(current, cap)))
+                    row["weighted_score"] = round(row["score"] * weight / 100.0, 2)
+                just = str(row.get("justification", "")).strip()
+                row["justification"] = f"{just} Runtime cezasi: {reason}".strip()
+
+        if faculty_mode and isinstance(llm_result.get("rubric_breakdown"), list):
+            total_max = 0
+            total_earned = 0
+            for row in llm_result["rubric_breakdown"]:
+                if not isinstance(row, dict):
+                    continue
+                try:
+                    total_max += int(round(float(row.get("weight", 0))))
+                    total_earned += int(round(float(row.get("score", 0))))
+                except (TypeError, ValueError):
+                    continue
+            guarded = round(100.0 * total_earned / total_max, 1) if total_max > 0 else 0.0
+        else:
+            cls._recompute_default_final_score(llm_result)
+            try:
+                guarded = float(llm_result.get("final_score", 0))
+            except (TypeError, ValueError):
+                guarded = 0.0
+
+        llm_result["final_score"] = round(max(0.0, min(float(cap), guarded)), 1)
+        weaknesses = llm_result.get("weaknesses")
+        if not isinstance(weaknesses, list):
+            weaknesses = []
+        if reason and reason not in weaknesses:
+            weaknesses.insert(0, reason)
+        llm_result["weaknesses"] = weaknesses
+
+    @classmethod
+    def _apply_security_guard(
+        cls,
+        llm_result: dict[str, Any],
+        security_result: dict[str, Any],
+        *,
+        faculty_mode: bool,
+    ) -> None:
+        """Critical security findings should materially constrain the final grade."""
+        if not isinstance(security_result, dict) or not security_result:
+            return
+        risk = str(security_result.get("risk_level", "")).lower()
+        try:
+            critical = int(security_result.get("critical_count", 0) or 0)
+            high = int(security_result.get("high_count", 0) or 0)
+            sec_score = float(security_result.get("score", 100) or 100)
+        except (TypeError, ValueError):
+            critical = 0
+            high = 0
+            sec_score = 100.0
+
+        cap: float | None = None
+        if risk == "critical" or critical > 0 or sec_score <= 55:
+            cap = 65.0
+            reason = "Kritik guvenlik riski tespit edildigi icin nihai not sinirlandi."
+        elif risk == "high" or high > 0 or sec_score <= 70:
+            cap = 78.0
+            reason = "Yuksek guvenlik riski tespit edildigi icin nihai not sinirlandi."
+        else:
+            return
+
+        raw_bd = llm_result.get("rubric_breakdown")
+        if isinstance(raw_bd, list):
+            for row in raw_bd:
+                if not isinstance(row, dict):
+                    continue
+                label = str(row.get("label", row.get("criterion", ""))).lower()
+                if not any(token in label for token in ("guven", "güven", "security", "risk")):
+                    continue
+                try:
+                    weight = float(row.get("weight", 100))
+                    current = float(row.get("score", 0))
+                except (TypeError, ValueError):
+                    continue
+                if faculty_mode:
+                    row_cap = max(0.0, weight * sec_score / 100.0)
+                    row["score"] = int(round(min(current, row_cap)))
+                    row["weighted_score"] = float(row["score"])
+                else:
+                    row["score"] = int(round(min(current, sec_score)))
+                    row["weighted_score"] = round(row["score"] * weight / 100.0, 2)
+                just = str(row.get("justification", "")).strip()
+                row["justification"] = f"{just} Guvenlik cezasi: {reason}".strip()
+
+        if faculty_mode and isinstance(llm_result.get("rubric_breakdown"), list):
+            total_max = 0
+            total_earned = 0
+            for row in llm_result["rubric_breakdown"]:
+                if not isinstance(row, dict):
+                    continue
+                try:
+                    total_max += int(round(float(row.get("weight", 0))))
+                    total_earned += int(round(float(row.get("score", 0))))
+                except (TypeError, ValueError):
+                    continue
+            guarded = round(100.0 * total_earned / total_max, 1) if total_max > 0 else 0.0
+        else:
+            cls._recompute_default_final_score(llm_result)
+            try:
+                guarded = float(llm_result.get("final_score", 0))
+            except (TypeError, ValueError):
+                guarded = 0.0
+
+        llm_result["final_score"] = round(max(0.0, min(float(cap), guarded)), 1)
+        weaknesses = llm_result.get("weaknesses")
+        if not isinstance(weaknesses, list):
+            weaknesses = []
+        if reason not in weaknesses:
+            weaknesses.insert(0, reason)
         llm_result["weaknesses"] = weaknesses
 
     @staticmethod

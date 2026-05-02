@@ -136,6 +136,8 @@ def _simulate_sandbox(source_code: str) -> dict:
     import subprocess
     import sys
     import os
+    import tempfile
+    from pathlib import Path
 
     result = {**_FALLBACK}
 
@@ -148,11 +150,14 @@ def _simulate_sandbox(source_code: str) -> dict:
         return result
 
     try:
-        proc = subprocess.run(
-            [sys.executable, "-c", source_code],
-            capture_output=True, text=True, timeout=10,
-            cwd=os.path.dirname(__file__) or ".",
-        )
+        with tempfile.TemporaryDirectory(prefix="agentgrade-sim-") as tmp:
+            script_path = Path(tmp) / "submission.py"
+            script_path.write_text(source_code, encoding="utf-8")
+            proc = subprocess.run(
+                [sys.executable, str(script_path)],
+                capture_output=True, text=True, timeout=10,
+                cwd=tmp or os.path.dirname(__file__) or ".",
+            )
         result["stdout"]    = proc.stdout
         result["stderr"]    = proc.stderr
         result["exit_code"] = proc.returncode

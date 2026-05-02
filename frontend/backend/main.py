@@ -359,6 +359,8 @@ Rules:
 - The sum of all max_score values MUST equal exactly 100.
 - Tailor names and descriptions to the assignment title and description (e.g. OOP, data structures, APIs, file I/O, tests).
 - If the assignment mentions unit tests, pytest, unittest, or testing, include a dedicated testing criterion.
+- Do NOT invent presentation, slide, poster, video, or visual-design criteria unless the assignment explicitly asks for those deliverables.
+- Every criterion should grade the submitted software/code artifact: correctness, requirements, tests, error handling, data model, algorithmic efficiency, style, documentation, security, or maintainability.
 """
 
 
@@ -390,6 +392,62 @@ _RUBRIC_FALLBACK_NAMES = [
     "Çıktı Doğruluğu",
     "Genel Kalite",
 ]
+
+_RUBRIC_PRESENTATION_TOKENS = (
+    "sunum",
+    "slayt",
+    "slide",
+    "presentation",
+    "poster",
+    "video",
+    "gorsel",
+    "görsel",
+    "resim",
+)
+
+
+def _assignment_allows_presentation_criteria(title: str, description: str) -> bool:
+    blob = f"{title}\n{description}".lower()
+    return any(token in blob for token in _RUBRIC_PRESENTATION_TOKENS)
+
+
+def _sanitize_rubric_scope(
+    criteria: list[dict[str, Any]],
+    *,
+    assignment_title: str,
+    assignment_description: str,
+) -> list[dict[str, Any]]:
+    """Remove LLM-invented non-code deliverables from programming rubrics."""
+    if _assignment_allows_presentation_criteria(assignment_title, assignment_description):
+        return criteria
+
+    used_names = {str(c.get("name", "")).strip().lower() for c in criteria}
+    fallback_iter = iter(_RUBRIC_FALLBACK_NAMES)
+    sanitized: list[dict[str, Any]] = []
+    for criterion in criteria:
+        name = str(criterion.get("name", "")).strip()
+        desc = str(criterion.get("description", "")).strip()
+        blob = f"{name}\n{desc}".lower()
+        if any(token in blob for token in _RUBRIC_PRESENTATION_TOKENS):
+            replacement = next(
+                (
+                    candidate
+                    for candidate in fallback_iter
+                    if candidate.lower() not in used_names
+                ),
+                "Gereksinimlere Uyum",
+            )
+            used_names.add(replacement.lower())
+            criterion = {
+                **criterion,
+                "name": replacement,
+                "description": (
+                    f"{replacement} kriteri, odevin kod tabanli tesliminde beklenen kapsam, "
+                    "dogruluk ve kalite gereksinimlerinin ne kadar karsilandigini olcer."
+                ),
+            }
+        sanitized.append(criterion)
+    return sanitized
 
 
 def _clamp_rubric_count(value: Any) -> int:
@@ -1783,6 +1841,7 @@ async def run_analysis_pipeline(
         "guideline": gl,
         "security": sc,
         "report_language": "tr",
+        "language": language,
         "assignment_description": brief,
         "task_alignment": task_alignment,
     }
@@ -2810,6 +2869,11 @@ async def suggest_rubric(req: RubricSuggestionRequest):
         )
     try:
         criteria = _criteria_from_llm_payload(result, criterion_count)
+        criteria = _sanitize_rubric_scope(
+            criteria,
+            assignment_title=title,
+            assignment_description=desc,
+        )
     except ValueError as exc:
         raise HTTPException(
             status_code=502,

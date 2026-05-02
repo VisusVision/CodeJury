@@ -281,7 +281,11 @@ def _capability_match_signal(
             {"class ", "node", "dugum", "inorder", "preorder", "postorder", "left", "right", "sol", "sag"},
         ),
         (
-            {"test", "pytest", "unittest", "unit"},
+            {"liste", "list", "veri", "data", "istatistik", "ortalama", "average", "flatten", "donustur", "dönüştür"},
+            {"list[", "list(", "append(", "extend(", "sum(", "len(", "flatten", "average", "ortalama"},
+        ),
+        (
+            {"pytest", "unittest", "unit test", "otomatik test"},
             {"assert ", "pytest", "unittest", "test_"},
         ),
     ]
