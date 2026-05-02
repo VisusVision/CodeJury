@@ -15,6 +15,9 @@ interface SettingsPanelProps {
   onTeacherUpdate: (teacher: Teacher) => void;
 }
 
+const getErrorMessage = (error: unknown, fallback: string) =>
+  error instanceof Error ? error.message : fallback;
+
 const SettingsPanel = ({ teacher, onTeacherUpdate }: SettingsPanelProps) => {
   const [currentEmail, setCurrentEmail] = useState("");
   const [newEmail, setNewEmail] = useState("");
@@ -38,8 +41,8 @@ const SettingsPanel = ({ teacher, onTeacherUpdate }: SettingsPanelProps) => {
       setCurrentEmail(updated.email);
       toast.success("E-posta başarıyla güncellendi.");
       setNewEmail("");
-    } catch (err: any) {
-      toast.error(err.message || "E-posta güncellenemedi");
+    } catch (err: unknown) {
+      toast.error(getErrorMessage(err, "E-posta güncellenemedi"));
     } finally {
       setSavingEmail(false);
     }
@@ -65,8 +68,8 @@ const SettingsPanel = ({ teacher, onTeacherUpdate }: SettingsPanelProps) => {
       setCurrentPassword("");
       setNewPassword("");
       setConfirmPassword("");
-    } catch (err: any) {
-      toast.error(err.message || "Şifre güncellenemedi");
+    } catch (err: unknown) {
+      toast.error(getErrorMessage(err, "Şifre güncellenemedi"));
     } finally {
       setSavingPassword(false);
     }

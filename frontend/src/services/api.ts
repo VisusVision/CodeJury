@@ -598,7 +598,11 @@ export async function updateRubricStatusByAssignment(assignmentId: string, statu
   return response.json();
 }
 
-export async function suggestRubric(payload: { assignment_title: string; assignment_description: string }): Promise<{ criteria: RubricCriterion[] }> {
+export async function suggestRubric(payload: {
+  assignment_title: string;
+  assignment_description: string;
+  criterion_count?: number;
+}): Promise<{ criteria: RubricCriterion[] }> {
   const response = await fetch(`${API_BASE_URL}/api/rubric/suggest`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },

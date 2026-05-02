@@ -7,6 +7,7 @@ ajan `LLMInferenceError` firlatirir; programatik fallback yoktur.
 """
 
 import logging
+import json
 from abc import ABC, abstractmethod
 from typing import Any
 
@@ -129,6 +130,7 @@ class BaseAgent(ABC):
         output_json_schema: dict | None = None,
         temperature: float = 0.3,
         num_predict: int | None = None,
+        use_cache: bool = True,
     ) -> dict:
         """Ollama uzerinden JSON yanit alir; basarisizda `LLMInferenceError` firlatirir."""
         if not settings.ollama_enabled:
@@ -139,8 +141,10 @@ class BaseAgent(ABC):
             result = await chat_json(
                 system_prompt=system_prompt,
                 user_prompt=user_prompt,
+                schema_hint=output_json_schema,
                 temperature=temperature,
                 num_predict=num_predict,
+                use_cache=use_cache,
             )
         except Exception as exc:
             logger.warning("[%s] LLM cagrisi basarisiz: %s", self.name, exc)
@@ -150,6 +154,7 @@ class BaseAgent(ABC):
             raise LLMInferenceError(f"[{self.name}] LLM bos veya cozumlenemeyen yanit dondu.")
 
         if required_keys:
+            result = self._unwrap_required_response(result, required_keys)
             # 1 ilk çağrı + en fazla 3 onarım çağrısı (eksik üst seviye anahtarlar).
             max_repair_attempts = 3
             for attempt in range(1, max_repair_attempts + 1):
@@ -170,14 +175,17 @@ class BaseAgent(ABC):
                     f"missing these required top-level keys: {', '.join(missing)}.\n"
                     "Return the complete JSON object again, with ALL required top-level keys present. "
                     "Do not omit arrays; use [] when there are no items. Do not omit counts; use 0 when needed. "
-                    "Return ONLY valid JSON."
+                    "Return ONLY valid JSON.\n"
+                    f"Use this JSON skeleton exactly (fill values):\n{self._required_keys_scaffold(required_keys)}"
                 )
                 try:
                     repaired = await chat_json(
                         system_prompt=system_prompt,
                         user_prompt=repair_prompt,
+                        schema_hint=output_json_schema,
                         temperature=0.1,
                         num_predict=num_predict,
+                        use_cache=False,
                     )
                 except Exception as exc:
                     logger.warning(
@@ -188,7 +196,7 @@ class BaseAgent(ABC):
                     )
                     repaired = None
                 if isinstance(repaired, dict):
-                    result = {**result, **repaired}
+                    result = self._unwrap_required_response({**result, **repaired}, required_keys)
             missing = [k for k in required_keys if k not in result]
             if missing:
                 raise LLMInferenceError(
@@ -227,8 +235,10 @@ class BaseAgent(ABC):
                     repaired = await chat_json(
                         system_prompt=system_prompt,
                         user_prompt=repair_prompt,
+                        schema_hint=output_json_schema,
                         temperature=0.1,
                         num_predict=num_predict,
+                        use_cache=False,
                     )
                 except Exception as exc:
                     logger.warning(
@@ -239,9 +249,79 @@ class BaseAgent(ABC):
                     )
                     repaired = None
                 if isinstance(repaired, dict):
-                    result = {**result, **repaired}
+                    result = self._unwrap_required_response(
+                        {**result, **repaired},
+                        list(output_json_schema.get("required", [])),
+                    )
 
         return result
+
+    @staticmethod
+    def _unwrap_required_response(result: dict[str, Any], required_keys: list[str]) -> dict[str, Any]:
+        """Use a nested payload if a model wrapped the requested JSON object."""
+        if not isinstance(result, dict) or not required_keys:
+            return result
+        top_matches = sum(1 for key in required_keys if key in result)
+        if top_matches == len(required_keys):
+            return result
+
+        best: dict[str, Any] | None = None
+        best_matches = top_matches
+        stack: list[dict[str, Any]] = []
+        for value in result.values():
+            if isinstance(value, dict):
+                stack.append(value)
+            elif isinstance(value, str):
+                try:
+                    parsed = json.loads(value)
+                except (TypeError, ValueError, json.JSONDecodeError):
+                    parsed = None
+                if isinstance(parsed, dict):
+                    stack.append(parsed)
+        while stack:
+            candidate = stack.pop(0)
+            matches = sum(1 for key in required_keys if key in candidate)
+            if matches > best_matches:
+                best = candidate
+                best_matches = matches
+            for value in candidate.values():
+                if isinstance(value, dict):
+                    stack.append(value)
+                elif isinstance(value, str):
+                    try:
+                        parsed = json.loads(value)
+                    except (TypeError, ValueError, json.JSONDecodeError):
+                        parsed = None
+                    if isinstance(parsed, dict):
+                        stack.append(parsed)
+
+        if best is not None and best_matches >= max(1, top_matches):
+            return {**result, **best}
+        return result
+
+    @staticmethod
+    def _required_keys_scaffold(required_keys: list[str]) -> str:
+        """Deterministic scaffold to stabilize repair prompts for small local models."""
+        keys = set(required_keys or [])
+        if {
+            "final_score",
+            "rubric_breakdown",
+            "summary",
+            "strengths",
+            "weaknesses",
+            "recommendations",
+        }.issubset(keys):
+            return (
+                '{'
+                '"final_score": 0,'
+                '"rubric_breakdown": [{"criterion":"","label":"","weight":0,"score":0,"weighted_score":0,"justification":""}],'
+                '"summary": "",'
+                '"strengths": [],'
+                '"weaknesses": [],'
+                '"recommendations": []'
+                '}'
+            )
+        return "{" + ", ".join(f'"{k}": null' for k in required_keys) + "}"
 
     @staticmethod
     def _truncate_code(code: str, max_lines: int = 300) -> str:

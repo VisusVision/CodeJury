@@ -1,0 +1,408 @@
+from __future__ import annotations
+
+import argparse
+import asyncio
+import importlib.util
+import json
+import os
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
+
+
+ROOT = Path(__file__).resolve().parents[1]
+MAIN_PATH = ROOT / "frontend" / "backend" / "main.py"
+REPORT_PATH = ROOT / "artifacts" / "agent_calibration" / "latest_report.json"
+DEFAULT_TIMEOUT_SECONDS = 420
+
+
+@dataclass(frozen=True)
+class SubmissionCase:
+    label: str
+    file_path: str
+    expected_relevant: bool
+    expected_security_risky: bool = False
+
+
+@dataclass(frozen=True)
+class AssignmentScenario:
+    key: str
+    title: str
+    description: str
+    criterion_count: int
+    submissions: list[SubmissionCase]
+
+
+SCENARIOS: list[AssignmentScenario] = [
+    AssignmentScenario(
+        key="data_clean_api",
+        title="Veri Guzellestirme ve Temizleme",
+        description=(
+            "SQLite tablosu olusturan, POST /clean ve PUT /beautify endpointleri sunan mini bir API "
+            "gelistirin. Hata durumlarinda uygun mesajlar donmeli ve konsola log basilmali."
+        ),
+        criterion_count=10,
+        submissions=[
+            SubmissionCase("uygun", "samples/veri_guzellestirme_temizleme_uygun.py", True),
+            SubmissionCase("alakasiz", "samples/veri_guzellestirme_temizleme_alakasiz.py", False),
+        ],
+    ),
+    AssignmentScenario(
+        key="library_oop",
+        title="Kitap Kutuphanesi Sistemi",
+        description=(
+            "Kitap, uye ve kutuphane siniflariyla OOP tabanli bir odunc alma-iade sistemi yazin. "
+            "Sinif sorumluluklari net ayrilmali, hata durumlari kontrollu ele alinmalidir."
+        ),
+        criterion_count=12,
+        submissions=[
+            SubmissionCase("uygun", "samples/library_system_uygun.py", True),
+            SubmissionCase("alakasiz", "samples/library_system_alakasiz.py", False),
+        ],
+    ),
+    AssignmentScenario(
+        key="bst_assignment",
+        title="Ikili Arama Agaci Uygulamasi",
+        description=(
+            "Ekleme, arama ve dolasim islemlerini (inorder, preorder, postorder) destekleyen "
+            "bir ikili arama agaci sinifi yazin. Kose durumlari ele alinmalidir."
+        ),
+        criterion_count=10,
+        submissions=[
+            SubmissionCase("uygun", "samples/ornek_odev_ikili_agac.py", True),
+            SubmissionCase("alakasiz", "samples/kitap_kutuphanesi_alakasiz.py", False),
+        ],
+    ),
+    AssignmentScenario(
+        key="log_summary_cli",
+        title="Sistem Log Ozetleme Araci",
+        description=(
+            "Bir log dosyasini okuyup seviye bazli ozet cikaracak bir CLI araci gelistirin. "
+            "Bozuk satirlari raporlayin, hata satirlarini ayri listede dondurun ve dosya hatalarini yonetin."
+        ),
+        criterion_count=10,
+        submissions=[
+            SubmissionCase("uygun", "samples/log_ozetleme_uygun.py", True),
+            SubmissionCase("guvensiz_ama_alakali", "samples/log_ozetleme_guvensiz.py", True, True),
+            SubmissionCase("alakasiz", "samples/log_ozetleme_alakasiz.py", False),
+        ],
+    ),
+]
+
+
+def _load_api_main():
+    spec = importlib.util.spec_from_file_location("agentgrade_api_main", MAIN_PATH)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"main.py yuklenemedi: {MAIN_PATH}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _read_text(rel_path: str) -> str:
+    p = ROOT / rel_path
+    return p.read_text(encoding="utf-8")
+
+
+def _build_brief(title: str, description: str) -> str:
+    return f"{title}\n\n{description}".strip()
+
+
+def _extract_security_agent(report: dict[str, Any]) -> dict[str, Any]:
+    agents = report.get("agents", [])
+    if not isinstance(agents, list):
+        return {}
+    for agent in agents:
+        if isinstance(agent, dict) and agent.get("id") == "security":
+            return agent
+    return {}
+
+
+def _evaluate_case(case: SubmissionCase, report: dict[str, Any]) -> dict[str, Any]:
+    align = report.get("taskAlignment", {}) if isinstance(report.get("taskAlignment"), dict) else {}
+    align_factor = float(align.get("factor", 1.0) or 1.0)
+    llm_off_topic = bool(align.get("llm_off_topic"))
+    relevance_warning = bool(report.get("relevanceScoreWarning"))
+    total_score = float(report.get("totalScore", 0) or 0)
+
+    sec = _extract_security_agent(report)
+    sec_score = float(sec.get("score", 0) or 0)
+    sec_summary = str(sec.get("summary", ""))
+    sec_risky_pred = ("HIGH" in sec_summary or "CRITICAL" in sec_summary or sec_score < 70)
+
+    if case.expected_relevant:
+        relevance_ok = align_factor >= 0.55 and not llm_off_topic
+    else:
+        relevance_ok = (align_factor <= 0.30 or llm_off_topic or relevance_warning) and total_score <= 50
+
+    if case.expected_security_risky:
+        security_ok = sec_risky_pred
+    else:
+        security_ok = sec_score >= 70
+
+    return {
+        "total_score": round(total_score, 1),
+        "alignment_factor": round(align_factor, 3),
+        "llm_off_topic": llm_off_topic,
+        "relevance_warning": relevance_warning,
+        "security_score": round(sec_score, 1),
+        "security_summary": sec_summary,
+        "relevance_expectation_ok": relevance_ok,
+        "security_expectation_ok": security_ok,
+        "case_passed": bool(relevance_ok and security_ok),
+    }
+
+
+async def _suggest_rubric(module: Any, scenario: AssignmentScenario) -> list[dict[str, Any]]:
+    req = module.RubricSuggestionRequest(
+        assignment_title=scenario.title,
+        assignment_description=scenario.description,
+        criterion_count=scenario.criterion_count,
+    )
+    out = await asyncio.wait_for(module.suggest_rubric(req), timeout=DEFAULT_TIMEOUT_SECONDS)
+    criteria = out.get("criteria", []) if isinstance(out, dict) else []
+    if not isinstance(criteria, list) or not criteria:
+        raise RuntimeError(f"Rubrik uretilemedi: {scenario.key}")
+    return criteria
+
+
+def _fallback_rubric(module: Any, scenario: AssignmentScenario) -> list[dict[str, Any]]:
+    weights = module._rubric_weights_for_count(int(scenario.criterion_count))
+    out: list[dict[str, Any]] = []
+    for i, w in enumerate(weights):
+        name = module._RUBRIC_FALLBACK_NAMES[i % len(module._RUBRIC_FALLBACK_NAMES)]
+        out.append(
+            {
+                "name": name,
+                "description": (
+                    f"{name} kriteri, {scenario.title} odevinin gereksinimlerini ne kadar "
+                    "dogru ve kaliteli karsiladigini olcer."
+                ),
+                "max_score": int(w),
+            }
+        )
+    return out
+
+
+async def _maybe_create_demo_assignment(
+    module: Any,
+    *,
+    scenario: AssignmentScenario,
+    rubric: list[dict[str, Any]],
+    enabled: bool,
+) -> dict[str, Any] | None:
+    if not enabled:
+        return None
+
+    course_id = "44444444-4444-4444-8444-444444444444"
+    assignment_req = module.AssignmentCreateRequest(
+        course_id=course_id,
+        name=f"Kalibrasyon - {scenario.title}",
+        description=scenario.description,
+        due_date="2026-05-25 23:59",
+    )
+    assignment = await module.create_assignment(assignment_req)
+    assign_id = str(assignment.get("id", "")).strip()
+    if not assign_id:
+        raise RuntimeError(f"Odev kaydi olusmadi: {scenario.key}")
+
+    upsert_req = module.RubricUpsertRequest(
+        assignment_id=assign_id,
+        criteria=rubric,
+        status="approved",
+        created_by="11111111-1111-4111-8111-111111111111",
+    )
+    await module.upsert_rubric(upsert_req)
+    return assignment
+
+
+async def run_suite(
+    *,
+    persist_demo_assignments: bool,
+    scenario_keys: list[str] | None = None,
+    max_scenarios: int | None = None,
+    max_cases_per_scenario: int | None = None,
+    checkpoint_path: Path | None = None,
+) -> dict[str, Any]:
+    os.environ.setdefault("DEMO_MODE", "1")
+    module = _load_api_main()
+
+    selected = list(SCENARIOS)
+    if scenario_keys:
+        wanted = {k.strip() for k in scenario_keys if str(k).strip()}
+        selected = [s for s in selected if s.key in wanted]
+    if max_scenarios and max_scenarios > 0:
+        selected = selected[:max_scenarios]
+
+    results: list[dict[str, Any]] = []
+    total_cases = 0
+    passed_cases = 0
+
+    for scenario in selected:
+        try:
+            rubric = await _suggest_rubric(module, scenario)
+            rubric_source = "llm"
+        except Exception:
+            rubric = _fallback_rubric(module, scenario)
+            rubric_source = "fallback"
+        created_assignment = await _maybe_create_demo_assignment(
+            module,
+            scenario=scenario,
+            rubric=rubric,
+            enabled=persist_demo_assignments,
+        )
+
+        brief = _build_brief(scenario.title, scenario.description)
+        scenario_rows: list[dict[str, Any]] = []
+
+        submissions = list(scenario.submissions)
+        if max_cases_per_scenario and max_cases_per_scenario > 0:
+            submissions = submissions[:max_cases_per_scenario]
+
+        for case in submissions:
+            code = _read_text(case.file_path)
+            try:
+                report = await asyncio.wait_for(
+                    module.run_analysis_pipeline(
+                        Path(case.file_path).name,
+                        code,
+                        assignment_brief=brief,
+                        faculty_rubric_criteria=rubric,
+                    ),
+                    timeout=DEFAULT_TIMEOUT_SECONDS,
+                )
+            except asyncio.TimeoutError:
+                report = {
+                    "totalScore": 0,
+                    "taskAlignment": {"factor": 0.05, "llm_off_topic": False},
+                    "relevanceScoreWarning": "Pipeline timeout.",
+                    "agents": [],
+                }
+            check = _evaluate_case(case, report)
+            total_cases += 1
+            if check["case_passed"]:
+                passed_cases += 1
+
+            scenario_rows.append(
+                {
+                    "label": case.label,
+                    "file_path": case.file_path,
+                    "expected_relevant": case.expected_relevant,
+                    "expected_security_risky": case.expected_security_risky,
+                    "result": check,
+                }
+            )
+
+        results.append(
+            {
+                "scenario_key": scenario.key,
+                "assignment_title": scenario.title,
+                "criterion_count": len(rubric),
+                "rubric_source": rubric_source,
+                "rubric": rubric,
+                "created_assignment": created_assignment,
+                "cases": scenario_rows,
+            }
+        )
+        interim = {
+            "summary": {
+                "total_scenarios": len(selected),
+                "total_cases": total_cases,
+                "passed_cases": passed_cases,
+                "pass_rate": round((passed_cases / total_cases) * 100, 1) if total_cases else 0.0,
+            },
+            "scenarios": results,
+        }
+        if checkpoint_path is not None:
+            _write_checkpoint(interim, checkpoint_path)
+
+    pass_rate = round((passed_cases / total_cases) * 100, 1) if total_cases else 0.0
+    return {
+        "summary": {
+            "total_scenarios": len(selected),
+            "total_cases": total_cases,
+            "passed_cases": passed_cases,
+            "pass_rate": pass_rate,
+        },
+        "scenarios": results,
+    }
+
+
+def _write_checkpoint(data: dict[str, Any], path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _print_console_report(data: dict[str, Any]) -> None:
+    summary = data.get("summary", {})
+    print("\n=== Agent Calibration Suite ===")
+    print(
+        "Scenarios: {0}, Cases: {1}, Passed: {2}, Pass Rate: {3}%".format(
+            summary.get("total_scenarios", 0),
+            summary.get("total_cases", 0),
+            summary.get("passed_cases", 0),
+            summary.get("pass_rate", 0),
+        )
+    )
+    for scenario in data.get("scenarios", []):
+        print(f"\n[{scenario.get('scenario_key')}] {scenario.get('assignment_title')}")
+        print(f"Rubric rows: {scenario.get('criterion_count')}")
+        for case in scenario.get("cases", []):
+            res = case.get("result", {})
+            marker = "PASS" if res.get("case_passed") else "FAIL"
+            print(
+                "- {0:>4} | {1:<22} | score={2:>5} | align={3:>5} | off_topic={4} | sec={5:>5}".format(
+                    marker,
+                    case.get("label", "?"),
+                    res.get("total_score"),
+                    res.get("alignment_factor"),
+                    res.get("llm_off_topic"),
+                    res.get("security_score"),
+                )
+            )
+
+
+async def _amain(args: argparse.Namespace) -> int:
+    report = await run_suite(
+        persist_demo_assignments=args.persist_demo_assignments,
+        scenario_keys=list(args.scenario or []),
+        max_scenarios=args.max_scenarios,
+        max_cases_per_scenario=args.max_cases_per_scenario,
+        checkpoint_path=REPORT_PATH,
+    )
+    _write_checkpoint(report, REPORT_PATH)
+    _print_console_report(report)
+    print(f"\nRapor dosyasi: {REPORT_PATH}")
+    return 0
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="AgentGrade ajan kalibrasyon suite")
+    parser.add_argument(
+        "--persist-demo-assignments",
+        action="store_true",
+        help="Demo store'a odev + rubrik kaydi da acar.",
+    )
+    parser.add_argument(
+        "--scenario",
+        action="append",
+        help="Sadece verilen scenario key'ini calistir (birden fazla kez verilebilir).",
+    )
+    parser.add_argument(
+        "--max-scenarios",
+        type=int,
+        default=None,
+        help="Calistirilacak maksimum senaryo sayisi.",
+    )
+    parser.add_argument(
+        "--max-cases-per-scenario",
+        type=int,
+        default=None,
+        help="Her senaryoda calistirilacak maksimum case sayisi.",
+    )
+    args = parser.parse_args()
+    return asyncio.run(_amain(args))
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -11,6 +11,7 @@ import json
 
 from backend.agents.base import BaseAgent, build_llm_user_suffix, format_assignment_context_for_prompt
 from backend.agents.code_utils import get_code_metrics, strip_comments
+from backend.agents.json_output_schema import SENIORITY_OUTPUT_SCHEMA
 
 _SENIORITY_SYSTEM_PROMPT = """\
 You are an expert at estimating developer skill level from code. Junior / mid / senior and the
@@ -84,7 +85,18 @@ class SeniorityAgent(BaseAgent):
         llm_result = await self._call_llm(
             system_prompt=_SENIORITY_SYSTEM_PROMPT,
             user_prompt=user_prompt,
-            required_keys=["estimated_level", "score"],
+            required_keys=[
+                "estimated_level",
+                "modern_features_usage",
+                "error_handling_quality",
+                "abstraction_quality",
+                "design_patterns",
+                "maturity_indicators",
+                "immaturity_indicators",
+                "idiomatic_usage_score",
+                "score",
+            ],
+            output_json_schema=SENIORITY_OUTPUT_SCHEMA,
         )
 
         llm_result["score"] = self._safe_int(llm_result.get("score"), 50)

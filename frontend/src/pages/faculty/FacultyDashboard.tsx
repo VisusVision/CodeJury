@@ -62,6 +62,9 @@ interface RubricModalState {
   assignment: Assignment | null;
 }
 
+const getErrorMessage = (error: unknown, fallback: string) =>
+  error instanceof Error ? error.message : fallback;
+
 const FacultyDashboard = () => {
   const navigate = useNavigate();
   const [teacher, setTeacher] = useState<Teacher | null>(null);
@@ -133,8 +136,8 @@ const FacultyDashboard = () => {
       toast.success("Bölüm eklendi");
       setNewDeptName("");
       await fetchAll();
-    } catch (err: any) {
-      toast.error(err.message || "Bölüm eklenemedi");
+    } catch (err: unknown) {
+      toast.error(getErrorMessage(err, "Bölüm eklenemedi"));
     }
   };
 
@@ -143,8 +146,8 @@ const FacultyDashboard = () => {
       await removeDepartment(id);
       toast.success("Bölüm silindi");
       await fetchAll();
-    } catch (err: any) {
-      toast.error(err.message || "Bölüm silinemedi");
+    } catch (err: unknown) {
+      toast.error(getErrorMessage(err, "Bölüm silinemedi"));
     }
   };
 
@@ -163,8 +166,8 @@ const FacultyDashboard = () => {
       setSelectedDeptId("");
       setSelectedClassYear("");
       await fetchAll();
-    } catch (err: any) {
-      toast.error(err.message || "Ders eklenemedi");
+    } catch (err: unknown) {
+      toast.error(getErrorMessage(err, "Ders eklenemedi"));
     }
   };
 
@@ -173,8 +176,8 @@ const FacultyDashboard = () => {
       await removeCourse(id);
       toast.success("Ders silindi");
       await fetchAll();
-    } catch (err: any) {
-      toast.error(err.message || "Ders silinemedi");
+    } catch (err: unknown) {
+      toast.error(getErrorMessage(err, "Ders silinemedi"));
     }
   };
 
@@ -207,8 +210,8 @@ const FacultyDashboard = () => {
         ]);
       }
       await fetchAll();
-    } catch (err: any) {
-      toast.error(err.message || "Ödev eklenemedi");
+    } catch (err: unknown) {
+      toast.error(getErrorMessage(err, "Ödev eklenemedi"));
     } finally {
       setAssignmentSubmitting(false);
     }
@@ -224,8 +227,8 @@ const FacultyDashboard = () => {
       await updateRubricStatusByAssignment(assignmentId, "approved");
       toast.success("Ödev onaylandı");
       await fetchAll();
-    } catch (err: any) {
-      toast.error(err.message || "Onaylama başarısız");
+    } catch (err: unknown) {
+      toast.error(getErrorMessage(err, "Onaylama başarısız"));
     }
   };
 
@@ -234,8 +237,8 @@ const FacultyDashboard = () => {
       await removeAssignment(id);
       toast.success("Ödev silindi");
       await fetchAll();
-    } catch (err: any) {
-      toast.error(err.message || "Ödev silinemedi");
+    } catch (err: unknown) {
+      toast.error(getErrorMessage(err, "Ödev silinemedi"));
     }
   };
 
