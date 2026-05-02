@@ -142,6 +142,10 @@ class TestAgent(BaseAgent):
             llm_result["score"] = max(0, min(100, min(llm_s, max(prog_s, blended))))
         else:
             llm_result["score"] = llm_s
+        if not programmatic["compilation_success"]:
+            llm_result["score"] = 0
+        elif not programmatic["runs_successfully"]:
+            llm_result["score"] = min(int(llm_result["score"]), 35)
 
         observed = llm_result.get("edge_cases_observed")
         if not isinstance(observed, list):
@@ -191,6 +195,12 @@ class TestAgent(BaseAgent):
         mem_exceeded = sandbox.get("memory_exceeded", False)
         sb_static = sandbox.get("static_analysis", {})
         service_program = _looks_like_service_program(source_code, language)
+        cli_program = _looks_like_cli_program(source_code, language)
+        cli_usage_exit = (
+            cli_program
+            and exit_code != 0
+            and _looks_like_cli_usage_error(stderr)
+        )
 
         if not compilation:
             errors = _classify_errors(stderr)
@@ -261,6 +271,31 @@ class TestAgent(BaseAgent):
                     "calisma basarisizligi sayilmadi."
                 ),
                 "score": 62 if align_f >= 0.7 else 48,
+            })
+
+        if cli_usage_exit:
+            return _finish({
+                "compilation_success": True,
+                "runs_successfully": True,
+                "passed_tests": 1,
+                "failed_tests": 0,
+                "total_tests": 1,
+                "test_results": [{
+                    "test_name": "cli_usage",
+                    "input": "",
+                    "expected": "CLI argumani istendiginde kullanim mesaji uretilmesi",
+                    "actual": stderr[:200],
+                    "passed": True,
+                    "match_pct": 100.0,
+                }],
+                "test_failures": [],
+                "runtime_errors": [],
+                "edge_case_handling": "fair",
+                "performance_notes": (
+                    "CLI tipi program arguman bekliyor; formal test girdisi verilmedigi icin "
+                    "kullanim mesaji runtime hatasi sayilmadi."
+                ),
+                "score": 72 if align_f >= 0.7 else 52,
             })
 
         runs_ok = exit_code == 0
@@ -383,6 +418,21 @@ class TestAgent(BaseAgent):
                     "passed": True,
                     "match_pct": 100.0,
                 })
+        elif passed + failed == 0:
+            failed = 1
+            reason = runtime_errors[0] if runtime_errors else f"Program exit code {exit_code} ile sonlandi."
+            test_failures.append({
+                "test_name": "runtime",
+                "reason": reason,
+            })
+            test_results.append({
+                "test_name": "runtime",
+                "input": "",
+                "expected": "Programin hatasiz tamamlanmasi",
+                "actual": (stderr or stdout)[:200],
+                "passed": False,
+                "match_pct": 0.0,
+            })
         edge_case = _evaluate_edge_cases_ast(source_code, language)
         if assignment_mismatch_fail:
             edge_case = "poor"
@@ -548,3 +598,28 @@ def _looks_like_service_program(source_code: str, language: str) -> bool:
         )
         return any(marker in src for marker in service_markers)
     return any(marker in src for marker in ("listen(", "accept(", "bind(", "server"))
+
+
+def _looks_like_cli_program(source_code: str, language: str) -> bool:
+    src = (source_code or "").lower()
+    if language.lower() in ("python", "py"):
+        markers = (
+            "argparse",
+            "argumentparser(",
+            "sys.argv",
+            "click.command",
+            "typer.",
+            "add_argument(",
+        )
+        return any(marker in src for marker in markers)
+    return any(marker in src for marker in ("argc", "argv", "getopt"))
+
+
+def _looks_like_cli_usage_error(stderr: str) -> bool:
+    err = (stderr or "").lower()
+    return (
+        "usage:" in err
+        or "the following arguments are required" in err
+        or "required:" in err
+        or "too few arguments" in err
+    )
