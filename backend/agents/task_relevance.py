@@ -11,9 +11,14 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from typing import Any
 
-from backend.agents.assignment_alignment import BRIEF_MIN_LEN, _rubric_criteria_text
+from backend.agents.assignment_alignment import (
+    BRIEF_MIN_LEN,
+    _rubric_criteria_text,
+    _source_without_comments_and_docstrings,
+)
 from backend.agents.base import build_llm_user_suffix
 from backend.agents.json_output_schema import TASK_RELEVANCE_OUTPUT_SCHEMA, collect_validation_messages
 from backend.core.config import settings
@@ -48,6 +53,46 @@ Reply with ONLY valid JSON matching the schema in the user message.
 """
 
 
+def _unwrap_task_relevance_payload(raw: dict[str, Any]) -> dict[str, Any]:
+    """Best-effort unwrap for models that nest JSON under result/report/data."""
+    required = {"relevance_factor", "off_topic", "student_fulfills_assignment"}
+    top_hits = len(required.intersection(raw.keys()))
+    if top_hits >= 2:
+        return raw
+
+    stack: list[dict[str, Any]] = []
+    for value in raw.values():
+        if isinstance(value, dict):
+            stack.append(value)
+        elif isinstance(value, str):
+            try:
+                parsed = json.loads(value)
+            except (TypeError, ValueError, json.JSONDecodeError):
+                parsed = None
+            if isinstance(parsed, dict):
+                stack.append(parsed)
+
+    best = raw
+    best_hits = top_hits
+    while stack:
+        cand = stack.pop(0)
+        hits = len(required.intersection(cand.keys()))
+        if hits > best_hits:
+            best = cand
+            best_hits = hits
+        for value in cand.values():
+            if isinstance(value, dict):
+                stack.append(value)
+            elif isinstance(value, str):
+                try:
+                    parsed = json.loads(value)
+                except (TypeError, ValueError, json.JSONDecodeError):
+                    parsed = None
+                if isinstance(parsed, dict):
+                    stack.append(parsed)
+    return {**raw, **best} if best is not raw else raw
+
+
 
 async def assess_task_relevance_llm(
     *,
@@ -57,6 +102,9 @@ async def assess_task_relevance_llm(
     report_language: str = "tr",
 ) -> dict[str, Any]:
     brief = (assignment_description or "").strip()
+    source_clean = _source_without_comments_and_docstrings(source_code or "")
+    # Use the instructor brief only for capability gating; rubric rows can be noisy/generic.
+    capability_match = _capability_match_signal(assignment_description, None, source_clean)
     rub_blob = _rubric_criteria_text(rubric_criteria)
     combined = "\n".join(x for x in (brief, rub_blob) if x).strip()
     if len(combined) < BRIEF_MIN_LEN:
@@ -76,7 +124,7 @@ async def assess_task_relevance_llm(
                 "description": str(row.get("description", "") or ""),
             })
 
-    code_sample = source_code or ""
+    code_sample = source_clean or (source_code or "")
     max_chars = 12000
     if len(code_sample) > max_chars:
         code_sample = (
@@ -111,6 +159,9 @@ async def assess_task_relevance_llm(
 
     if not isinstance(raw, dict):
         return {"skipped": True, "relevance_factor": 1.0, "reason": "invalid_response"}
+    raw = _unwrap_task_relevance_payload(raw)
+    if "confidence" in raw and raw.get("confidence") is None:
+        raw.pop("confidence", None)
 
     msgs = collect_validation_messages(raw, TASK_RELEVANCE_OUTPUT_SCHEMA)
     if msgs:
@@ -137,7 +188,24 @@ async def assess_task_relevance_llm(
             msgs = collect_validation_messages(raw, TASK_RELEVANCE_OUTPUT_SCHEMA)
         if msgs:
             logger.warning("[task_relevance] schema ikinci tur hata: %s", msgs[:4])
-            return {"skipped": True, "relevance_factor": 1.0, "reason": "schema_invalid"}
+            try:
+                rf_soft = float(raw.get("relevance_factor", 1.0))
+            except (TypeError, ValueError):
+                rf_soft = 1.0
+            rf_soft = max(0.05, min(1.0, rf_soft))
+            return {
+                "skipped": False,
+                "relevance_factor": rf_soft,
+                "off_topic": bool(raw.get("off_topic")),
+                "student_fulfills_assignment": bool(
+                    raw.get("student_fulfills_assignment", not bool(raw.get("off_topic")))
+                ),
+                "explanation": str(raw.get("explanation", "")).strip(),
+                "submission_domain_guess": str(raw.get("submission_domain_guess", "")).strip(),
+                "task_domain_guess": str(raw.get("task_domain_guess", "")).strip(),
+                "capability_match": round(max(0.0, min(1.0, capability_match)), 3),
+                "reason": "schema_invalid_soft_parse",
+            }
 
     try:
         rf = float(raw.get("relevance_factor", 1.0))
@@ -153,6 +221,7 @@ async def assess_task_relevance_llm(
         "explanation": str(raw.get("explanation", "")).strip(),
         "submission_domain_guess": str(raw.get("submission_domain_guess", "")).strip(),
         "task_domain_guess": str(raw.get("task_domain_guess", "")).strip(),
+        "capability_match": round(max(0.0, min(1.0, capability_match)), 3),
     }
     try:
         cf = raw.get("confidence")
@@ -161,6 +230,85 @@ async def assess_task_relevance_llm(
     except (TypeError, ValueError):
         pass
     return out
+
+
+def _guess_token_overlap(a: str | None, b: str | None) -> bool:
+    """Tiny lexical overlap check to soften obvious false negatives."""
+    ta = {t for t in re.findall(r"[a-z0-9_]{3,}", (a or "").lower())}
+    tb = {t for t in re.findall(r"[a-z0-9_]{3,}", (b or "").lower())}
+    if not ta or not tb:
+        return False
+    stop = {"the", "and", "for", "code", "task", "assignment", "project", "student"}
+    ta = ta - stop
+    tb = tb - stop
+    if not ta or not tb:
+        return False
+    return len(ta.intersection(tb)) >= 1
+
+
+def _capability_match_signal(
+    assignment_description: str | None,
+    rubric_criteria: list[dict[str, Any]] | None,
+    source_code: str | None,
+) -> float:
+    """Estimate generic assignment-capability fit between task text and source code (0..1)."""
+    task_text = "\n".join(
+        x for x in ((assignment_description or "").strip(), _rubric_criteria_text(rubric_criteria)) if x
+    ).lower()
+    code_text = _source_without_comments_and_docstrings(source_code or "").lower()
+    if len(task_text) < BRIEF_MIN_LEN:
+        return 1.0
+
+    groups: list[tuple[set[str], set[str]]] = [
+        (
+            {"api", "endpoint", "http", "server", "post", "put", "get", "route"},
+            {"httpserver", "basehttprequesthandler", "do_post", "do_put", "do_get", "fastapi", "flask", "route"},
+        ),
+        (
+            {"sqlite", "sql", "database", "db", "tablo"},
+            {"sqlite3", "connect(", "cursor", "select ", "insert ", "update ", "create table"},
+        ),
+        (
+            {"log", "dosya", "file", "cli", "arguman", "komut", "satir"},
+            {"argparse", "sys.argv", "path(", "read_text", "open(", "splitlines", "line"},
+        ),
+        (
+            {"sinif", "class", "oop", "nesne", "kalitim", "encapsulation"},
+            {"class ", "__init__", "self.", "super("},
+        ),
+        (
+            {"agac", "tree", "bst", "dugum", "node", "traversal", "inorder", "preorder", "postorder"},
+            {"class ", "node", "dugum", "inorder", "preorder", "postorder", "left", "right", "sol", "sag"},
+        ),
+        (
+            {"test", "pytest", "unittest", "unit"},
+            {"assert ", "pytest", "unittest", "test_"},
+        ),
+    ]
+
+    required = 0
+    matched = 0
+    for task_markers, code_markers in groups:
+        if any(marker in task_text for marker in task_markers):
+            required += 1
+            if any(marker in code_text for marker in code_markers):
+                matched += 1
+
+    task_tokens = {t for t in re.findall(r"[a-z0-9_]{3,}", task_text)}
+    code_tokens = {t for t in re.findall(r"[a-z0-9_]{3,}", code_text)}
+    stop = {
+        "the", "and", "for", "with", "from", "this", "that", "code", "task",
+        "assignment", "project", "student", "return", "true", "false", "none",
+    }
+    task_tokens -= stop
+    code_tokens -= stop
+    overlap_count = len(task_tokens.intersection(code_tokens))
+    overlap_signal = min(0.5, overlap_count / 10.0) if task_tokens and code_tokens else 0.0
+
+    if required == 0:
+        return overlap_signal
+    capability = matched / float(required)
+    return max(0.0, min(1.0, (0.85 * capability) + (0.15 * overlap_signal)))
 
 
 def merge_task_alignment(
@@ -193,6 +341,10 @@ def merge_task_alignment(
 
     off = bool(llm_payload.get("off_topic"))
     fulfils = bool(llm_payload.get("student_fulfills_assignment", True))
+    try:
+        capability_signal = float(llm_payload.get("capability_match", 0.0))
+    except (TypeError, ValueError):
+        capability_signal = 0.0
 
     llm_f = llm_raw
     if off:
@@ -205,7 +357,6 @@ def merge_task_alignment(
 
     out["llm_skipped"] = False
     out["llm_factor"] = llm_f
-    out["factor"] = min(out["factor"], llm_f)
     out["submission_domain_guess"] = llm_payload.get("submission_domain_guess") or None
     out["task_domain_guess"] = llm_payload.get("task_domain_guess") or None
 
@@ -213,6 +364,49 @@ def merge_task_alignment(
     if expl:
         out["llm_explanation"] = expl
 
+    llm_confidence = llm_payload.get("confidence")
+    try:
+        conf = float(llm_confidence) if llm_confidence is not None else None
+    except (TypeError, ValueError):
+        conf = None
+    overlap = _guess_token_overlap(
+        out.get("task_domain_guess"),
+        out.get("submission_domain_guess"),
+    )
+
+    # If LLM marks off-topic but capability markers strongly match, convert it to
+    # "in-topic but weak implementation" instead of full mismatch.
+    if off and capability_signal >= 0.55:
+        off = False
+        fulfils = False
+        llm_f = max(llm_f, 0.62 if capability_signal >= 0.72 else 0.55)
+
+    # Opposite direction: if capability markers are clearly missing, do not allow
+    # a high-fit verdict from LLM noise.
+    if not off and capability_signal <= 0.24 and llm_f >= 0.50:
+        off = True
+        fulfils = False
+        llm_f = min(llm_f, 0.22)
+
+    # If LLM says low fit (without explicit off_topic) but confidence is low,
+    # domain guesses overlap, or capability signal is strong, avoid over-collapse.
+    if out["programmatic_factor"] >= 0.95 and llm_f < 0.45 and not off:
+        if (conf is not None and conf < 0.62) or overlap or capability_signal >= 0.55:
+            llm_f = max(llm_f, 0.68 if capability_signal >= 0.55 else 0.72)
+
+    # High-capability and clearly fulfilling submissions should not drift too low
+    # due model variance.
+    if (
+        out["programmatic_factor"] >= 0.95
+        and not off
+        and fulfils
+        and capability_signal >= 0.80
+        and llm_f < 0.75
+    ):
+        llm_f = 0.75
+
+    out["llm_factor"] = llm_f
+    out["factor"] = min(out["factor"], llm_f)
     out["llm_off_topic"] = off
 
     if off:

@@ -40,12 +40,49 @@ interface RubricModalProps {
 
 type TabType = "rubric" | "questions";
 
+const RUBRIC_MIN_CRITERIA = 10;
+const RUBRIC_MAX_CRITERIA = 20;
+const RUBRIC_MIN_POINTS = 5;
+const RUBRIC_MAX_POINTS = 10;
+const RUBRIC_TOTAL_POINTS = 100;
+
+const criterionCountOptions = Array.from(
+  { length: RUBRIC_MAX_CRITERIA - RUBRIC_MIN_CRITERIA + 1 },
+  (_, index) => RUBRIC_MIN_CRITERIA + index,
+);
+
+const clampCriterionCount = (value: number) =>
+  Math.max(RUBRIC_MIN_CRITERIA, Math.min(RUBRIC_MAX_CRITERIA, value));
+
+const getRubricValidationMessage = (criteria: RubricCriterion[]) => {
+  if (criteria.length < RUBRIC_MIN_CRITERIA || criteria.length > RUBRIC_MAX_CRITERIA) {
+    return `Rubrik ${RUBRIC_MIN_CRITERIA}-${RUBRIC_MAX_CRITERIA} kriterden olusmali.`;
+  }
+  if (criteria.some((criterion) => !criterion.name.trim())) {
+    return "Tum kriterlerin adi doldurulmalidir.";
+  }
+  if (
+    criteria.some((criterion) => {
+      const score = Number(criterion.max_score);
+      return !Number.isInteger(score) || score < RUBRIC_MIN_POINTS || score > RUBRIC_MAX_POINTS;
+    })
+  ) {
+    return `Her kriter puani ${RUBRIC_MIN_POINTS}-${RUBRIC_MAX_POINTS} arasinda tam sayi olmalidir.`;
+  }
+  const total = criteria.reduce((sum, criterion) => sum + (Number(criterion.max_score) || 0), 0);
+  if (total !== RUBRIC_TOTAL_POINTS) {
+    return `Rubrik toplam puani ${RUBRIC_TOTAL_POINTS} olmalidir.`;
+  }
+  return null;
+};
+
 const RubricModal = ({ assignment, teacherId, open, onClose }: RubricModalProps) => {
   const [activeTab, setActiveTab] = useState<TabType>("rubric");
   
   // Rubric states
   const [rubric, setRubric] = useState<Rubric | null>(null);
   const [criteria, setCriteria] = useState<RubricCriterion[]>([]);
+  const [criterionCount, setCriterionCount] = useState(RUBRIC_MIN_CRITERIA);
   const [loading, setLoading] = useState(true);
   const [aiLoading, setAiLoading] = useState(false);
 
@@ -75,10 +112,13 @@ const RubricModal = ({ assignment, teacherId, open, onClose }: RubricModalProps)
         const rubricData = await getRubricByAssignment(assignment.id);
         if (rubricData) {
           setRubric(rubricData as Rubric);
-          setCriteria((rubricData.criteria as RubricCriterion[]) || []);
+          const loadedCriteria = (rubricData.criteria as RubricCriterion[]) || [];
+          setCriteria(loadedCriteria);
+          setCriterionCount(clampCriterionCount(loadedCriteria.length || RUBRIC_MIN_CRITERIA));
         } else {
           setRubric(null);
           setCriteria([]);
+          setCriterionCount(RUBRIC_MIN_CRITERIA);
         }
 
         // Load all questions
@@ -107,6 +147,7 @@ const RubricModal = ({ assignment, teacherId, open, onClose }: RubricModalProps)
       const data = await suggestRubric({
         assignment_title: assignment.name,
         assignment_description: assignment.description || "",
+        criterion_count: criterionCount,
       });
       setCriteria(data.criteria || []);
       toast.success("AI rubrik önerisi oluşturuldu. Lütfen kontrol edip onaylayın.");
@@ -119,9 +160,11 @@ const RubricModal = ({ assignment, teacherId, open, onClose }: RubricModalProps)
   };
 
   const updateCriterion = (index: number, field: keyof RubricCriterion, value: string | number) => {
-    const updated = [...criteria];
-    (updated[index] as Record<string, unknown>)[field] = value;
-    setCriteria(updated);
+    setCriteria((prev) =>
+      prev.map((criterion, i) =>
+        i === index ? { ...criterion, [field]: value } : criterion,
+      ),
+    );
   };
 
   const removeCriterion = (index: number) => {
@@ -129,17 +172,17 @@ const RubricModal = ({ assignment, teacherId, open, onClose }: RubricModalProps)
   };
 
   const addCriterion = () => {
-    setCriteria([...criteria, { name: "", description: "", max_score: 10 }]);
+    if (criteria.length >= RUBRIC_MAX_CRITERIA) {
+      toast.error(`En fazla ${RUBRIC_MAX_CRITERIA} kriter eklenebilir.`);
+      return;
+    }
+    setCriteria([...criteria, { name: "", description: "", max_score: RUBRIC_MIN_POINTS }]);
   };
 
   const saveRubric = async (status: "draft" | "approved") => {
-    if (criteria.length === 0) {
-      toast.error("En az bir kriter eklemelisiniz.");
-      return;
-    }
-    const hasEmpty = criteria.some((c) => !c.name.trim());
-    if (hasEmpty) {
-      toast.error("Tüm kriterlerin adı doldurulmalıdır.");
+    const validationMessage = getRubricValidationMessage(criteria);
+    if (validationMessage) {
+      toast.error(validationMessage);
       return;
     }
 
@@ -249,6 +292,7 @@ const RubricModal = ({ assignment, teacherId, open, onClose }: RubricModalProps)
   if (!open) return null;
 
   const totalScore = criteria.reduce((sum, c) => sum + (Number(c.max_score) || 0), 0);
+  const validationMessage = getRubricValidationMessage(criteria);
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center">
@@ -316,15 +360,35 @@ const RubricModal = ({ assignment, teacherId, open, onClose }: RubricModalProps)
                     <p className="text-xs text-muted-foreground bg-muted/50 p-3 rounded-lg">{assignment.description}</p>
                   )}
 
-                  <button
-                    type="button"
-                    onClick={requestAiSuggestion}
-                    disabled={aiLoading}
-                    className="flex items-center gap-2 px-4 py-2 rounded-lg bg-gradient-to-r from-primary to-primary/80 text-primary-foreground text-sm font-medium hover:brightness-110 transition-all disabled:opacity-50"
-                  >
-                    {aiLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Sparkles className="h-4 w-4" />}
-                    {aiLoading ? "AI düşünüyor..." : "AI Rubrik Önerisi Al"}
-                  </button>
+                  <div className="flex flex-col gap-3 rounded-xl border border-border bg-muted/20 p-3 sm:flex-row sm:items-end sm:justify-between">
+                    <div className="space-y-1">
+                      <label htmlFor="rubric-criterion-count" className="text-xs font-medium text-foreground">
+                        Kriter sayisi
+                      </label>
+                      <select
+                        id="rubric-criterion-count"
+                        value={criterionCount}
+                        onChange={(e) => setCriterionCount(clampCriterionCount(Number(e.target.value)))}
+                        className="h-9 rounded-lg border border-input bg-background px-3 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
+                      >
+                        {criterionCountOptions.map((count) => (
+                          <option key={count} value={count}>{count} madde</option>
+                        ))}
+                      </select>
+                      <p className="text-[11px] text-muted-foreground">
+                        10-20 kriter, her kriter 5-10 puan, toplam 100.
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={requestAiSuggestion}
+                      disabled={aiLoading}
+                      className="flex items-center justify-center gap-2 px-4 py-2 rounded-lg bg-gradient-to-r from-primary to-primary/80 text-primary-foreground text-sm font-medium hover:brightness-110 transition-all disabled:opacity-50"
+                    >
+                      {aiLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Sparkles className="h-4 w-4" />}
+                      {aiLoading ? "AI düşünüyor..." : "AI Rubrik Önerisi Al"}
+                    </button>
+                  </div>
 
                   <div className="space-y-2.5">
                     {criteria.map((c, i) => (
@@ -353,7 +417,8 @@ const RubricModal = ({ assignment, teacherId, open, onClose }: RubricModalProps)
                                 value={c.max_score}
                                 onChange={(e) => updateCriterion(i, "max_score", parseInt(e.target.value, 10) || 0)}
                                 className="w-14 px-2 py-0.5 rounded-lg border border-input bg-background text-foreground text-sm text-center focus:outline-none focus:ring-2 focus:ring-ring"
-                                min={0}
+                                min={RUBRIC_MIN_POINTS}
+                                max={RUBRIC_MAX_POINTS}
                               />
                               <span className="text-xs text-muted-foreground">pt</span>
                             </div>
@@ -373,7 +438,8 @@ const RubricModal = ({ assignment, teacherId, open, onClose }: RubricModalProps)
                   <button
                     type="button"
                     onClick={addCriterion}
-                    className="flex items-center gap-1 px-3 py-1.5 rounded-lg border border-dashed border-border text-sm text-muted-foreground hover:text-foreground hover:border-primary/50 transition-colors"
+                    disabled={criteria.length >= RUBRIC_MAX_CRITERIA}
+                    className="flex items-center gap-1 px-3 py-1.5 rounded-lg border border-dashed border-border text-sm text-muted-foreground hover:text-foreground hover:border-primary/50 transition-colors disabled:cursor-not-allowed disabled:opacity-50"
                   >
                     <Plus className="h-4 w-4" /> Kriter Ekle
                   </button>
@@ -506,8 +572,11 @@ const RubricModal = ({ assignment, teacherId, open, onClose }: RubricModalProps)
         {activeTab === "rubric" && !loading && criteria.length > 0 && (
           <div className="flex items-center justify-between p-4 border-t border-border shrink-0">
             <div>
-              <p className="text-sm font-medium text-foreground">Toplam: {totalScore} puan</p>
+              <p className={`text-sm font-medium ${validationMessage ? "text-destructive" : "text-foreground"}`}>
+                Toplam: {totalScore} puan
+              </p>
               <p className="text-xs text-muted-foreground">{criteria.length} kriter</p>
+              {validationMessage && <p className="text-xs text-destructive">{validationMessage}</p>}
             </div>
             <div className="flex gap-2">
               <button

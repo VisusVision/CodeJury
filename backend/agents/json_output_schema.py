@@ -57,6 +57,80 @@ CODE_QUALITY_OUTPUT_SCHEMA: dict[str, Any] = {
     "additionalProperties": True,
 }
 
+_QUALITY_ENUM = ["poor", "fair", "good", "excellent"]
+_SEVERITY_ENUM = ["info", "low", "medium", "high", "critical"]
+
+SENIORITY_OUTPUT_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "required": [
+        "estimated_level",
+        "modern_features_usage",
+        "error_handling_quality",
+        "abstraction_quality",
+        "design_patterns",
+        "maturity_indicators",
+        "immaturity_indicators",
+        "idiomatic_usage_score",
+        "score",
+    ],
+    "properties": {
+        "estimated_level": {"type": "string", "enum": ["junior", "mid", "senior"]},
+        "modern_features_usage": {"type": "string"},
+        "error_handling_quality": {"type": "string", "enum": _QUALITY_ENUM},
+        "abstraction_quality": {"type": "string", "enum": _QUALITY_ENUM},
+        "design_patterns": {"type": "array", "items": {"type": "string"}},
+        "maturity_indicators": {"type": "array", "items": {"type": "string"}},
+        "immaturity_indicators": {"type": "array", "items": {"type": "string"}},
+        "idiomatic_usage_score": {"type": "number", "minimum": 0, "maximum": 100},
+        "score": {"type": "number", "minimum": 0, "maximum": 100},
+    },
+    "additionalProperties": True,
+}
+
+GUIDELINE_OUTPUT_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "required": [
+        "naming_quality",
+        "documentation_quality",
+        "clean_code_score",
+        "style_guide_compliance",
+        "style_violations",
+        "has_docstrings",
+        "has_type_hints",
+        "function_length_ok",
+        "nesting_depth_ok",
+        "dry_violations",
+        "score",
+    ],
+    "properties": {
+        "naming_quality": {"type": "string", "enum": _QUALITY_ENUM},
+        "documentation_quality": {"type": "string", "enum": _QUALITY_ENUM},
+        "clean_code_score": {"type": "number", "minimum": 0, "maximum": 100},
+        "style_guide_compliance": {"type": "string"},
+        "style_violations": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "required": ["rule", "description", "line_hint", "severity"],
+                "properties": {
+                    "rule": {"type": "string"},
+                    "description": {"type": "string"},
+                    "line_hint": {"type": "string"},
+                    "severity": {"type": "string", "enum": _SEVERITY_ENUM},
+                },
+                "additionalProperties": True,
+            },
+        },
+        "has_docstrings": {"type": "boolean"},
+        "has_type_hints": {"type": "boolean"},
+        "function_length_ok": {"type": "boolean"},
+        "nesting_depth_ok": {"type": "boolean"},
+        "dry_violations": {"type": "array", "items": {"type": "string"}},
+        "score": {"type": "number", "minimum": 0, "maximum": 100},
+    },
+    "additionalProperties": True,
+}
+
 TASK_RELEVANCE_OUTPUT_SCHEMA: dict[str, Any] = {
     "type": "object",
     "required": [
@@ -107,6 +181,146 @@ TEST_AGENT_OUTPUT_SCHEMA: dict[str, Any] = {
         "edge_cases_observed": {"type": "array"},
         "performance_notes": {"type": "string"},
         "score": {"type": "number", "minimum": 0, "maximum": 100},
+    },
+    "additionalProperties": True,
+}
+
+SECURITY_OUTPUT_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "required": [
+        "threats",
+        "risk_level",
+        "safe",
+        "total_threats",
+        "critical_count",
+        "high_count",
+        "blocked_imports",
+        "score",
+    ],
+    "properties": {
+        "threats": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "required": ["type", "severity", "line", "description", "detail"],
+                "properties": {
+                    "type": {"type": "string"},
+                    "severity": {"type": "string", "enum": ["low", "medium", "high", "critical"]},
+                    "line": {"type": ["integer", "null"], "minimum": 1},
+                    "description": {"type": "string"},
+                    "detail": {"type": "string"},
+                },
+                "additionalProperties": True,
+            },
+        },
+        "risk_level": {"type": "string", "enum": ["safe", "low", "medium", "high", "critical"]},
+        "safe": {"type": "boolean"},
+        "total_threats": {"type": "integer", "minimum": 0},
+        "critical_count": {"type": "integer", "minimum": 0},
+        "high_count": {"type": "integer", "minimum": 0},
+        "blocked_imports": {"type": "array", "items": {"type": "string"}},
+        "score": {"type": "number", "minimum": 0, "maximum": 100},
+    },
+    "additionalProperties": True,
+}
+
+EVIDENCE_OUTPUT_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "required": [
+        "validated_claims",
+        "rejected_claims",
+        "total_claims_received",
+        "total_claims_validated",
+    ],
+    "properties": {
+        "validated_claims": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "required": [
+                    "lines",
+                    "code_snippet",
+                    "feedback",
+                    "agent_source",
+                    "severity",
+                    "is_valid",
+                ],
+                "properties": {
+                    "lines": {
+                        "type": "array",
+                        "items": {"type": "integer", "minimum": 1},
+                    },
+                    "line_range": {
+                        "type": ["array", "null"],
+                        "prefixItems": [
+                            {"type": "integer", "minimum": 1},
+                            {"type": "integer", "minimum": 1},
+                        ],
+                        "minItems": 2,
+                        "maxItems": 2,
+                    },
+                    "block_id": {"type": ["string", "null"]},
+                    "node_type": {
+                        "type": "string",
+                        "enum": ["function", "class", "if", "for", "while", "try", "with", "return", "line", "file"],
+                    },
+                    "symbol": {"type": ["string", "null"]},
+                    "code_snippet": {"type": "string"},
+                    "feedback": {"type": "string"},
+                    "agent_source": {"type": "string"},
+                    "severity": {"type": "string", "enum": _SEVERITY_ENUM},
+                    "is_valid": {"type": "boolean"},
+                },
+                "additionalProperties": True,
+            },
+        },
+        "rejected_claims": {"type": "array"},
+        "total_claims_received": {"type": "integer", "minimum": 0},
+        "total_claims_validated": {"type": "integer", "minimum": 0},
+    },
+    "additionalProperties": True,
+}
+
+MASTER_EVALUATOR_OUTPUT_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "required": [
+        "final_score",
+        "rubric_breakdown",
+        "summary",
+        "strengths",
+        "weaknesses",
+        "recommendations",
+    ],
+    "properties": {
+        "final_score": {"type": "number", "minimum": 0, "maximum": 100},
+        "rubric_breakdown": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+                "type": "object",
+                "required": [
+                    "criterion",
+                    "label",
+                    "weight",
+                    "score",
+                    "weighted_score",
+                    "justification",
+                ],
+                "properties": {
+                    "criterion": {"type": "string"},
+                    "label": {"type": "string"},
+                    "weight": {"type": "integer", "minimum": 0},
+                    "score": {"type": "number", "minimum": 0},
+                    "weighted_score": {"type": "number", "minimum": 0},
+                    "justification": {"type": "string"},
+                },
+                "additionalProperties": True,
+            },
+        },
+        "summary": {"type": "string"},
+        "strengths": {"type": "array", "items": {"type": "string"}},
+        "weaknesses": {"type": "array", "items": {"type": "string"}},
+        "recommendations": {"type": "array", "items": {"type": "string"}},
     },
     "additionalProperties": True,
 }

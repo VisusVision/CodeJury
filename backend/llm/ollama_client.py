@@ -50,8 +50,16 @@ def _get_client() -> httpx.AsyncClient:
     return _client
 
 
-def _cache_key(system_prompt: str, user_prompt: str, temperature: float) -> str:
-    raw = f"{settings.ollama_model}:{temperature}:{system_prompt}:{user_prompt}"
+def _cache_key(
+    system_prompt: str,
+    user_prompt: str,
+    temperature: float,
+    schema_hint: dict[str, Any] | None = None,
+) -> str:
+    schema_part = ""
+    if schema_hint:
+        schema_part = json.dumps(schema_hint, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    raw = f"{settings.ollama_model}:{temperature}:{schema_part}:{system_prompt}:{user_prompt}"
     return hashlib.sha256(raw.encode()).hexdigest()
 
 
@@ -177,7 +185,7 @@ async def chat_json(
         return None
 
     predict = int(num_predict) if num_predict is not None else int(settings.ollama_num_predict)
-    cache_key = _cache_key(f"{system_prompt}|np={predict}", user_prompt, temperature)
+    cache_key = _cache_key(f"{system_prompt}|np={predict}", user_prompt, temperature, schema_hint)
     if use_cache:
         cached = _cache_get(cache_key)
         if cached is not None:
@@ -196,7 +204,7 @@ async def chat_json(
             "temperature": temperature,
             "num_predict": predict,
         },
-        "format": "json",
+        "format": schema_hint if schema_hint else "json",
         "keep_alive": "30m",
     }
 

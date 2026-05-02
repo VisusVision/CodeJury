@@ -5,6 +5,9 @@ import { GraduationCap, User, BookOpen } from "lucide-react";
 
 type Tab = "student" | "teacher";
 
+const getErrorMessage = (error: unknown, fallback: string) =>
+  error instanceof Error ? error.message : fallback;
+
 const Login = () => {
   const [tab, setTab] = useState<Tab>("student");
 
@@ -76,9 +79,9 @@ const Login = () => {
         sessionStorage.setItem("teacher", JSON.stringify(teacher));
         navigate("/faculty/dashboard");
       }
-    } catch (err: any) {
+    } catch (err: unknown) {
       console.error(err);
-      setError(err.message || "Bir hata oluştu.");
+      setError(getErrorMessage(err, "Bir hata oluştu."));
     } finally {
       setLoading(false);
     }
@@ -243,4 +246,3 @@ const Login = () => {
 };
 
 export default Login;
-

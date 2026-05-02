@@ -348,8 +348,8 @@ const WorkspacePage = ({ sidebarTitle, sidebarSubtitle, headerTitle, assignmentI
         console.error("Yükleme geçmişi kaydedilemedi:", error);
       }
 
-    } catch (err: any) {
-      const errorMsg = err?.message || "Bilinmeyen hata";
+    } catch (err: unknown) {
+      const errorMsg = err instanceof Error ? err.message : "Bilinmeyen hata";
       addLog("Sistem", `Analiz hatası: ${errorMsg}`, "error");
       agentDefs.forEach((a) => {
         setAgentStatuses((p) => ({ ...p, [a.id]: "error" }));
@@ -411,7 +411,7 @@ const WorkspacePage = ({ sidebarTitle, sidebarSubtitle, headerTitle, assignmentI
           .replace(/&/g, "&amp;")
           .replace(/</g, "&lt;")
           .replace(/>/g, "&gt;")
-          .replace(/\"/g, "&quot;")
+          .replace(/"/g, "&quot;")
           .replace(/'/g, "&#39;");
 
       const now = new Date();

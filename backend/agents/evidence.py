@@ -14,6 +14,7 @@ from typing import Optional
 
 from backend.agents.base import BaseAgent, LLMInferenceError, build_llm_user_suffix, format_assignment_context_for_prompt
 from backend.agents.code_utils import get_code_metrics
+from backend.agents.json_output_schema import EVIDENCE_OUTPUT_SCHEMA
 
 
 def build_numbered_code(source_code: str) -> str:
@@ -469,7 +470,13 @@ class EvidenceAgent(BaseAgent):
             llm_result = await self._call_llm(
                 system_prompt=_EVIDENCE_SYSTEM_PROMPT,
                 user_prompt=user_prompt,
-                required_keys=["validated_claims", "total_claims_received"],
+                required_keys=[
+                    "validated_claims",
+                    "rejected_claims",
+                    "total_claims_received",
+                    "total_claims_validated",
+                ],
+                output_json_schema=EVIDENCE_OUTPUT_SCHEMA,
                 temperature=_EVIDENCE_LLM_TEMPERATURE,
                 num_predict=_EVIDENCE_NUM_PREDICT,
             )

@@ -13,6 +13,7 @@ import json
 import re
 
 from backend.agents.base import BaseAgent, build_llm_user_suffix, format_assignment_context_for_prompt
+from backend.agents.json_output_schema import SECURITY_OUTPUT_SCHEMA
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # TEHDIT TANIMLARI
@@ -77,6 +78,18 @@ _ALLOWED_IMPORTS = frozenset({
     "re", "json", "csv", "datetime", "time", "textwrap",
     "io", "sys",
 })
+
+_SERVICE_HINT_TOKENS = (
+    "api",
+    "endpoint",
+    "sunucu",
+    "server",
+    "http",
+    "rest",
+    "web",
+    "istemci",
+    "request",
+)
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # SQL INJECTION TESPITI
@@ -186,12 +199,27 @@ class SecurityAgent(BaseAgent):
         llm_result = await self._call_llm(
             system_prompt=_SECURITY_SYSTEM_PROMPT,
             user_prompt=user_prompt,
-            required_keys=["threats", "risk_level", "score"],
+            required_keys=[
+                "threats",
+                "risk_level",
+                "safe",
+                "total_threats",
+                "critical_count",
+                "high_count",
+                "blocked_imports",
+                "score",
+            ],
+            output_json_schema=SECURITY_OUTPUT_SCHEMA,
         )
 
         llm_th = llm_result.get("threats")
         if not isinstance(llm_th, list):
             llm_th = []
+        llm_th = self._calibrate_coursework_threats(
+            llm_th,
+            source_code=source_code,
+            assignment_description=str(input_data.get("assignment_description") or ""),
+        )
         llm_result["threats"] = llm_th
         rsum = _risk_summary_from_threats(llm_th)
         llm_result["risk_level"] = rsum["risk_level"]
@@ -203,9 +231,67 @@ class SecurityAgent(BaseAgent):
         lbi = llm_result.get("blocked_imports")
         llm_result["blocked_imports"] = list(lbi) if isinstance(lbi, list) else []
 
-        llm_result["score"] = self._safe_int(llm_result.get("score"), 50)
+        llm_score = self._safe_int(llm_result.get("score"), 50)
+        rule_score = _score_from_threats(llm_th)
+        # Blend model score with deterministic risk math to reduce outlier penalties.
+        llm_result["score"] = int(round(0.45 * llm_score + 0.55 * rule_score))
+        llm_result["score"] = max(0, min(100, llm_result["score"]))
 
         return llm_result
+
+    @staticmethod
+    def _calibrate_coursework_threats(
+        threats: list,
+        *,
+        source_code: str,
+        assignment_description: str,
+    ) -> list[dict]:
+        out: list[dict] = []
+        brief_l = (assignment_description or "").lower()
+        src_l = (source_code or "").lower()
+        service_assignment = any(token in brief_l for token in _SERVICE_HINT_TOKENS)
+        service_code = (
+            "serve_forever" in src_l
+            or "httpserver(" in src_l
+            or "app.run(" in src_l
+            or "uvicorn.run(" in src_l
+        )
+        api_context = service_assignment or service_code
+
+        for raw in threats:
+            if not isinstance(raw, dict):
+                continue
+            t = dict(raw)
+            desc = str(t.get("description", "")).lower()
+            detail = str(t.get("detail", "")).lower()
+            t_type = str(t.get("type", "")).lower()
+            sev = str(t.get("severity", "medium")).lower()
+
+            # Coursework API/server projects frequently and legitimately use HTTP modules.
+            if api_context and t_type == "network_access":
+                if "http" in desc or "http" in detail:
+                    if sev == "high":
+                        t["severity"] = "medium"
+                    elif sev == "critical":
+                        t["severity"] = "high"
+                    t["description"] = str(t.get("description", "")) + " (odev baglaminda beklenen ag kullanimi olabilir)"
+
+            # Regex control-char cleanup is not code obfuscation.
+            if t_type == "obfuscation":
+                line_no = t.get("line")
+                if isinstance(line_no, int) and line_no > 0:
+                    lines = source_code.splitlines()
+                    line = lines[line_no - 1] if line_no - 1 < len(lines) else ""
+                else:
+                    line = ""
+                line_l = line.lower()
+                if "re.sub(" in line_l and "\\x" in line_l and "[" in line_l:
+                    t["severity"] = "low"
+                    t["description"] = "Regex kontrol karakter temizligi (obfuscation degil)"
+                    t["type"] = "input_sanitization_pattern"
+
+            out.append(t)
+        return out
 
     def _programmatic_analysis(self, source_code: str, language: str) -> dict:
         """AST/regex ozeti -- yalnizca LLM prompt ipucu."""
@@ -416,8 +502,14 @@ def _check_dangerous_patterns(source_code: str) -> list[dict]:
     ]
 
     for i, line in enumerate(lines, 1):
+        line_l = line.lower()
+        # Common sanitation pattern in student assignments; not obfuscation.
+        if "re.sub(" in line_l and "\\x" in line_l and "[" in line_l:
+            pass
         for pattern, cat, sev, desc in patterns:
             if re.search(pattern, line, re.IGNORECASE):
+                if cat == "obfuscation" and "re.sub(" in line_l and "\\x" in line_l and "[" in line_l:
+                    continue
                 threats.append({
                     "type": cat,
                     "severity": sev,
@@ -427,6 +519,21 @@ def _check_dangerous_patterns(source_code: str) -> list[dict]:
                 })
 
     return threats
+
+
+def _score_from_threats(threats: list[dict]) -> int:
+    score = 100
+    for t in threats:
+        sev = str(t.get("severity", "")).lower()
+        if sev == "critical":
+            score -= 30
+        elif sev == "high":
+            score -= 16
+        elif sev == "medium":
+            score -= 7
+        elif sev == "low":
+            score -= 2
+    return max(0, min(100, int(round(score))))
 
 
 def _check_generic_patterns(source_code: str, language: str) -> list[dict]:

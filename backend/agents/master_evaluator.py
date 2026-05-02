@@ -11,6 +11,7 @@ from typing import Any
 
 from backend.agents.assignment_alignment import alignment_summary_tr, compute_brief_code_alignment
 from backend.agents.base import BaseAgent, LLMInferenceError, build_llm_user_suffix, format_assignment_context_for_prompt
+from backend.agents.json_output_schema import MASTER_EVALUATOR_OUTPUT_SCHEMA
 
 _DEFAULT_WEIGHTS = {"functionality": 35, "algorithmic_efficiency": 25, "code_standards": 25, "security": 15}
 _LABELS_EN = {
@@ -192,11 +193,25 @@ class MasterEvaluatorAgent(BaseAgent):
                 "Write summary, strengths, weaknesses, recommendations."
                 f"{build_llm_user_suffix(report_language=report_language)}"
             )
-            llm_result = await self._call_llm(
-                system_prompt=_MASTER_SYSTEM_PROMPT_FACULTY,
-                user_prompt=user_prompt,
-                required_keys=["final_score", "summary", "rubric_breakdown"],
-            )
+            try:
+                llm_result = await self._call_llm(
+                    system_prompt=_MASTER_SYSTEM_PROMPT_FACULTY,
+                    user_prompt=user_prompt,
+                    required_keys=[
+                        "final_score",
+                        "rubric_breakdown",
+                        "summary",
+                        "strengths",
+                        "weaknesses",
+                        "recommendations",
+                    ],
+                    output_json_schema=MASTER_EVALUATOR_OUTPUT_SCHEMA,
+                    temperature=0.22,
+                    num_predict=4096,
+                    use_cache=False,
+                )
+            except LLMInferenceError as exc:
+                llm_result = self._fallback_master_result(programmatic, faculty, exc)
             if not isinstance(llm_result.get("rubric_breakdown"), list):
                 raise LLMInferenceError("[master_evaluator] rubric_breakdown gecersiz (faculty mode).")
             self._finalize_faculty_rubric_output(llm_result, faculty)
@@ -212,11 +227,25 @@ class MasterEvaluatorAgent(BaseAgent):
             f"{build_llm_user_suffix(report_language=report_language)}"
         )
 
-        llm_result = await self._call_llm(
-            system_prompt=_MASTER_SYSTEM_PROMPT,
-            user_prompt=user_prompt,
-            required_keys=["final_score", "summary", "rubric_breakdown"],
-        )
+        try:
+            llm_result = await self._call_llm(
+                system_prompt=_MASTER_SYSTEM_PROMPT,
+                user_prompt=user_prompt,
+                required_keys=[
+                    "final_score",
+                    "rubric_breakdown",
+                    "summary",
+                    "strengths",
+                    "weaknesses",
+                    "recommendations",
+                ],
+                output_json_schema=MASTER_EVALUATOR_OUTPUT_SCHEMA,
+                temperature=0.22,
+                num_predict=4096,
+                use_cache=False,
+            )
+        except LLMInferenceError as exc:
+            llm_result = self._fallback_master_result(programmatic, [], exc)
 
         if not isinstance(llm_result.get("rubric_breakdown"), list) or not llm_result["rubric_breakdown"]:
             raise LLMInferenceError("[master_evaluator] rubric_breakdown bos veya gecersiz.")
@@ -228,6 +257,108 @@ class MasterEvaluatorAgent(BaseAgent):
 
         self._apply_brief_alignment_guard(llm_result, programmatic, faculty_mode=False)
         return llm_result
+
+    @staticmethod
+    def _fallback_master_result(
+        programmatic: dict[str, Any],
+        faculty: list[dict[str, Any]],
+        error: Exception,
+    ) -> dict[str, Any]:
+        """Return a complete report if the final LLM emits malformed JSON.
+
+        Other agents have already supplied LLM-backed facts; this prevents one malformed
+        master JSON envelope from turning the whole analysis into HTTP 500.
+        """
+        base_score = max(0.0, min(100.0, float(programmatic.get("final_score", 0) or 0)))
+        strengths = list(programmatic.get("strengths", []) or [])
+        weaknesses = list(programmatic.get("weaknesses", []) or [])
+        recommendations = list(programmatic.get("recommendations", []) or [])
+        warning = (
+            "Master evaluator LLM ciktisi beklenen JSON semasina uymadi; "
+            "nihai rapor ajan ozetleri ve rubrik puanlariyla programatik olarak tamamlandi."
+        )
+        if warning not in weaknesses:
+            weaknesses.insert(0, warning)
+
+        if faculty:
+            source_breakdown = programmatic.get("rubric_breakdown", [])
+            score_by_criterion: dict[str, float] = {}
+            if isinstance(source_breakdown, list):
+                for row in source_breakdown:
+                    if not isinstance(row, dict):
+                        continue
+                    key = str(row.get("criterion", "")).lower().strip()
+                    try:
+                        val = float(row.get("score", base_score))
+                    except (TypeError, ValueError):
+                        val = base_score
+                    if key:
+                        score_by_criterion[key] = max(0.0, min(100.0, val))
+            security_score = score_by_criterion.get("security", base_score)
+            functionality_score = score_by_criterion.get("functionality", base_score)
+            efficiency_score = score_by_criterion.get("algorithmic_efficiency", base_score)
+            standards_score = score_by_criterion.get("code_standards", base_score)
+
+            def _row_percent(label_text: str) -> float:
+                lower = label_text.lower()
+                if any(token in lower for token in ("guven", "security", "risk", "tehdit")):
+                    return security_score
+                if any(token in lower for token in ("performans", "algorit", "karma", "big-o", "verim")):
+                    return efficiency_score
+                if any(token in lower for token in ("dokuman", "dokum", "yorum", "okun", "standart", "kod kalitesi")):
+                    return standards_score
+                if any(token in lower for token in ("api", "endpoint", "test", "hata", "temiz", "guzel", "sunucu", "calis", "islev")):
+                    return functionality_score
+                return base_score
+
+            if isinstance(source_breakdown, list):
+                for row in source_breakdown:
+                    if isinstance(row, dict) and str(row.get("criterion", "")).lower() == "security":
+                        try:
+                            security_score = float(row.get("score", base_score))
+                        except (TypeError, ValueError):
+                            security_score = base_score
+                        break
+
+            rows: list[dict[str, Any]] = []
+            total_max = 0
+            total_earned = 0
+            for i, criterion in enumerate(faculty):
+                weight = int(criterion.get("max_score", 0) or 0)
+                label = str(criterion.get("name", f"Kriter {i + 1}"))
+                score_base = _row_percent(label)
+                earned = max(0, min(weight, int(round(weight * score_base / 100.0))))
+                rows.append({
+                    "criterion": f"criterion_{i}",
+                    "label": label,
+                    "weight": weight,
+                    "score": earned,
+                    "weighted_score": float(earned),
+                    "justification": (
+                        f"LLM format hatasi nedeniyle bu satir, diger ajanlarin ozet puanlari "
+                        f"ve rubrik agirligi kullanilarak hesaplandi. Hata: {error}"
+                    ),
+                })
+                total_max += weight
+                total_earned += earned
+            final_score = round(100.0 * total_earned / total_max, 1) if total_max > 0 else 0.0
+            breakdown = rows
+        else:
+            breakdown = list(programmatic.get("rubric_breakdown", []) or [])
+            final_score = base_score
+
+        return {
+            "final_score": max(0.0, min(100.0, float(final_score))),
+            "rubric_breakdown": breakdown,
+            "summary": (
+                f"{warning} Programatik nihai puan: {round(float(final_score), 1)}/100."
+            ),
+            "strengths": strengths,
+            "weaknesses": weaknesses,
+            "recommendations": recommendations,
+            "llm_status": "fallback",
+            "llm_error": str(error),
+        }
 
     @staticmethod
     def _recompute_default_final_score(llm_result: dict[str, Any]) -> None:

@@ -190,6 +190,7 @@ class TestAgent(BaseAgent):
         timeout = sandbox.get("timed_out", sandbox.get("timeout", False))
         mem_exceeded = sandbox.get("memory_exceeded", False)
         sb_static = sandbox.get("static_analysis", {})
+        service_program = _looks_like_service_program(source_code, language)
 
         if not compilation:
             errors = _classify_errors(stderr)
@@ -205,7 +206,7 @@ class TestAgent(BaseAgent):
                 "score": 0,
             })
 
-        if timeout:
+        if timeout and not service_program:
             return _finish({
                 "compilation_success": True,
                 "runs_successfully": False,
@@ -217,8 +218,24 @@ class TestAgent(BaseAgent):
                 "performance_notes": f"Timeout ({exec_time}ms)",
                 "score": 5,
             })
+        if timeout and service_program:
+            # API/server assignments often keep the process alive intentionally.
+            return _finish({
+                "compilation_success": True,
+                "runs_successfully": True,
+                "passed_tests": 1,
+                "failed_tests": 0,
+                "test_failures": [],
+                "runtime_errors": [],
+                "edge_case_handling": "fair",
+                "performance_notes": (
+                    f"Servis tipi uygulama tespit edildi; surekli calisma nedeniyle timeout ({exec_time}ms) "
+                    "testte hata olarak sayilmadi."
+                ),
+                "score": 68 if align_f >= 0.7 else 50,
+            })
 
-        if mem_exceeded:
+        if mem_exceeded and not service_program:
             return _finish({
                 "compilation_success": True,
                 "runs_successfully": False,
@@ -229,6 +246,21 @@ class TestAgent(BaseAgent):
                 "edge_case_handling": "poor",
                 "performance_notes": f"Bellek asimi ({peak_mem:.1f}MB)",
                 "score": 5,
+            })
+        if mem_exceeded and service_program:
+            return _finish({
+                "compilation_success": True,
+                "runs_successfully": True,
+                "passed_tests": 1,
+                "failed_tests": 0,
+                "test_failures": [],
+                "runtime_errors": [],
+                "edge_case_handling": "fair",
+                "performance_notes": (
+                    f"Servis tipi uygulama icin bellek yuksek gorundu ({peak_mem:.1f}MB); "
+                    "calisma basarisizligi sayilmadi."
+                ),
+                "score": 62 if align_f >= 0.7 else 48,
             })
 
         runs_ok = exit_code == 0
@@ -499,3 +531,20 @@ def _evaluate_performance(exec_time, peak_mem) -> str:
             parts.append(f"Bellek: {peak_mem}MB (yuksek!)")
 
     return " | ".join(parts) if parts else "Performans verisi yok."
+
+
+def _looks_like_service_program(source_code: str, language: str) -> bool:
+    src = (source_code or "").lower()
+    if language.lower() in ("python", "py"):
+        service_markers = (
+            "serve_forever(",
+            "httpserver(",
+            "basehttprequesthandler",
+            "app.run(",
+            "uvicorn.run(",
+            "fastapi(",
+            "@app.get(",
+            "@app.post(",
+        )
+        return any(marker in src for marker in service_markers)
+    return any(marker in src for marker in ("listen(", "accept(", "bind(", "server"))

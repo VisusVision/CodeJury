@@ -333,6 +333,7 @@ class RubricUpdateStatusRequest(BaseModel):
 class RubricSuggestionRequest(BaseModel):
     assignment_title: str
     assignment_description: str = ""
+    criterion_count: int = 10
 
 
 _RUBRIC_SUGGEST_SYSTEM = """\
@@ -346,41 +347,110 @@ JSON shape exactly:
     {
       "name": "short criterion name in Turkish",
       "description": "Plain Turkish, ONE short paragraph: what is graded and what excellent work looks like. No markdown.",
-      "max_score": 35
+      "max_score": 10
     }
   ]
 }
 
 Rules:
-- 4 to 7 criteria (3 only if the assignment description is extremely short).
-- Each max_score is a positive integer.
+- Produce EXACTLY the requested number of criteria.
+- The requested criterion count will always be between 10 and 20.
+- Each max_score MUST be an integer from 5 to 10 inclusive.
 - The sum of all max_score values MUST equal exactly 100.
 - Tailor names and descriptions to the assignment title and description (e.g. OOP, data structures, APIs, file I/O, tests).
 - If the assignment mentions unit tests, pytest, unittest, or testing, include a dedicated testing criterion.
 """
 
 
-def _scale_weights_to_100(weights: list[int]) -> list[int]:
-    """Oransal dagitim; toplam tam 100 tam sayi."""
-    if not weights:
-        return []
-    tot = sum(max(0, w) for w in weights)
-    if tot <= 0:
-        n = len(weights)
-        base, extra = divmod(100, n)
-        return [base + (1 if i < extra else 0) for i in range(n)]
-    scaled = [w * 100.0 / tot for w in weights]
-    floors = [int(s) for s in scaled]
-    rem = 100 - sum(floors)
-    order = sorted(range(len(scaled)), key=lambda i: scaled[i] - floors[i], reverse=True)
-    for j in range(rem):
-        floors[order[j % len(order)]] += 1
-    return floors
+_RUBRIC_MIN_CRITERIA = 10
+_RUBRIC_MAX_CRITERIA = 20
+_RUBRIC_MIN_POINTS = 5
+_RUBRIC_MAX_POINTS = 10
+_RUBRIC_TOTAL_POINTS = 100
+
+_RUBRIC_FALLBACK_NAMES = [
+    "Gereksinimlere Uyum",
+    "Sınıf Tasarımı",
+    "Metot Kapsamı",
+    "Veri Modeli",
+    "Hata Yönetimi",
+    "Çalışabilirlik",
+    "Algoritmik Uygunluk",
+    "Kod Okunabilirliği",
+    "Kapsülleme",
+    "Test Edilebilirlik",
+    "Entegrasyon",
+    "Kenar Durumlar",
+    "Dokümantasyon",
+    "Kullanıcı Akışı",
+    "Güvenli Kullanım",
+    "Bakım Kolaylığı",
+    "Modülerlik",
+    "Girdi Doğrulama",
+    "Çıktı Doğruluğu",
+    "Genel Kalite",
+]
 
 
-def _criteria_from_llm_payload(result: dict[str, Any]) -> list[dict[str, Any]]:
+def _clamp_rubric_count(value: Any) -> int:
+    try:
+        n = int(value)
+    except (TypeError, ValueError):
+        n = _RUBRIC_MIN_CRITERIA
+    return max(_RUBRIC_MIN_CRITERIA, min(_RUBRIC_MAX_CRITERIA, n))
+
+
+def _rubric_weights_for_count(count: int) -> list[int]:
+    """Return count integers, each 5..10, summing to 100."""
+    count = _clamp_rubric_count(count)
+    weights = [_RUBRIC_MIN_POINTS] * count
+    remaining = _RUBRIC_TOTAL_POINTS - sum(weights)
+    i = 0
+    while remaining > 0:
+        if weights[i] < _RUBRIC_MAX_POINTS:
+            weights[i] += 1
+            remaining -= 1
+        i = (i + 1) % count
+    return weights
+
+
+def _ensure_rubric_constraints(criteria: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    if not (_RUBRIC_MIN_CRITERIA <= len(criteria) <= _RUBRIC_MAX_CRITERIA):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Rubrik {_RUBRIC_MIN_CRITERIA}-{_RUBRIC_MAX_CRITERIA} kriterden olusmalidir.",
+        )
+
+    cleaned: list[dict[str, Any]] = []
+    total = 0
+    for item in criteria:
+        if not isinstance(item, dict):
+            raise HTTPException(status_code=400, detail="Rubrik kriterleri gecersiz.")
+        name = str(item.get("name", "")).strip()
+        desc = str(item.get("description", "")).strip()
+        try:
+            score = int(round(float(item.get("max_score", 0))))
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail="Kriter puanlari sayi olmalidir.")
+        if not name:
+            raise HTTPException(status_code=400, detail="Tum kriterlerin adi doldurulmalidir.")
+        if not (_RUBRIC_MIN_POINTS <= score <= _RUBRIC_MAX_POINTS):
+            raise HTTPException(
+                status_code=400,
+                detail=f"Her kriter puani {_RUBRIC_MIN_POINTS}-{_RUBRIC_MAX_POINTS} arasinda olmalidir.",
+            )
+        total += score
+        cleaned.append({"name": name, "description": desc or name, "max_score": score})
+
+    if total != _RUBRIC_TOTAL_POINTS:
+        raise HTTPException(status_code=400, detail="Rubrik toplam puani 100 olmalidir.")
+    return cleaned
+
+
+def _criteria_from_llm_payload(result: dict[str, Any], criterion_count: int) -> list[dict[str, Any]]:
+    target = _clamp_rubric_count(criterion_count)
     raw = result.get("criteria")
-    if not isinstance(raw, list) or len(raw) < 3:
+    if not isinstance(raw, list):
         raise ValueError("criteria invalid")
     cleaned: list[dict[str, Any]] = []
     for item in raw:
@@ -401,11 +471,22 @@ def _criteria_from_llm_payload(result: dict[str, Any]) -> list[dict[str, Any]]:
             "description": desc if desc else name,
             "max_score": ms,
         })
-    if len(cleaned) < 3:
+    if len(cleaned) < 1:
         raise ValueError("too few criteria after clean")
-    scaled = _scale_weights_to_100([c["max_score"] for c in cleaned])
-    for i, c in enumerate(cleaned):
-        c["max_score"] = scaled[i]
+
+    cleaned = cleaned[:target]
+    while len(cleaned) < target:
+        i = len(cleaned)
+        name = _RUBRIC_FALLBACK_NAMES[i % len(_RUBRIC_FALLBACK_NAMES)]
+        cleaned.append({
+            "name": name,
+            "description": f"{name} kriteri, odevin beklenen kapsam ve kalite gereksinimlerini karsilama duzeyini degerlendirir.",
+            "max_score": _RUBRIC_MIN_POINTS,
+        })
+
+    weights = _rubric_weights_for_count(target)
+    for i, criterion in enumerate(cleaned):
+        criterion["max_score"] = weights[i]
     return cleaned
 
 
@@ -1750,16 +1831,38 @@ async def run_analysis_pipeline(
         x for x in (brief, _rubric_criteria_text(fac if fac else None)) if x
     ).strip()
     _align_f = float(task_alignment.get("factor", 1.0) or 1.0)
+    _llm_off_topic = bool(task_alignment.get("llm_off_topic"))
+    _align_reasons = task_alignment.get("reasons", [])
+    _has_off_topic_reason = isinstance(_align_reasons, list) and any(
+        reason in {"llm_task_relevance_off_topic", "llm_task_not_fulfilled", "llm_low_task_fit"}
+        for reason in _align_reasons
+    )
     relevance_score_warning: str | None = None
-    if (
+    if len(_ctx) >= BRIEF_MIN_LEN and (_llm_off_topic or _align_f <= 0.20 or _has_off_topic_reason):
+        relevance_score_warning = (
+            "Gorev uyumu zayif: bu teslim buyuk olasilikla odev/rubrik ile alakasiz "
+            "veya yanlis dosya olabilir. Kod dusuk puan almis olsa bile ana sorun konu uyumsuzlugu."
+        )
+        if not any(
+            isinstance(item, dict) and item.get("agent") == "Gorev Uyumu"
+            for item in evidence_lines
+        ):
+            evidence_lines.append({
+                "line": 1,
+                "agent": "Gorev Uyumu",
+                "message": "Teslim odev/rubrik ile alakasiz gorunuyor (topic mismatch).",
+                "severity": "warning",
+            })
+            evidence_lines.sort(key=lambda x: x["line"])
+    elif (
         len(_ctx) >= BRIEF_MIN_LEN
         and total_score_rounded <= 20
         and _align_f <= 0.35
     ):
         relevance_score_warning = (
-            "Nihai puan düşük ve görev uyumu da zayıf: bu genelde teslimin ödev/rubrikle örtüşmediği "
-            "veya yanlış dosyanın yüklendiği anlamına gelebilir. Düşük not her zaman «alakasız kod» "
-            "demek zorunda değildir; konu doğru olsa bile çözüm zayıfsa benzer aralıkta kalınabilir."
+            "Nihai puan dusuk ve gorev uyumu da zayif: bu genelde teslimin odev/rubrikle ortusmedigi "
+            "veya yanlis dosyanin yuklendigi anlamina gelebilir. Dusuk not her zaman alakasiz kod "
+            "demek zorunda degildir; konu dogru olsa bile cozum zayifsa benzer aralikta kalinabilir."
         )
 
     return {
@@ -1774,6 +1877,7 @@ async def run_analysis_pipeline(
         "peakMemoryMb": round(peak_mem / 1024 / 1024, 1),
         "analysisEngine": _ANALYSIS_ENGINE,
         "relevanceScoreWarning": relevance_score_warning,
+        "taskAlignment": task_alignment,
     }
 
 
@@ -2552,6 +2656,7 @@ async def upsert_rubric(req: RubricUpsertRequest):
         raise HTTPException(status_code=400, detail="Gecersiz rubrik statusu")
     if not req.criteria:
         raise HTTPException(status_code=400, detail="En az bir kriter gerekli")
+    criteria = _ensure_rubric_constraints(req.criteria)
 
     if _DEMO_MODE:
         aid = (req.assignment_id or "").strip()
@@ -2563,7 +2668,7 @@ async def upsert_rubric(req: RubricUpsertRequest):
             None,
         )
         if existing:
-            existing["criteria"] = req.criteria
+            existing["criteria"] = criteria
             existing["status"] = req.status
             existing["updated_at"] = _demo_now()
             _save_demo_store_to_disk()
@@ -2572,7 +2677,7 @@ async def upsert_rubric(req: RubricUpsertRequest):
         rubric = {
             "id": _demo_uuid(),
             "assignment_id": aid,
-            "criteria": req.criteria,
+            "criteria": criteria,
             "status": req.status,
             "created_by": req.created_by,
             "created_at": _demo_now(),
@@ -2612,7 +2717,7 @@ async def upsert_rubric(req: RubricUpsertRequest):
                 WHERE id = $3
                 RETURNING id, assignment_id, criteria, status, created_by, created_at, updated_at
                 """,
-                json.dumps(req.criteria),
+                json.dumps(criteria),
                 req.status,
                 existing["id"],
             )
@@ -2627,7 +2732,7 @@ async def upsert_rubric(req: RubricUpsertRequest):
                 RETURNING id, assignment_id, criteria, status, created_by, created_at, updated_at
                 """,
                 auid,
-                json.dumps(req.criteria),
+                json.dumps(criteria),
                 req.status,
                 req.created_by,
             )
@@ -2681,11 +2786,15 @@ async def suggest_rubric(req: RubricSuggestionRequest):
 
     title = (req.assignment_title or "").strip() or "Odev"
     desc = (req.assignment_description or "").strip()
+    criterion_count = _clamp_rubric_count(req.criterion_count)
 
     user_prompt = (
         f"Assignment title: {title}\n"
         f"Assignment description (may be empty):\n{desc or '(none)'}\n\n"
-        "Generate rubric criteria JSON. Sum of max_score must be 100."
+        f"Requested criterion count: {criterion_count}\n"
+        f"Generate rubric criteria JSON with exactly {criterion_count} criteria.\n"
+        f"Each max_score must be between {_RUBRIC_MIN_POINTS} and {_RUBRIC_MAX_POINTS}; "
+        f"sum of max_score must be {_RUBRIC_TOTAL_POINTS}."
     )
 
     result = await chat_json(
@@ -2700,7 +2809,7 @@ async def suggest_rubric(req: RubricSuggestionRequest):
             detail="LLM rubrik JSON ureteemedi. Ollama ve modeli kontrol edin.",
         )
     try:
-        criteria = _criteria_from_llm_payload(result)
+        criteria = _criteria_from_llm_payload(result, criterion_count)
     except ValueError as exc:
         raise HTTPException(
             status_code=502,

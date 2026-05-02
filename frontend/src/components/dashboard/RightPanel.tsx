@@ -5,6 +5,7 @@ import {
   ListChecks,
   FileText,
   Download,
+  ChevronDown,
   AlertTriangle,
   CheckCircle2,
   Info,
@@ -124,6 +125,28 @@ function RubricBarSmall({ name, score, maxScore }: { name: string; score: number
   );
 }
 
+function RubricDetailRow({ name, score, maxScore }: { name: string; score: number; maxScore: number }) {
+  const pct = maxScore > 0 ? Math.round((score / maxScore) * 100) : 0;
+  return (
+    <div className="rounded-lg border border-border bg-background/80 p-2.5">
+      <div className="mb-1 flex items-start justify-between gap-2">
+        <span className="text-[11px] font-medium leading-snug text-foreground">{name}</span>
+        <span className="shrink-0 text-[11px] font-semibold tabular-nums text-foreground">
+          {score}/{maxScore}
+        </span>
+      </div>
+      <div className="h-1.5 overflow-hidden rounded-full bg-muted">
+        <motion.div
+          className="h-full rounded-full bg-primary"
+          initial={{ width: 0 }}
+          animate={{ width: `${pct}%` }}
+          transition={{ duration: 0.6, ease: "easeOut" }}
+        />
+      </div>
+    </div>
+  );
+}
+
 /* ─── Main Component ─── */
 
 const RightPanel = ({
@@ -138,6 +161,7 @@ const RightPanel = ({
   onFindingClick,
 }: RightPanelProps) => {
   const [activeTab, setActiveTab] = useState<TabId>("process");
+  const [rubricOpen, setRubricOpen] = useState(false);
 
   const sortedFindings = [...findings].sort(
     (a, b) => severityOrder[a.severity] - severityOrder[b.severity]
@@ -311,6 +335,44 @@ const RightPanel = ({
                     );
                   })}
                 </div>
+
+                {/* Rubric details */}
+                {report.rubric.length > 0 && (
+                  <div className="overflow-hidden rounded-xl border border-border bg-card">
+                    <button
+                      type="button"
+                      onClick={() => setRubricOpen((open) => !open)}
+                      className="flex w-full items-center justify-between gap-3 px-3 py-2.5 text-left transition-colors hover:bg-muted/40"
+                    >
+                      <div>
+                        <h3 className="text-xs font-semibold text-foreground">Rubrik Puanlari</h3>
+                        <p className="text-[11px] text-muted-foreground">
+                          {report.rubric.length} madde, toplam {report.totalScore}/{report.maxScore}
+                        </p>
+                      </div>
+                      <ChevronDown
+                        className={`h-4 w-4 shrink-0 text-muted-foreground transition-transform ${rubricOpen ? "rotate-180" : ""}`}
+                      />
+                    </button>
+                    {rubricOpen && (
+                      <motion.div
+                        initial={{ height: 0, opacity: 0 }}
+                        animate={{ height: "auto", opacity: 1 }}
+                        exit={{ height: 0, opacity: 0 }}
+                        className="space-y-2 border-t border-border bg-muted/20 p-3"
+                      >
+                        {report.rubric.map((cat) => (
+                          <RubricDetailRow
+                            key={cat.name}
+                            name={cat.name}
+                            score={cat.score}
+                            maxScore={cat.maxScore}
+                          />
+                        ))}
+                      </motion.div>
+                    )}
+                  </div>
+                )}
               </>
             )}
           </div>

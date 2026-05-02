@@ -12,6 +12,7 @@ interface Student {
   last_name: string;
   student_no: string;
   department_name?: string | null;
+  class_year?: number | null;
 }
 
 interface Course {
