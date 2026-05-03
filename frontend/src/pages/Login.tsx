@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { loginStudent, loginTeacher, registerTeacher } from "@/services/api";
-import { GraduationCap, User, BookOpen } from "lucide-react";
+import { GraduationCap, User, BookOpen, LogIn } from "lucide-react";
 
 type Tab = "student" | "teacher";
 
@@ -87,6 +87,25 @@ const Login = () => {
     }
   };
 
+  const handleDemoTeacherLogin = async () => {
+    setError("");
+    setLoading(true);
+    setTab("teacher");
+    setIsSignUp(false);
+    setEmail("demo@agentgrade.local");
+    setPassword("demo123");
+    try {
+      const teacher = await loginTeacher("demo@agentgrade.local", "demo123");
+      sessionStorage.setItem("teacher", JSON.stringify(teacher));
+      navigate("/faculty/dashboard");
+    } catch (err: unknown) {
+      console.error(err);
+      setError(getErrorMessage(err, "Demo hesabina giris yapilamadi."));
+    } finally {
+      setLoading(false);
+    }
+  };
+
   return (
     <div className="min-h-screen flex items-center justify-center bg-background p-4">
       <div className="w-full max-w-sm">
@@ -123,6 +142,16 @@ const Login = () => {
             Öğretim Üyesi
           </button>
         </div>
+
+        <button
+          type="button"
+          onClick={handleDemoTeacherLogin}
+          disabled={loading}
+          className="mb-4 w-full flex items-center justify-center gap-2 rounded-lg border border-primary/30 bg-primary/10 px-3 py-2.5 text-sm font-medium text-primary hover:bg-primary/15 transition-colors disabled:opacity-50"
+        >
+          <LogIn className="h-4 w-4" />
+          Demo ogretim uyesi olarak gir
+        </button>
 
         {/* Student Form */}
         {tab === "student" && (
