@@ -359,6 +359,8 @@ Rules:
 - The sum of all max_score values MUST equal exactly 100.
 - Tailor names and descriptions to the assignment title and description (e.g. OOP, data structures, APIs, file I/O, tests).
 - If the assignment mentions unit tests, pytest, unittest, or testing, include a dedicated testing criterion.
+- If the assignment does NOT mention tests, do not invent a dedicated test criterion;
+  you may mention testability inside correctness or maintainability instead.
 - Do NOT invent presentation, slide, poster, video, or visual-design criteria unless the assignment explicitly asks for those deliverables.
 - Every criterion should grade the submitted software/code artifact: correctness, requirements, tests, error handling, data model, algorithmic efficiency, style, documentation, security, or maintainability.
 - Names must be distinct; avoid duplicate or near-duplicate criteria.
@@ -416,6 +418,36 @@ _RUBRIC_WEAK_NAME_TOKENS = (
     "sunum",
 )
 
+_RUBRIC_TEST_TOKENS = (
+    "test",
+    "pytest",
+    "unittest",
+    "birim test",
+    "unit test",
+)
+
+_RUBRIC_DEDICATED_TEST_NAME_TOKENS = (
+    "test",
+    "testler",
+    "testleri",
+    "test durumu",
+)
+
+_RUBRIC_PROCESS_TOKENS = (
+    "gelistirme sureci",
+    "geliştirme süreci",
+    "versiyon kontrol",
+    "git",
+    "commit",
+    "surec",
+    "süreç",
+)
+
+_RUBRIC_NON_CODE_ODD_TOKENS = (
+    "yikimlilik",
+    "yıkımlılık",
+)
+
 _RUBRIC_CONCRETE_DESC_TOKENS = (
     "api",
     "endpoint",
@@ -457,6 +489,16 @@ def _assignment_allows_presentation_criteria(title: str, description: str) -> bo
     return any(token in blob for token in _RUBRIC_PRESENTATION_TOKENS)
 
 
+def _assignment_requires_testing(title: str, description: str) -> bool:
+    blob = f"{title}\n{description}".lower()
+    return any(token in blob for token in _RUBRIC_TEST_TOKENS)
+
+
+def _assignment_requires_process_evidence(title: str, description: str) -> bool:
+    blob = f"{title}\n{description}".lower()
+    return any(token in blob for token in _RUBRIC_PROCESS_TOKENS)
+
+
 def _next_rubric_replacement_name(used_names: set[str]) -> str:
     for candidate in _RUBRIC_FALLBACK_NAMES:
         key = candidate.lower()
@@ -483,6 +525,28 @@ def _rubric_name_is_too_weak(name: str, description: str) -> bool:
     )
 
 
+def _rubric_is_unrequested_test_criterion(name: str, description: str, *, testing_required: bool) -> bool:
+    if testing_required:
+        return False
+    name_blob = (name or "").lower()
+    desc_blob = (description or "").lower()
+    if any(token in name_blob for token in _RUBRIC_DEDICATED_TEST_NAME_TOKENS):
+        return True
+    return "pytest" in desc_blob or "unittest" in desc_blob or "birim test" in desc_blob
+
+
+def _rubric_is_unrequested_process_criterion(
+    name: str,
+    description: str,
+    *,
+    process_required: bool,
+) -> bool:
+    blob = f"{name}\n{description}".lower()
+    if process_required:
+        return False
+    return any(token in blob for token in _RUBRIC_PROCESS_TOKENS)
+
+
 def _sanitize_rubric_scope(
     criteria: list[dict[str, Any]],
     *,
@@ -491,6 +555,11 @@ def _sanitize_rubric_scope(
 ) -> list[dict[str, Any]]:
     """Remove LLM-invented, duplicate, or vague non-code rubric rows."""
     allow_presentation = _assignment_allows_presentation_criteria(
+        assignment_title,
+        assignment_description,
+    )
+    testing_required = _assignment_requires_testing(assignment_title, assignment_description)
+    process_required = _assignment_requires_process_evidence(
         assignment_title,
         assignment_description,
     )
@@ -506,6 +575,17 @@ def _sanitize_rubric_scope(
             not name
             or key in used_names
             or (not allow_presentation and any(token in blob for token in _RUBRIC_PRESENTATION_TOKENS))
+            or _rubric_is_unrequested_test_criterion(
+                name,
+                desc,
+                testing_required=testing_required,
+            )
+            or _rubric_is_unrequested_process_criterion(
+                name,
+                desc,
+                process_required=process_required,
+            )
+            or any(token in blob for token in _RUBRIC_NON_CODE_ODD_TOKENS)
             or _rubric_name_is_too_weak(name, desc)
         )
         if should_replace:

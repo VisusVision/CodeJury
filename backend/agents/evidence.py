@@ -45,6 +45,9 @@ Rules:
   log, put it in rejected_claims with a short reason. Do not validate guesses.
 - Prefer the smallest truthful evidence span. Do not attach nearby but unrelated lines just
   to make a weak claim look supported.
+- "code_snippet" must be a normal JSON string containing raw source text only. Never include
+  markdown fences, ```python, bullets, or commentary inside code_snippet. Escape newlines
+  as JSON requires.
 - Prefer block evidence for structural critique (gereksiz iç içe if-else, çok uzun
   fonksiyon, eksik try/except, sınıfın bütünü hakkında yorum, vs.). Use block_id
   when AST_BLOCKS contains a clearly matching node.
@@ -350,6 +353,13 @@ def _normalize_claims(
 
         # ---- Snippet ----
         code_snippet = str(claim.get("code_snippet", claim.get("snippet", "")) or "")
+        if code_snippet.startswith("```"):
+            snippet_lines = code_snippet.splitlines()
+            if snippet_lines and snippet_lines[0].lstrip().startswith("```"):
+                snippet_lines = snippet_lines[1:]
+            if snippet_lines and snippet_lines[-1].strip().startswith("```"):
+                snippet_lines = snippet_lines[:-1]
+            code_snippet = "\n".join(snippet_lines).strip()
         if not code_snippet:
             if line_range:
                 start, end = line_range

@@ -36,6 +36,21 @@ def test_rubric_sanitizer() -> None:
             "description": "Kodun test, hata yonetimi ve okunabilirlik kanitlarini degerlendirir.",
             "max_score": 10,
         },
+        {
+            "name": "Test Durumu",
+            "description": "Pytest ile tum fonksiyonlar icin birim test yazilmis olmalidir.",
+            "max_score": 10,
+        },
+        {
+            "name": "Gelistirme Sureci",
+            "description": "Git commitleri ve versiyon kontrol sureci degerlendirilir.",
+            "max_score": 10,
+        },
+        {
+            "name": "Yikimlilik",
+            "description": "Kodun yikimlilik ve gelistirme sureci acisindan durumu.",
+            "max_score": 10,
+        },
     ]
     cleaned = _sanitize_rubric_scope(
         rows,
@@ -50,10 +65,18 @@ def test_rubric_sanitizer() -> None:
         all(str(row.get("description", "")).strip() for row in cleaned),
         "Tum rubrik satirlarinda aciklama olmali.",
     )
+    _assert(
+        not any("test" in name for name in lowered),
+        "Test istemeyen odevde dedicated test kriteri kaldi.",
+    )
+    _assert(
+        not any("gelistirme" in name or "yikimlilik" in name for name in lowered),
+        "Kod kanitina dayanmayan surec/garip rubrik kriteri kaldi.",
+    )
 
 
 def test_task_relevance_capability_signal() -> None:
-    from backend.agents.task_relevance import _capability_match_signal
+    from backend.agents.task_relevance import _capability_match_signal, merge_task_alignment
 
     brief = (
         "Python ile uc seviyeli ic ice listeleri tek boyutlu listeye donusturen, "
@@ -73,6 +96,26 @@ def average(data):
 """
     score = _capability_match_signal(brief, None, code)
     _assert(score >= 0.70, f"Liste/veri isleme odevinde capability sinyali dusuk: {score}")
+
+    alignment = merge_task_alignment(
+        1.0,
+        [],
+        {
+            "skipped": False,
+            "relevance_factor": 0.68,
+            "off_topic": False,
+            "student_fulfills_assignment": False,
+            "explanation": "Teslim ayni CLI/API sekline sahip fakat bir alt teslim eksik gorunuyor.",
+            "submission_domain_guess": "log analizi CLI",
+            "task_domain_guess": "log ozetleme CLI",
+            "capability_match": 0.925,
+        },
+    )
+    _assert(alignment["factor"] >= 0.75, "Guclu capability eslesmesi gorev uyumu cap'ine donusmemeli.")
+    _assert(
+        "llm_task_not_fulfilled" not in alignment["reasons"],
+        "Alakali ama eksik teslim, off-topic gorev uyumu uyarisi uretmemeli.",
+    )
 
 
 def test_test_agent_runtime_contracts() -> None:
@@ -161,6 +204,47 @@ def test_master_guards() -> None:
         faculty_mode=True,
     )
     _assert(security_result["final_score"] <= 65, "Security guard final notu cap'lemeli.")
+
+    faculty_low_result = {
+        "final_score": 30,
+        "rubric_breakdown": [
+            {
+                "criterion": f"criterion_{idx}",
+                "label": label,
+                "weight": 10,
+                "score": 3,
+                "weighted_score": 3.0,
+                "justification": "LLM ilk puani.",
+            }
+            for idx, label in enumerate(
+                [
+                    "Dogruluk",
+                    "Hata Yonetimi",
+                    "Veri Modeli",
+                    "Algoritmik Uygunluk",
+                    "Kod Stili",
+                    "Dokumantasyon",
+                    "Gereksinimlere Uyum",
+                    "CLI Akisi",
+                    "Kenar Durumlar",
+                    "Guvenlik",
+                ]
+            )
+        ],
+        "recommendations": [],
+    }
+    MasterEvaluatorAgent._apply_faculty_reasonableness_floor(
+        faculty_low_result,
+        {
+            "final_score": 82,
+            "brief_alignment_factor": 0.85,
+            "brief_alignment_reasons": [],
+        },
+    )
+    _assert(
+        faculty_low_result["final_score"] >= 65,
+        "Faculty Master asiri dusuk LLM puanini programatik tabana cekmeli.",
+    )
 
 
 def test_evidence_contracts() -> None:

@@ -55,8 +55,26 @@ Rules:
 - If brief + rubric are too vague to infer a task, set relevance_factor 1.0, off_topic false,
   student_fulfills_assignment true, and say the task was underspecified.
 - Empty or placeholder code → very low relevance_factor, student_fulfills_assignment false.
+- All string fields must be single-line JSON strings; escape quotes and do not insert raw line breaks.
 Reply with ONLY valid JSON matching the schema in the user message.
 """
+
+
+def _task_domain_guess_from_text(text: str) -> str:
+    blob = (text or "").lower()
+    if any(t in blob for t in ("api", "endpoint", "fastapi", "flask", "http")):
+        return "API / web servis"
+    if any(t in blob for t in ("sqlite", "sql", "database", "tablo")):
+        return "veritabani uygulamasi"
+    if any(t in blob for t in ("log", "cli", "dosya", "arguman", "komut")):
+        return "dosya/CLI araci"
+    if any(t in blob for t in ("kutuphane", "kitap", "uye", "odunc", "iade")):
+        return "OOP kutuphane sistemi"
+    if any(t in blob for t in ("agac", "ağaç", "bst", "dugum", "node", "inorder", "preorder")):
+        return "agac veri yapisi"
+    if any(t in blob for t in ("liste", "ortalama", "istatistik", "flatten", "veri")):
+        return "veri isleme"
+    return "programlama odevi"
 
 
 def _unwrap_task_relevance_payload(raw: dict[str, Any]) -> dict[str, Any]:
@@ -148,6 +166,15 @@ async def assess_task_relevance_llm(
         f"```\n{code_sample}\n```\n"
         "Return JSON with: relevance_factor, off_topic, student_fulfills_assignment, explanation, "
         "submission_domain_guess, task_domain_guess; optional confidence 0–1."
+        "\nRequired JSON shape exactly: {"
+        "\"relevance_factor\":0.0,"
+        "\"off_topic\":false,"
+        "\"student_fulfills_assignment\":false,"
+        "\"confidence\":0.0,"
+        "\"explanation\":\"single-line explanation\","
+        "\"submission_domain_guess\":\"short label\","
+        "\"task_domain_guess\":\"short label\""
+        "}. Use single-line strings only; do not insert raw newlines inside JSON strings."
         f"{build_llm_user_suffix(report_language=report_language)}"
     )
 
@@ -166,6 +193,12 @@ async def assess_task_relevance_llm(
     if not isinstance(raw, dict):
         return {"skipped": True, "relevance_factor": 1.0, "reason": "invalid_response"}
     raw = _unwrap_task_relevance_payload(raw)
+    if not str(raw.get("task_domain_guess", "")).strip():
+        raw["task_domain_guess"] = _task_domain_guess_from_text(combined)
+    if not str(raw.get("submission_domain_guess", "")).strip():
+        raw["submission_domain_guess"] = _task_domain_guess_from_text(code_sample)
+    if not str(raw.get("explanation", "")).strip():
+        raw["explanation"] = "Gorev uyumu kod ve odev aciklamasi karsilastirilarak degerlendirildi."
     if "confidence" in raw and raw.get("confidence") is None:
         raw.pop("confidence", None)
 
@@ -190,7 +223,13 @@ async def assess_task_relevance_llm(
             logger.warning("[task_relevance] schema onarim basarisiz: %s", exc)
             return {"skipped": True, "relevance_factor": 1.0, "reason": "schema_repair_failed"}
         if isinstance(raw2, dict):
-            raw = raw2
+            raw = _unwrap_task_relevance_payload(raw2)
+            if not str(raw.get("task_domain_guess", "")).strip():
+                raw["task_domain_guess"] = _task_domain_guess_from_text(combined)
+            if not str(raw.get("submission_domain_guess", "")).strip():
+                raw["submission_domain_guess"] = _task_domain_guess_from_text(code_sample)
+            if not str(raw.get("explanation", "")).strip():
+                raw["explanation"] = "Gorev uyumu kod ve odev aciklamasi karsilastirilarak degerlendirildi."
             msgs = collect_validation_messages(raw, TASK_RELEVANCE_OUTPUT_SCHEMA)
         if msgs:
             logger.warning("[task_relevance] schema ikinci tur hata: %s", msgs[:4])
@@ -390,6 +429,18 @@ def merge_task_alignment(
         off = False
         fulfils = False
         llm_f = max(llm_f, 0.62 if capability_signal >= 0.72 else 0.55)
+
+    # A strongly matching code shape (CLI/API/OOP/BST etc.) means the submission is
+    # aimed at the assignment even if the LLM thinks one deliverable is incomplete.
+    # Completeness should be graded by the rubric, not converted into an off-topic cap.
+    if (
+        not off
+        and not fulfils
+        and out["programmatic_factor"] >= 0.95
+        and capability_signal >= 0.80
+    ):
+        fulfils = True
+        llm_f = max(llm_f, 0.75)
 
     # Opposite direction: if capability markers are clearly missing, do not allow
     # a high-fit verdict from LLM noise.
