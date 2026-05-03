@@ -425,6 +425,61 @@ def test_assignment_assistant_long_hint_contracts() -> None:
     _assert("kimya laboratuvar" in focus, "Serbest konu LLM promptuna korunarak tasinmali.")
     _assert("sabit kategori" in focus.lower(), "Focus metni programatik kategoriye sikismamayi soylemeli.")
 
+    original_ollama = settings.ollama_enabled
+    original_chat_json = api_main.chat_json
+    calls: list[str] = []
+
+    async def fake_chat_json(**kwargs):
+        calls.append(str(kwargs.get("user_prompt", "")))
+        if len(calls) == 1:
+            return {
+                "suggestions": [
+                    {
+                        "title": "Sera sensor veri okuma",
+                        "summary": "Sera sensor CSV verisini okuyan kucuk Python odevi.",
+                        "description": "Ogrenciler sera sicaklik ve nem sensor verilerini CSV dosyasindan okuyup temel aralik kontrollerini raporlar.",
+                    }
+                ]
+            }
+        return {
+            "suggestions": [
+                {
+                    "title": "Sera sulama karar raporu",
+                    "summary": "Sera sensor verilerinden sulama onerisi ureten rapor.",
+                    "description": "Ogrenciler sicaklik ve nem esiklerine gore sulama onerisi uretir, hatali satirlari ayirir ve kisa rapor verir.",
+                },
+                {
+                    "title": "Sera nem uyarisi servisi",
+                    "summary": "Nem dusuk veya yuksek oldugunda uyari ureten mini servis.",
+                    "description": "Ogrenciler sensor girdilerini dogrulayan ve riskli nem araliklari icin JSON uyari donduren kucuk bir servis tasarlar.",
+                },
+                {
+                    "title": "Sera sensor test senaryolari",
+                    "summary": "Sensor verisi icin normal, eksik ve aykiri deger testleri.",
+                    "description": "Ogrenciler veri okuma fonksiyonlarini ayirir, eksik alan ve aykiri sicaklik gibi kenar durumlari icin test senaryolari yazar.",
+                },
+            ]
+        }
+
+    try:
+        settings.ollama_enabled = True
+        api_main.chat_json = fake_chat_json
+        response = asyncio.run(
+            api_main.assignment_assistant_suggestions(
+                AssignmentAssistantSuggestionsRequest(
+                    course_hint="Tarim teknolojileri: sera sicaklik ve nem sensor verilerinden sulama onerisi",
+                    count=4,
+                    difficulty="medium",
+                )
+            )
+        )
+    finally:
+        api_main.chat_json = original_chat_json
+        settings.ollama_enabled = original_ollama
+    retry_suggestions = response.get("suggestions", [])
+    _assert(len(calls) == 2, "Eksik LLM oneri sayisi ikinci LLM denemesi tetiklemeli.")
+    _assert(len(retry_suggestions) == 4, "Ilk ve retry LLM onerileri benzersiz sekilde birlesmeli.")
+
 
 def main() -> int:
     tests = [
