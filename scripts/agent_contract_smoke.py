@@ -351,6 +351,8 @@ def test_assignment_assistant_long_hint_contracts() -> None:
     from frontend.backend import main as api_main
     from frontend.backend.main import (
         AssignmentAssistantSuggestionsRequest,
+        HTTPException,
+        _assignment_focus_extra,
         _direct_assignment_suggestion_from_hint,
         _is_detailed_assignment_hint,
         _strip_course_context_from_hint,
@@ -393,11 +395,35 @@ def test_assignment_assistant_long_hint_contracts() -> None:
     finally:
         settings.ollama_enabled = original_ollama
     suggestions = response.get("suggestions", [])
-    _assert(len(suggestions) >= 3, "LLM kapaliyken chatbot fallback oneriler donmeli.")
+    _assert(len(suggestions) == 1, "LLM kapaliyken yalnizca uzun brief taslagi korunmali.")
     _assert(
         suggestions[0]["title"] == direct["title"],
         "Uzun brief LLM kapaliyken ilk taslak olarak korunmali.",
     )
+
+    original_ollama = settings.ollama_enabled
+    try:
+        settings.ollama_enabled = False
+        try:
+            asyncio.run(
+                api_main.assignment_assistant_suggestions(
+                    AssignmentAssistantSuggestionsRequest(
+                        course_hint="kimya laboratuvar titrasyon verileri icin odev oner",
+                        count=3,
+                        difficulty="medium",
+                    )
+                )
+            )
+        except HTTPException as exc:
+            _assert(exc.status_code == 503, "Kisa ipucu LLM kapaliyken programatik odev uretmemeli.")
+        else:
+            raise AssertionError("Kisa ipucu LLM kapaliyken 503 dondurmeli.")
+    finally:
+        settings.ollama_enabled = original_ollama
+
+    focus = _assignment_focus_extra("kimya laboratuvar titrasyon verileri icin rapor araci")
+    _assert("kimya laboratuvar" in focus, "Serbest konu LLM promptuna korunarak tasinmali.")
+    _assert("sabit kategori" in focus.lower(), "Focus metni programatik kategoriye sikismamayi soylemeli.")
 
 
 def main() -> int:

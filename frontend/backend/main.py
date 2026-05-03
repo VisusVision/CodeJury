@@ -799,12 +799,16 @@ def _direct_assignment_suggestion_from_hint(raw: str) -> dict[str, str] | None:
     }
 
 
-_ASSIGNMENT_SUGGEST_SYSTEM = """\
-You reply with a single JSON object only. No markdown, no # headings, no bullet markdown,
-no code fences, no ** bold — plain text inside JSON string values only.
 
-You invent homework topics for undergraduate programming courses (Turkish universities).
-Friendly Turkish throughout: title, summary, description.
+_ASSIGNMENT_SUGGEST_SYSTEM = """\
+You reply with a single JSON object only. No markdown, no headings, no bullet markdown,
+no code fences, no bold markers. JSON string values must be plain Turkish text.
+
+You are an LLM-based assignment designer for university instructors. You are not a
+keyword router and you must not rely on a fixed domain whitelist. The instructor may
+write any topic, discipline, product idea, data source, workflow, constraint, grading
+expectation, or long free-form brief. Understand the intent semantically and turn it
+into undergraduate software/programming homework.
 
 JSON shape exactly:
 {
@@ -817,112 +821,57 @@ JSON shape exactly:
   ]
 }
 
-ABSOLUTE RULE — HINT IS LAW:
-The instructor's hint (course context + free-form keywords) is the primary directive.
-EVERY single suggestion MUST be visibly tied to that hint. The hint topic MUST appear
-in the title or in the first sentence of summary/description. Never produce generic
-"linked list / queue / stack / interface / OOP demo" topics if the hint clearly points
-elsewhere. If the hint is broad (e.g. a domain name like "matematik", "fizik", "web",
-"oyun", "yapay zeka", "veri bilimi", "biyoloji", "kimya"), generate PROGRAMMING homework
-that APPLIES that domain: numerical methods, simulation, data analysis, mini engine,
-mini API, etc. Each suggestion must explicitly mention the domain in title.
+ABSOLUTE RULE - INSTRUCTOR TEXT IS LAW:
+Every suggestion must be visibly grounded in the instructor's text. Preserve named
+domains, entities, course context, technologies, deliverables, constraints, data
+formats, edge cases, dates, and grading expectations when they appear. If the topic
+is outside classic computer science, design software that applies that domain:
+analysis, simulation, visualization, mini API, workflow automation, decision support,
+mobile/web app, data validation, reporting, or an interactive tool.
 
-If the instructor wrote a long complete assignment brief (deliverables, constraints,
-edge cases, tests, dates, or grading expectations), do NOT reinterpret it as a vague
-topic. Preserve the intent. The first suggestion should be a clean assignment draft
-faithful to that exact brief; the other suggestions may be nearby alternatives.
+Use the instructor's concrete terms in Turkish when they wrote Turkish. Do not translate
+terms like titrasyon, randevu, sarki, tur, sinav, stok, muhasebe, lojistik, hukuk, spor,
+tarim, sanat, tarih, psikoloji, biyoloji, kimya, or fizik into English unless the
+instructor wrote them in English. Each title or the first sentence of the summary must
+include at least one concrete noun from the instructor's text.
 
-If the hint contradicts itself (e.g. "matematik ama OOP istiyorum"), respect both —
-generate object-oriented programming exercises modelled on math (e.g. Vector class,
-Polynomial class, Matrix class, ComplexNumber class).
+Do not drift to generic linked-list, queue, stack, interface, or OOP demo homework
+unless the instructor actually asks for those concepts. If a word is ambiguous
+(for example "sinif/class"), decide from surrounding context whether it means a school
+class, grade level, classroom, or OOP class.
 
-Generate varied subtopics under the hint umbrella (5 different angles), not 5 copies of
-the same exercise. Each description should be detailed enough that an instructor can
-paste it into a course page as the assignment briefing.
+If the instructor wrote a long complete assignment brief, do not reinterpret it as a
+vague topic. The first suggestion should be a clean assignment draft faithful to that
+brief; other suggestions may be nearby alternatives that keep the same intent.
+
+Generate varied suggestions under the instructor's intent, not copies of the same
+exercise. Each description should be detailed enough that an instructor can paste it
+into a course page as the assignment briefing.
 
 If the user message specifies a mandatory difficulty tier (easy / medium / hard),
-you MUST follow that tier strictly: easy homework must genuinely be beginner-sized;
-hard homework must noticeably exceed medium in scope (multi-part design, edge cases).
-
-Turkish wording note: In programming homework, "sınıf / sınıflar / sinif" from an instructor
-almost always means OOP "class" (defining classes, objects, __init__, methods), NOT school
-classroom. If the user hint points to classes/OOP, EVERY suggestion must center on classes,
-encapsulation, inheritance, composition, or interfaces — not standalone arrays/loops-only tasks.
+follow that tier strictly: easy homework must be genuinely beginner-sized; hard
+homework must noticeably exceed medium in scope, architecture, edge cases, tests, or
+reporting expectations.
 """
 
 
+
 def _assignment_focus_extra(hint_raw: str) -> str:
-    """Turkce ipucundan OOP / veri yapisi / domain odak metni turetir."""
-    h = (hint_raw or "").lower()
-    chunks: list[str] = []
-
-    oop_markers = (
-        "sınıf", "sinif", "sınıfla", "sinifla", "sınıflar", "siniflar",
-        "nesne", "oop", "class", " kalıtım", "kalitim", "miras",
-        "kapsül", "kapsul", "encapsulation", "çok biçim", "cok bicim",
-        "soyut sınıf", "soyut sinif", "arayüz", "arayuz", "__init__",
+    """LLM'e ogretim uyesinin serbest metnini evrensel niyet olarak tasir."""
+    stripped_hint = _strip_course_context_from_hint(hint_raw)
+    if not stripped_hint:
+        return ""
+    return (
+        "NIYET CIKARIMI (ZORUNLU): Asagidaki metni serbest dogal dil olarak oku; "
+        "alan, konu, hedef kitle, teslim turu, platform, veri kaynagi, kisit, edge case "
+        "ve degerlendirme beklentilerini semantik olarak cikar. Sabit kategori listesine "
+        "sikisma ve eksik bilgileri makul yazilim odevi varsayimlariyla tamamla. Konu "
+        "klasik bilgisayar bilimi disinda olsa bile onu uygulanabilir bir yazilim odevi "
+        "haline getir. Metindeki belirsiz kelimeleri baglama gore yorumla; ornegin "
+        "'sinif' okul sinifi, sinif seviyesi veya OOP class anlamina gelebilir. Ogretim "
+        "uyesinin ozgun niyetini koru.\n"
+        f"OGRETIM UYESI METNI: {stripped_hint[:1200]}"
     )
-    if any(m in h for m in oop_markers):
-        chunks.append(
-            "ODAK (ZORUNLU): İpucu doğrultusunda nesne yönelimli programlama isteniyor. Her öneri "
-            "birden fazla sınıf (class), nesne oluşturma, kurucu ve metotlar; mümkünse kalıtım veya "
-            "bileşim (composition) içermeli. Sadece dizi, ham döngü veya yalnızca özyinelemeli "
-            "fonksiyon odaklı ödevler ÖNERME; öneriler OOP merkezli olsun."
-        )
-
-    ds_markers = (
-        "ağaç", "agac", "liste", "linked", "kuyruk", "stack", "yığın", "yigin",
-        "hash", "graf", "öncelik", "oncelik", "heap", "bst",
-    )
-    if any(m in h for m in ds_markers):
-        chunks.append(
-            "ODAK: Veri yapisi odevi istendiyse her oneri ilgili yapinin insert/traverse/silme vb. "
-            "islemlerini net gereksinim olarak belirtmeli."
-        )
-
-    math_markers = (
-        "matematik", "matematı", "math", "sayisal", "sayısal", "numerik", "numerical",
-        "matris", "vektör", "vektor", "polinom", "denklem", "integral", "türev",
-        "turev", "lineer cebir", "lineer cebir", "istatistik",
-    )
-    if any(m in h for m in math_markers):
-        chunks.append(
-            "ODAK (ZORUNLU): Konu MATEMATİK uygulamalı programlama. Her öneri başlık ve özetinde "
-            "matematiksel kavramı (matris, vektör, polinom, sayısal türev/integral, denklem çözümü, "
-            "istatistik vb.) açıkça içermeli. Genel veri yapısı veya OOP demosu ÖNERME; öneriler "
-            "matematik problemini kodla çözmeye odaklansın."
-        )
-
-    physics_markers = ("fizik", "physics", "simülasyon", "simulasyon", "kinematik", "dinamik")
-    if any(m in h for m in physics_markers):
-        chunks.append(
-            "ODAK: Konu FİZİK simülasyonu. Her öneri fiziksel bir senaryoyu (sarkac, eğik atış, "
-            "esnek çarpışma, yerçekimi, dalga vb.) sayısal olarak modelleyip simüle etmeli."
-        )
-
-    web_markers = ("web", "rest", "api", "fastapi", "flask", "django", "http", "frontend", "backend")
-    if any(m in h for m in web_markers):
-        chunks.append(
-            "ODAK: Konu WEB/API geliştirme. Her öneri en az 3 endpoint, basit doğrulama, "
-            "hata yönetimi ve kalıcı veri saklama (sqlite/json) içeren mini bir servis olmalı."
-        )
-
-    game_markers = ("oyun", "game", "pygame", "unity", "labirent")
-    if any(m in h for m in game_markers):
-        chunks.append(
-            "ODAK: Konu OYUN programlama. Her öneri kullanıcı girişi, oyun döngüsü ve durum "
-            "güncellemesi içeren mini bir oyun ya da oyun mekaniği olmalı."
-        )
-
-    ml_markers = ("yapay zeka", "yapay zekâ", "machine learning", "ml", "veri bilimi", "data science",
-                  "regresyon", "siniflandirma", "sınıflandırma", "kümeleme", "kumeleme")
-    if any(m in h for m in ml_markers):
-        chunks.append(
-            "ODAK: Konu MAKİNE ÖĞRENMESİ / VERİ BİLİMİ. Her öneri küçük bir veri setiyle eğitim, "
-            "test bölme ve metrik raporlama içeren bir uygulama olmalı."
-        )
-
-    return "\n".join(chunks)
 
 
 def _normalize_assignment_difficulty(raw: str | None) -> str:
@@ -3170,7 +3119,8 @@ async def assignment_assistant_suggestions(req: AssignmentAssistantSuggestionsRe
         user_prompt += focus + "\n"
     user_prompt += (
         "Her oneri farkli bir teknik konu olsun. Turkce yaz. "
-        "Egitimcinin yazdigi ipucuna uy: alakasiz genel konular onerme."
+        "Egitimcinin yazdigi ipucuna uy: alakasiz genel konular onerme. "
+        "Egitimcinin somut konu kelimelerini baslik veya ozetin ilk cumlesinde koru."
     )
     if req.prefer_fresh:
         user_prompt += (
@@ -3179,20 +3129,50 @@ async def assignment_assistant_suggestions(req: AssignmentAssistantSuggestionsRe
             "tekrar etme.\n"
         )
 
+    if not _llm_cfg.ollama_enabled:
+        if direct_suggestion:
+            logger.info("assignment-assistant: Ollama kapali, uzun brief dogrudan taslak olarak korunuyor")
+            return {
+                "suggestions": [
+                    {
+                        "id": "1",
+                        "title": direct_suggestion["title"],
+                        "summary": direct_suggestion["summary"],
+                        "description": direct_suggestion["description"],
+                    }
+                ],
+            }
+        raise HTTPException(
+            status_code=503,
+            detail="Odev chatbotu LLM tabanli calisir. Su anda Ollama kapali; lutfen LLM servisini acip tekrar deneyin.",
+        )
+
     result: dict[str, Any] = {}
-    if _llm_cfg.ollama_enabled:
-        try:
-            result = await chat_json(
-                system_prompt=_ASSIGNMENT_SUGGEST_SYSTEM,
-                user_prompt=user_prompt,
-                temperature=0.55,
-                num_predict=4096,
-                use_cache=not bool(req.prefer_fresh),
-            )
-        except Exception as exc:
-            logger.warning("assignment-assistant: LLM cagrisi basarisiz, fallback kullanilacak: %s", exc)
-    else:
-        logger.info("assignment-assistant: Ollama kapali, fallback oneriler kullaniliyor")
+    try:
+        result = await chat_json(
+            system_prompt=_ASSIGNMENT_SUGGEST_SYSTEM,
+            user_prompt=user_prompt,
+            temperature=0.55,
+            num_predict=4096,
+            use_cache=not bool(req.prefer_fresh),
+        )
+    except Exception as exc:
+        logger.warning("assignment-assistant: LLM cagrisi basarisiz: %s", exc)
+        if direct_suggestion:
+            return {
+                "suggestions": [
+                    {
+                        "id": "1",
+                        "title": direct_suggestion["title"],
+                        "summary": direct_suggestion["summary"],
+                        "description": direct_suggestion["description"],
+                    }
+                ],
+            }
+        raise HTTPException(
+            status_code=503,
+            detail="Odev onerileri LLM ile uretilemedi. Ollama baglantisini kontrol edip tekrar deneyin.",
+        ) from exc
 
     raw_list: list[Any] | None = None
     if isinstance(result, dict) and result:
@@ -3203,7 +3183,7 @@ async def assignment_assistant_suggestions(req: AssignmentAssistantSuggestionsRe
                 list(result.keys())[:24],
             )
     else:
-        logger.warning("assignment-assistant: LLM sonuc bos (Ollama yanit/timeout/parse); yedek oneriler kullanilacak")
+        logger.warning("assignment-assistant: LLM sonuc bos (Ollama yanit/timeout/parse)")
 
     cleaned = _clean_assignment_suggestion_items(raw_list or [], n)
 
@@ -3226,14 +3206,12 @@ async def assignment_assistant_suggestions(req: AssignmentAssistantSuggestionsRe
             merged.append(dict(direct_suggestion))
             seen_titles.add(key)
     _extend_unique(cleaned)
-    if len(merged) < n:
-        _extend_unique(_fallback_assignment_suggestions(hint, tier))
 
-    if len(merged) < 2:
-        logger.error("assignment-assistant: LLM ve yedek listesi hala yetersiz (n=%s)", n)
+    if not merged:
+        logger.error("assignment-assistant: LLM gecerli odev onerisi uretmedi (n=%s)", n)
         raise HTTPException(
             status_code=502,
-            detail="Oneriler hazirlanamadi. Tekrar deneyin veya Ollama baglantisini kontrol edin.",
+            detail="LLM gecerli odev onerisi uretmedi. Daha acik bir konu yazip tekrar deneyin.",
         )
 
     return {
