@@ -225,6 +225,7 @@ class MasterEvaluatorAgent(BaseAgent):
             if not isinstance(llm_result.get("rubric_breakdown"), list):
                 raise LLMInferenceError("[master_evaluator] rubric_breakdown gecersiz (faculty mode).")
             self._finalize_faculty_rubric_output(llm_result, faculty)
+            self._apply_faculty_reasonableness_floor(llm_result, programmatic)
             self._apply_brief_alignment_guard(llm_result, programmatic, faculty_mode=True)
             self._apply_runtime_guard(
                 llm_result,
@@ -550,6 +551,120 @@ class MasterEvaluatorAgent(BaseAgent):
         if reason_text not in weaknesses:
             weaknesses.insert(0, reason_text)
         llm_result["weaknesses"] = weaknesses
+
+    @staticmethod
+    def _apply_faculty_reasonableness_floor(
+        llm_result: dict[str, Any],
+        programmatic: dict[str, Any],
+    ) -> None:
+        """Prevent faculty-mode LLM variance from crushing clearly relevant, high-signal work.
+
+        The LLM still writes the row-level narrative, but deterministic agent scores define a
+        conservative floor when the final faculty score is implausibly below the core analysis.
+        Hard caps for off-topic/runtime/security run after this method.
+        """
+        raw_bd = llm_result.get("rubric_breakdown")
+        if not isinstance(raw_bd, list) or not raw_bd:
+            return
+        try:
+            current = float(llm_result.get("final_score", 0) or 0)
+            core = float(programmatic.get("final_score", 0) or 0)
+            align_f = float(programmatic.get("brief_alignment_factor", 1.0) or 1.0)
+        except (TypeError, ValueError):
+            return
+
+        reasons = programmatic.get("brief_alignment_reasons", [])
+        if not isinstance(reasons, list):
+            reasons = []
+        has_topic_warning = any(
+            reason in {"llm_task_relevance_off_topic", "llm_low_task_fit"}
+            for reason in reasons
+        )
+        if align_f < 0.70 or has_topic_warning or core < 60 or current >= core - 18:
+            return
+
+        target = max(current, min(core, core - 12))
+        target = max(0.0, min(100.0, target))
+        total_max = 0
+        total_earned = 0
+        adjustable: list[dict[str, Any]] = []
+        for row in raw_bd:
+            if not isinstance(row, dict):
+                continue
+            try:
+                weight = int(round(float(row.get("weight", 0) or 0)))
+                score = int(round(float(row.get("score", 0) or 0)))
+            except (TypeError, ValueError):
+                continue
+            if weight <= 0:
+                continue
+            score = max(0, min(weight, score))
+            row["score"] = score
+            row["weighted_score"] = float(score)
+            total_max += weight
+            total_earned += score
+            if score < weight and not MasterEvaluatorAgent._is_security_row(row):
+                adjustable.append(row)
+        if total_max <= 0:
+            return
+
+        target_earned = int(round(total_max * target / 100.0))
+        missing = max(0, target_earned - total_earned)
+        if missing <= 0:
+            return
+
+        note = (
+            "Deterministik tutarlilik duzeltmesi: alt ajan puanlari ve gorev uyumu bu "
+            "satirda LLM'in ilk puanindan daha yuksek bir taban gerektirdi."
+        )
+        while missing > 0 and adjustable:
+            progressed = False
+            for row in adjustable:
+                if missing <= 0:
+                    break
+                try:
+                    weight = int(round(float(row.get("weight", 0) or 0)))
+                    score = int(round(float(row.get("score", 0) or 0)))
+                except (TypeError, ValueError):
+                    continue
+                if score >= weight:
+                    continue
+                row["score"] = score + 1
+                row["weighted_score"] = float(row["score"])
+                just = str(row.get("justification", "")).strip()
+                if note not in just:
+                    row["justification"] = f"{just} {note}".strip() if just else note
+                missing -= 1
+                progressed = True
+            adjustable = [
+                row
+                for row in adjustable
+                if int(round(float(row.get("score", 0) or 0)))
+                < int(round(float(row.get("weight", 0) or 0)))
+            ]
+            if not progressed:
+                break
+
+        total_earned = 0
+        for row in raw_bd:
+            if not isinstance(row, dict):
+                continue
+            try:
+                total_earned += int(round(float(row.get("score", 0) or 0)))
+            except (TypeError, ValueError):
+                continue
+        llm_result["final_score"] = round(100.0 * total_earned / total_max, 1)
+
+        recs = llm_result.get("recommendations")
+        if not isinstance(recs, list):
+            recs = []
+        msg = (
+            "Nihai puan, alt ajan skorlarina gore asiri dusuk kalan faculty rubrik "
+            "puanlarini deterministik olarak yeniden dengelendi."
+        )
+        if msg not in recs:
+            recs.append(msg)
+        llm_result["recommendations"] = recs
 
     @classmethod
     def _apply_runtime_guard(

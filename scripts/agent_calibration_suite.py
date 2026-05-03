@@ -13,7 +13,7 @@ from typing import Any
 ROOT = Path(__file__).resolve().parents[1]
 MAIN_PATH = ROOT / "frontend" / "backend" / "main.py"
 REPORT_PATH = ROOT / "artifacts" / "agent_calibration" / "latest_report.json"
-DEFAULT_TIMEOUT_SECONDS = 420
+DEFAULT_TIMEOUT_SECONDS = 900
 
 
 @dataclass(frozen=True)
@@ -22,6 +22,10 @@ class SubmissionCase:
     file_path: str
     expected_relevant: bool
     expected_security_risky: bool = False
+    min_score: float | None = None
+    max_score: float | None = None
+    min_alignment: float | None = None
+    max_alignment: float | None = None
 
 
 @dataclass(frozen=True)
@@ -43,8 +47,8 @@ SCENARIOS: list[AssignmentScenario] = [
         ),
         criterion_count=10,
         submissions=[
-            SubmissionCase("uygun", "samples/veri_guzellestirme_temizleme_uygun.py", True),
-            SubmissionCase("alakasiz", "samples/veri_guzellestirme_temizleme_alakasiz.py", False),
+            SubmissionCase("uygun", "samples/veri_guzellestirme_temizleme_uygun.py", True, min_score=65, min_alignment=0.55),
+            SubmissionCase("alakasiz", "samples/veri_guzellestirme_temizleme_alakasiz.py", False, max_score=35, max_alignment=0.30),
         ],
     ),
     AssignmentScenario(
@@ -56,8 +60,8 @@ SCENARIOS: list[AssignmentScenario] = [
         ),
         criterion_count=12,
         submissions=[
-            SubmissionCase("uygun", "samples/library_system_uygun.py", True),
-            SubmissionCase("alakasiz", "samples/library_system_alakasiz.py", False),
+            SubmissionCase("uygun", "samples/library_system_uygun.py", True, min_score=65, min_alignment=0.55),
+            SubmissionCase("alakasiz", "samples/library_system_alakasiz.py", False, max_score=35, max_alignment=0.30),
         ],
     ),
     AssignmentScenario(
@@ -69,8 +73,8 @@ SCENARIOS: list[AssignmentScenario] = [
         ),
         criterion_count=10,
         submissions=[
-            SubmissionCase("uygun", "samples/ornek_odev_ikili_agac.py", True),
-            SubmissionCase("alakasiz", "samples/kitap_kutuphanesi_alakasiz.py", False),
+            SubmissionCase("uygun", "samples/ornek_odev_ikili_agac.py", True, min_score=65, min_alignment=0.55),
+            SubmissionCase("alakasiz", "samples/kitap_kutuphanesi_alakasiz.py", False, max_score=35, max_alignment=0.30),
         ],
     ),
     AssignmentScenario(
@@ -82,9 +86,16 @@ SCENARIOS: list[AssignmentScenario] = [
         ),
         criterion_count=10,
         submissions=[
-            SubmissionCase("uygun", "samples/log_ozetleme_uygun.py", True),
-            SubmissionCase("guvensiz_ama_alakali", "samples/log_ozetleme_guvensiz.py", True, True),
-            SubmissionCase("alakasiz", "samples/log_ozetleme_alakasiz.py", False),
+            SubmissionCase("uygun", "samples/log_ozetleme_uygun.py", True, min_score=65, min_alignment=0.55),
+            SubmissionCase(
+                "guvensiz_ama_alakali",
+                "samples/log_ozetleme_guvensiz.py",
+                True,
+                True,
+                max_score=55,
+                min_alignment=0.55,
+            ),
+            SubmissionCase("alakasiz", "samples/log_ozetleme_alakasiz.py", False, max_score=35, max_alignment=0.30),
         ],
     ),
 ]
@@ -140,16 +151,33 @@ def _evaluate_case(case: SubmissionCase, report: dict[str, Any]) -> dict[str, An
     else:
         security_ok = sec_score >= 70
 
+    score_min_ok = case.min_score is None or total_score >= case.min_score
+    score_max_ok = case.max_score is None or total_score <= case.max_score
+    align_min_ok = case.min_alignment is None or align_factor >= case.min_alignment
+    align_max_ok = case.max_alignment is None or align_factor <= case.max_alignment
+
     return {
         "total_score": round(total_score, 1),
         "alignment_factor": round(align_factor, 3),
         "llm_off_topic": llm_off_topic,
         "relevance_warning": relevance_warning,
+        "pipeline_timeout": bool(report.get("calibrationTimeout")),
         "security_score": round(sec_score, 1),
         "security_summary": sec_summary,
         "relevance_expectation_ok": relevance_ok,
         "security_expectation_ok": security_ok,
-        "case_passed": bool(relevance_ok and security_ok),
+        "score_min_ok": bool(score_min_ok),
+        "score_max_ok": bool(score_max_ok),
+        "alignment_min_ok": bool(align_min_ok),
+        "alignment_max_ok": bool(align_max_ok),
+        "case_passed": bool(
+            relevance_ok
+            and security_ok
+            and score_min_ok
+            and score_max_ok
+            and align_min_ok
+            and align_max_ok
+        ),
     }
 
 
@@ -223,6 +251,7 @@ async def run_suite(
     max_scenarios: int | None = None,
     max_cases_per_scenario: int | None = None,
     checkpoint_path: Path | None = None,
+    timeout_seconds: int = DEFAULT_TIMEOUT_SECONDS,
 ) -> dict[str, Any]:
     os.environ.setdefault("DEMO_MODE", "1")
     module = _load_api_main()
@@ -269,14 +298,15 @@ async def run_suite(
                         assignment_brief=brief,
                         faculty_rubric_criteria=rubric,
                     ),
-                    timeout=DEFAULT_TIMEOUT_SECONDS,
+                    timeout=timeout_seconds,
                 )
             except asyncio.TimeoutError:
                 report = {
                     "totalScore": 0,
                     "taskAlignment": {"factor": 0.05, "llm_off_topic": False},
-                    "relevanceScoreWarning": "Pipeline timeout.",
+                    "relevanceScoreWarning": f"Pipeline timeout after {timeout_seconds}s.",
                     "agents": [],
+                    "calibrationTimeout": True,
                 }
             check = _evaluate_case(case, report)
             total_cases += 1
@@ -289,6 +319,10 @@ async def run_suite(
                     "file_path": case.file_path,
                     "expected_relevant": case.expected_relevant,
                     "expected_security_risky": case.expected_security_risky,
+                    "expected_min_score": case.min_score,
+                    "expected_max_score": case.max_score,
+                    "expected_min_alignment": case.min_alignment,
+                    "expected_max_alignment": case.max_alignment,
                     "result": check,
                 }
             )
@@ -360,6 +394,22 @@ def _print_console_report(data: dict[str, Any]) -> None:
                     res.get("security_score"),
                 )
             )
+            if not res.get("case_passed"):
+                failed_checks = [
+                    name
+                    for name in (
+                        "relevance_expectation_ok",
+                        "security_expectation_ok",
+                        "score_min_ok",
+                        "score_max_ok",
+                        "alignment_min_ok",
+                        "alignment_max_ok",
+                    )
+                    if res.get(name) is False
+                ]
+                if res.get("pipeline_timeout"):
+                    failed_checks.insert(0, "pipeline_timeout")
+                print(f"       failed checks: {', '.join(failed_checks) or 'unknown'}")
 
 
 async def _amain(args: argparse.Namespace) -> int:
@@ -369,6 +419,7 @@ async def _amain(args: argparse.Namespace) -> int:
         max_scenarios=args.max_scenarios,
         max_cases_per_scenario=args.max_cases_per_scenario,
         checkpoint_path=REPORT_PATH,
+        timeout_seconds=max(30, int(args.timeout_seconds)),
     )
     _write_checkpoint(report, REPORT_PATH)
     _print_console_report(report)
@@ -399,6 +450,12 @@ def main() -> int:
         type=int,
         default=None,
         help="Her senaryoda calistirilacak maksimum case sayisi.",
+    )
+    parser.add_argument(
+        "--timeout-seconds",
+        type=int,
+        default=DEFAULT_TIMEOUT_SECONDS,
+        help="Tek pipeline case'i icin maksimum bekleme suresi.",
     )
     args = parser.parse_args()
     return asyncio.run(_amain(args))
