@@ -151,6 +151,75 @@ _DEMO_STORE: dict[str, Any] = {
     "upload_history": [],
 }
 
+_DEMO_ASSIGNMENT_CATALOG: list[dict[str, str]] = [
+    {
+        "id": "55555555-5555-4555-8555-555555555555",
+        "name": "Ikili Agac Odevi",
+        "description": "Temel BST islemleri: ekleme, arama, silme ve sirali dolasim fonksiyonlari yazilir. Kenar durumlari ve kisa test senaryolari teslim edilir.",
+    },
+    {
+        "id": "55555555-5555-4555-8555-555555555556",
+        "name": "Log Dosyasi Ozetleme Araci",
+        "description": "Python ile komut satirindan log dosyasi yolu alan, satirlari seviye bazli sayan, ERROR ve CRITICAL mesajlarini ayri raporlayan CLI uygulamasi gelistirilir.",
+    },
+    {
+        "id": "55555555-5555-4555-8555-555555555557",
+        "name": "Kimya Titrasyon Verisi Analizi",
+        "description": "Titrasyon deneylerinden gelen CSV verileri okunur, esdegerlik noktasi tahmin edilir, aykiri olcumler isaretlenir ve kisa rapor uretilir.",
+    },
+    {
+        "id": "55555555-5555-4555-8555-555555555558",
+        "name": "Mobil Saglik Randevu Uygulamasi",
+        "description": "Hasta randevu alma, doktor uygun saat yonetimi, iptal akisi ve bos slot durumlarini iceren mobil veya web tabanli randevu uygulamasi tasarlanir.",
+    },
+    {
+        "id": "55555555-5555-4555-8555-555555555559",
+        "name": "Playlist Analiz Araci",
+        "description": "Sarkilarin BPM, tur ve sure bilgilerine gore playlist dengesini hesaplayan, filtreleme ve ozet rapor ureten veri analizi araci gelistirilir.",
+    },
+    {
+        "id": "55555555-5555-4555-8555-555555555560",
+        "name": "Belediye Sikayet Takip Sistemi",
+        "description": "Mahalle, kategori, oncelik ve durum alanlariyla sikayet kaydi tutan; CSV import, SQLite saklama, filtreleme, tekrar kayit uyarisi ve en az 5 endpoint iceren sistem.",
+    },
+    {
+        "id": "55555555-5555-4555-8555-555555555561",
+        "name": "Sera Sensor Verisi Sulama Onerisi",
+        "description": "Sera sicaklik ve nem sensor verilerini CSV dosyasindan okuyup sulama onerisi ureten, hatali satirlari ayiran ve test senaryolariyla dogrulanan Python uygulamasi.",
+    },
+    {
+        "id": "55555555-5555-4555-8555-555555555562",
+        "name": "Havalimani Bagaj Takip Sistemi",
+        "description": "QR kodlu bagaj takip, kayip esya durumu, CSV ice/disa aktarma ve durum gecmisi raporlama ozelliklerini iceren mini takip sistemi gelistirilir.",
+    },
+    {
+        "id": "55555555-5555-4555-8555-555555555563",
+        "name": "Hukuki Karar Metni Analiz Araci",
+        "description": "Karar metinlerinden madde, taraf ve sonuc ozetleyen; riskli ifadeleri isaretleyen ve bulgulari gerekceli raporlayan metin analizi uygulamasi.",
+    },
+    {
+        "id": "55555555-5555-4555-8555-555555555564",
+        "name": "Muhasebe Fatura KDV API",
+        "description": "Fatura kalemlerini okuyup KDV, ara toplam, genel toplam ve gecikme uyarisi hesaplayan; REST endpointleri ve girdi dogrulamasi olan mini API.",
+    },
+    {
+        "id": "55555555-5555-4555-8555-555555555565",
+        "name": "Tarih Arsiv Belgesi Arama Araci",
+        "description": "Arsiv belgelerini tarih, kisi ve olay etiketlerine gore indeksleyen; arama, filtreleme ve belge ozetleme akisi sunan dijital arsiv araci.",
+    },
+    {
+        "id": "55555555-5555-4555-8555-555555555566",
+        "name": "Phishing Farkindalik Siniflandirici",
+        "description": "Oyuncak veriyle phishing e-postalarini tespit eden savunmaci Python siniflandirici yazilir; gercek kimlik bilgisi toplanmaz ve guvenli test verisi kullanilir.",
+    },
+]
+
+_DEMO_RUBRIC_CRITERIA: list[dict[str, Any]] = [
+    {"name": "Fonksiyonellik", "description": "Odev gereksinimlerinin calisan kodla karsilanmasi.", "max_score": 40},
+    {"name": "Kod Kalitesi", "description": "Okunabilirlik, modulerlik, isimlendirme ve hata yonetimi.", "max_score": 30},
+    {"name": "Test ve Kenar Durumlari", "description": "Ornek girdiler, edge case'ler ve test edilebilir tasarim.", "max_score": 30},
+]
+
 _DEMO_STORE_FILE = Path(
     os.getenv("DEMO_STORE_FILE", str(_MAIN_FILE.parent.parent.parent / ".demo_store.json"))
 )
@@ -190,12 +259,155 @@ def _save_demo_store_to_disk() -> None:
         print(f"[mentor-api] DEMO store yazilamadi ({_DEMO_STORE_FILE}): {exc}", flush=True)
 
 
+def _demo_catalog_key(value: Any) -> str:
+    text = unicodedata.normalize("NFKD", str(value or "")).encode("ascii", "ignore").decode("ascii")
+    return re.sub(r"[^a-z0-9]+", "", text.lower())
+
+
+def _ensure_demo_assignment_catalog() -> bool:
+    """Demo panelinde beklenen ornek odev setini eksikse geri doldur."""
+    if not _DEMO_MODE:
+        return False
+
+    changed = False
+    teacher_id = "11111111-1111-4111-8111-111111111111"
+    department_id = "33333333-3333-4333-8333-333333333333"
+    course_id = "44444444-4444-4444-8444-444444444444"
+
+    teachers = _DEMO_STORE.setdefault("teachers", [])
+    if not any(str(t.get("id")) == teacher_id for t in teachers if isinstance(t, dict)):
+        teachers.append(
+            {
+                "id": teacher_id,
+                "first_name": "Demo",
+                "last_name": "Teacher",
+                "email": "demo@agentgrade.local",
+                "password_hash": "",
+                "created_at": _demo_now(),
+            }
+        )
+        changed = True
+
+    students = _DEMO_STORE.setdefault("students", [])
+    if not any(str(s.get("id")) == "22222222-2222-4222-8222-222222222222" for s in students if isinstance(s, dict)):
+        students.append(
+            {
+                "id": "22222222-2222-4222-8222-222222222222",
+                "student_no": "20240001",
+                "tc_no": "11111111111",
+                "first_name": "Demo",
+                "last_name": "Student",
+                "class_year": 2,
+                "department_id": department_id,
+                "created_at": _demo_now(),
+            }
+        )
+        changed = True
+
+    departments = _DEMO_STORE.setdefault("departments", [])
+    if not any(str(d.get("id")) == department_id for d in departments if isinstance(d, dict)):
+        departments.append(
+            {
+                "id": department_id,
+                "name": "Bilgisayar Muhendisligi",
+                "created_by": teacher_id,
+                "created_at": _demo_now(),
+            }
+        )
+        changed = True
+
+    courses = _DEMO_STORE.setdefault("courses", [])
+    if not any(str(c.get("id")) == course_id for c in courses if isinstance(c, dict)):
+        courses.append(
+            {
+                "id": course_id,
+                "name": "Veri Yapilari",
+                "code": "BLM201",
+                "class_year": 2,
+                "department_id": department_id,
+                "created_at": _demo_now(),
+            }
+        )
+        changed = True
+
+    assignments = _DEMO_STORE.setdefault("assignments", [])
+    rubrics = _DEMO_STORE.setdefault("rubrics", [])
+    assignments_by_id = {
+        str(a.get("id")): a for a in assignments if isinstance(a, dict) and a.get("id")
+    }
+    assignments_by_name = {
+        _demo_catalog_key(a.get("name")): a
+        for a in assignments
+        if isinstance(a, dict) and a.get("name")
+    }
+    rubric_assignment_ids = {
+        str(r.get("assignment_id"))
+        for r in rubrics
+        if isinstance(r, dict) and r.get("assignment_id")
+    }
+    rubric_ids = {
+        str(r.get("id")) for r in rubrics if isinstance(r, dict) and r.get("id")
+    }
+
+    for index, seed in enumerate(_DEMO_ASSIGNMENT_CATALOG):
+        seed_id = seed["id"]
+        seed_name_key = _demo_catalog_key(seed["name"])
+        assignment = assignments_by_id.get(seed_id) or assignments_by_name.get(seed_name_key)
+
+        if assignment is None:
+            assignment = {
+                "id": seed_id,
+                "course_id": course_id,
+                "name": seed["name"],
+                "description": seed["description"],
+                "due_date": None,
+                "created_at": datetime(2026, 5, 3, 20, 0, index).isoformat(),
+            }
+            assignments.append(assignment)
+            assignments_by_id[seed_id] = assignment
+            assignments_by_name[seed_name_key] = assignment
+            changed = True
+        else:
+            if not assignment.get("course_id"):
+                assignment["course_id"] = course_id
+                changed = True
+            current_description = str(assignment.get("description") or "").strip()
+            if not current_description or current_description == "Temel BST islemleri":
+                assignment["description"] = seed["description"]
+                changed = True
+
+        assignment_id = str(assignment.get("id") or seed_id)
+        if assignment_id not in rubric_assignment_ids:
+            rubric_id = f"66666666-6666-4666-8666-{assignment_id.replace('-', '')[-12:]}"
+            while rubric_id in rubric_ids:
+                rubric_id = str(uuid.uuid4())
+            rubrics.append(
+                {
+                    "id": rubric_id,
+                    "assignment_id": assignment_id,
+                    "criteria": [dict(row) for row in _DEMO_RUBRIC_CRITERIA],
+                    "status": "approved",
+                    "created_by": teacher_id,
+                    "created_at": _demo_now(),
+                    "updated_at": _demo_now(),
+                }
+            )
+            rubric_assignment_ids.add(assignment_id)
+            rubric_ids.add(rubric_id)
+            changed = True
+
+    return changed
+
+
 @app.on_event("startup")
 def _startup_log() -> None:
     """Hangi main.py yuklendigini terminale yazar (yanlis klasorden uvicorn tespiti)."""
     _load_demo_store_from_disk()
+    demo_store_changed = _ensure_demo_assignment_catalog()
     if _DEMO_MODE and _DEMO_STORE["teachers"] and not _DEMO_STORE["teachers"][0].get("password_hash"):
         _DEMO_STORE["teachers"][0]["password_hash"] = _hash_password("demo123")
+        demo_store_changed = True
+    if demo_store_changed:
         _save_demo_store_to_disk()
     print(
         f"[mentor-api] OK | analysis_engine={_ANALYSIS_ENGINE} | main={_MAIN_FILE}",
