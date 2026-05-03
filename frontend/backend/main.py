@@ -835,6 +835,18 @@ tarim, sanat, tarih, psikoloji, biyoloji, kimya, or fizik into English unless th
 instructor wrote them in English. Each title or the first sentence of the summary must
 include at least one concrete noun from the instructor's text.
 
+If the instructor writes English or mixed-language domain terms, preserve their meaning
+exactly. You may use a correct Turkish equivalent only when it is unambiguous
+(for example baggage = bagaj, not hediye; airport = havalimani; lost item = kayip esya;
+QR code = QR kod). Never replace a concrete domain noun with a different object,
+industry, or metaphor.
+
+Do not add advanced techniques that the instructor did not ask for, such as neural
+networks, deep learning, blockchain, cryptography, distributed systems, computer vision,
+or complex optimization. Add them only when the instructor explicitly asks for them or
+the selected difficulty and course context clearly justify it. Prefer direct, teachable
+software requirements over fashionable technology labels.
+
 Do not drift to generic linked-list, queue, stack, interface, or OOP demo homework
 unless the instructor actually asks for those concepts. If a word is ambiguous
 (for example "sinif/class"), decide from surrounding context whether it means a school
@@ -3111,6 +3123,7 @@ async def assignment_assistant_suggestions(req: AssignmentAssistantSuggestionsRe
 
     user_prompt = (
         f"Uretilecek oneri sayisi: {n}.\n"
+        f"Tam olarak {n} adet oneri dondur; daha az dondurme.\n"
         f"Secilen ZORLUK (internal): {tier}\n"
         f"Egitimci baglami (bos olabilir): {hint or '(yok)'}\n"
         f"{_assignment_difficulty_prompt_block(tier)}\n"
@@ -3186,6 +3199,39 @@ async def assignment_assistant_suggestions(req: AssignmentAssistantSuggestionsRe
         logger.warning("assignment-assistant: LLM sonuc bos (Ollama yanit/timeout/parse)")
 
     cleaned = _clean_assignment_suggestion_items(raw_list or [], n)
+    min_expected = min(n, 3)
+    if len(cleaned) < min_expected:
+        retry_prompt = (
+            user_prompt
+            + "\nONEMLI DUZELTME: Onceki LLM yaniti yeterli sayida gecerli oneri vermedi. "
+            f"Simdi tam olarak {n} adet, birbirinden farkli, JSON sozlesmesine uyan oneri dondur. "
+            "Ogretim uyesinin somut terimlerini baslik veya ozetin ilk cumlesinde koru; anlam kaydirmasi yapma."
+        )
+        try:
+            retry_result = await chat_json(
+                system_prompt=_ASSIGNMENT_SUGGEST_SYSTEM,
+                user_prompt=retry_prompt,
+                temperature=0.45,
+                num_predict=4096,
+                use_cache=False,
+            )
+            retry_list = _suggestions_list_from_llm(retry_result) if isinstance(retry_result, dict) else None
+            retry_cleaned = _clean_assignment_suggestion_items(retry_list or [], n)
+            if retry_cleaned:
+                combined: list[dict[str, str]] = []
+                seen_retry_titles: set[str] = set()
+                for row in cleaned + retry_cleaned:
+                    key = row["title"].strip().lower()
+                    if key in seen_retry_titles:
+                        continue
+                    seen_retry_titles.add(key)
+                    combined.append(row)
+                    if len(combined) >= n:
+                        break
+                if len(combined) > len(cleaned):
+                    cleaned = combined
+        except Exception as exc:
+            logger.warning("assignment-assistant: eksik oneri retry basarisiz: %s", exc)
 
     merged: list[dict[str, str]] = []
     seen_titles: set[str] = set()

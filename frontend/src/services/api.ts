@@ -642,7 +642,9 @@ export async function fetchAssignmentSuggestions(
   });
   if (!response.ok) {
     const errorText = await response.text();
-    throw new Error(`Ödev önerileri hatası (${response.status}): ${errorText}`);
+    throw new Error(
+      `Ödev önerileri hatası (${response.status}): ${apiErrorMessage(errorText, "Ödev önerileri alınamadı")}`,
+    );
   }
   return response.json();
 }
