@@ -39,11 +39,17 @@ Rules:
     "node_type" (function|class|if|for|while|try|with). Add "symbol" for the
     function/class name when known.
   * Whole-file truth with no specific block: "lines":[] and omit "line_range".
+- Use "lines":[] only for explicit whole-file facts, runtime/test-log evidence, or
+  claims whose source really is the complete file. Set "node_type":"file" in that case.
+- If a claim cannot be tied to a source line, AST block, whole-file fact, or runtime/test
+  log, put it in rejected_claims with a short reason. Do not validate guesses.
+- Prefer the smallest truthful evidence span. Do not attach nearby but unrelated lines just
+  to make a weak claim look supported.
 - Prefer block evidence for structural critique (gereksiz iç içe if-else, çok uzun
   fonksiyon, eksik try/except, sınıfın bütünü hakkında yorum, vs.). Use block_id
   when AST_BLOCKS contains a clearly matching node.
-- Reject only claims that are false, unrelated, or reference APIs/behavior that
-  do not exist in this code.
+- Reject claims that are false, unrelated, unsupported by this file, or reference
+  APIs/behavior that do not exist in this code.
 - One validated_claim per distinct finding; do not summarize away valid items.
 - total_claims_received MUST equal TOTAL_CLAIMS in the user message.
 - total_claims_validated MUST equal len(validated_claims).
@@ -117,6 +123,38 @@ def _normalize_severity(value) -> str:
     }
     sev = mapping.get(sev, sev)
     return sev if sev in ("low", "medium", "high", "critical", "info") else "medium"
+
+
+_WHOLE_FILE_EVIDENCE_TERMS = (
+    "whole file",
+    "entire file",
+    "file-level",
+    "tum dosya",
+    "tüm dosya",
+    "dosyanin tamami",
+    "dosyanın tamamı",
+    "dosya geneli",
+    "genelinde",
+    "runtime hatasi",
+    "runtime hata",
+    "test hatasi",
+    "test basarisiz",
+    "test başarısız",
+    "derleme hatasi",
+    "compilation",
+    "traceback",
+)
+
+
+def _is_supported_file_level_claim(feedback: str, agent_source: str, node_type: str | None) -> bool:
+    if node_type == "file":
+        return True
+    text = f"{feedback} {agent_source}".lower()
+    if any(term in text for term in _WHOLE_FILE_EVIDENCE_TERMS):
+        return True
+    return agent_source in {"test_agent", "security"} and any(
+        term in text for term in ("runtime", "test", "derleme", "compilation", "security", "guvenlik")
+    )
 
 
 _AST_NODE_TYPES = {
@@ -288,6 +326,7 @@ def _normalize_claims(
             blk = _enclosing_block(blocks, lines_v[0])
             # Only attach when the block is meaningfully wider than a single line.
             if blk and (blk["end"] - blk["start"]) >= 2:
+                block_id = str(blk.get("id") or block_id or "")
                 line_range = [blk["start"], blk["end"]]
                 if not node_type:
                     node_type = blk.get("type")
@@ -300,6 +339,7 @@ def _normalize_claims(
                 if not blk:
                     blk = _enclosing_block(blocks, line_range[0])
                 if blk:
+                    block_id = str(blk.get("id") or block_id or "")
                     node_type = blk.get("type")
                     if not symbol and blk.get("name"):
                         symbol = blk.get("name")
@@ -320,6 +360,11 @@ def _normalize_claims(
             elif lines_v:
                 code_snippet = "\n".join(source_lines[n - 1].rstrip() for n in lines_v[:4])
 
+        if not lines_v and not line_range:
+            if not _is_supported_file_level_claim(feedback, agent_source, node_type):
+                continue
+            node_type = "file"
+
         key = (feedback[:180], tuple(lines_v[:4]), agent_source)
         if key in seen:
             continue
@@ -335,6 +380,8 @@ def _normalize_claims(
         }
         if line_range:
             out["line_range"] = line_range
+        if block_id:
+            out["block_id"] = block_id
         if node_type:
             out["node_type"] = node_type
         if symbol:
@@ -517,6 +564,13 @@ class EvidenceAgent(BaseAgent):
         rejected = _first_list(llm_result, "rejected_claims", "rejectedClaims", "rejections")
         if not isinstance(rejected, list):
             rejected = programmatic.get("rejected_claims", [])
+        else:
+            seen_rejected = {json.dumps(item, ensure_ascii=False, sort_keys=True) for item in rejected}
+            for item in programmatic.get("rejected_claims", []):
+                key = json.dumps(item, ensure_ascii=False, sort_keys=True)
+                if key not in seen_rejected:
+                    rejected.append(item)
+                    seen_rejected.add(key)
         llm_result["rejected_claims"] = rejected
         llm_result["llm_status"] = llm_status
         llm_result["ast_block_count"] = len(ast_blocks)
@@ -551,14 +605,18 @@ class EvidenceAgent(BaseAgent):
                     desc = issue.get("description", "")
                     sev = issue.get("severity", "medium")
                     if sev == "info":
-                        validated.append({
-                            "lines": [],
-                            "code_snippet": "",
-                            "feedback": desc[:120],
-                            "agent_source": agent_name,
-                            "severity": "info",
-                            "is_valid": True,
-                        })
+                        if _is_supported_file_level_claim(desc, agent_name, None):
+                            validated.append({
+                                "lines": [],
+                                "code_snippet": "",
+                                "feedback": desc[:120],
+                                "agent_source": agent_name,
+                                "severity": "info",
+                                "node_type": "file",
+                                "is_valid": True,
+                            })
+                        else:
+                            rejected.append(f"[{agent_name}] '{desc[:80]}' -- somut kanit yok")
                     else:
                         rejected.append(f"[{agent_name}] '{desc[:80]}' -- kodda dogrulanamadi")
 
@@ -571,14 +629,18 @@ class EvidenceAgent(BaseAgent):
                     desc = viol.get("description", viol.get("rule", ""))[:120]
                     sev = viol.get("severity", "low")
                     if sev == "info":
-                        validated.append({
-                            "lines": [],
-                            "code_snippet": "",
-                            "feedback": desc,
-                            "agent_source": agent_name,
-                            "severity": "info",
-                            "is_valid": True,
-                        })
+                        if _is_supported_file_level_claim(desc, agent_name, None):
+                            validated.append({
+                                "lines": [],
+                                "code_snippet": "",
+                                "feedback": desc,
+                                "agent_source": agent_name,
+                                "severity": "info",
+                                "node_type": "file",
+                                "is_valid": True,
+                            })
+                        else:
+                            rejected.append(f"[{agent_name}] '{desc[:80]}' -- somut kanit yok")
                     else:
                         rejected.append(f"[{agent_name}] '{desc[:80]}' -- kodda dogrulanamadi")
 
@@ -587,30 +649,36 @@ class EvidenceAgent(BaseAgent):
                 claim = self._validate_text_claim(indicator, lines, agent_name, "medium")
                 if claim:
                     validated.append(claim)
-                else:
+                elif _is_supported_file_level_claim(indicator, agent_name, None):
                     validated.append({
                         "lines": [],
                         "code_snippet": "",
                         "feedback": indicator,
                         "agent_source": agent_name,
                         "severity": "medium",
+                        "node_type": "file",
                         "is_valid": True,
                     })
+                else:
+                    rejected.append(f"[{agent_name}] '{indicator[:80]}' -- somut kanit yok")
 
             for indicator in findings.get("maturity_indicators", []):
                 total += 1
                 claim = self._validate_text_claim(indicator, lines, agent_name, "info")
                 if claim:
                     validated.append(claim)
-                else:
+                elif _is_supported_file_level_claim(indicator, agent_name, None):
                     validated.append({
                         "lines": [],
                         "code_snippet": "",
                         "feedback": indicator,
                         "agent_source": agent_name,
                         "severity": "info",
+                        "node_type": "file",
                         "is_valid": True,
                     })
+                else:
+                    rejected.append(f"[{agent_name}] '{indicator[:80]}' -- somut kanit yok")
 
             for ap in findings.get("antipatterns", []):
                 total += 1
@@ -633,6 +701,7 @@ class EvidenceAgent(BaseAgent):
                     "feedback": f"Test hatasi: {fail.get('reason', fail.get('test_name', 'unknown'))}",
                     "agent_source": agent_name,
                     "severity": "high",
+                    "node_type": "file",
                     "is_valid": True,
                 })
 
@@ -644,6 +713,7 @@ class EvidenceAgent(BaseAgent):
                     "feedback": f"Runtime hatasi: {err}",
                     "agent_source": agent_name,
                     "severity": "high",
+                    "node_type": "file",
                     "is_valid": True,
                 })
 
@@ -661,6 +731,7 @@ class EvidenceAgent(BaseAgent):
                     "feedback": threat.get("description", "Guvenlik tehdidi"),
                     "agent_source": agent_name,
                     "severity": threat.get("severity", "high"),
+                    "node_type": "line" if line_num else "file",
                     "is_valid": True,
                 })
 
@@ -748,11 +819,12 @@ class EvidenceAgent(BaseAgent):
             or "entire file" in desc.lower()
         ):
             return {
-                "lines": [1],
-                "code_snippet": lines[0].rstrip() if lines else "",
+                "lines": [],
+                "code_snippet": "",
                 "feedback": desc,
                 "agent_source": agent,
                 "severity": viol.get("severity", "medium"),
+                "node_type": "file",
                 "is_valid": True,
             }
         return None

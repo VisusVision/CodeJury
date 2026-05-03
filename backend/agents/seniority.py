@@ -38,6 +38,15 @@ Rules:
 - modern_features_usage must be a sentence or two that names the specific
   features you saw (or explicitly says they are missing).
 
+- Do not infer libraries, patterns, concurrency, ownership, tests, or architecture that
+  are not visible in the submitted code. If it is not observable, leave it out.
+- Simple correct code can be mid-level for a simple assignment; do not force "junior"
+  solely because it lacks advanced patterns.
+- Reserve "senior" for code that shows multiple concrete maturity signals: clear
+  decomposition, idiomatic language use, error/resource handling where relevant, and
+  maintainable boundaries.
+- Mention missing advanced features only when they are relevant to the task or language.
+
 Reply with ONLY this JSON shape:
 {
   "estimated_level": "junior|mid|senior",

@@ -94,6 +94,14 @@ Required focus areas (each MUST be reflected somewhere in your output):
 Rules:
 - Score must be an integer from 0 to 100.
 - Each item in "issues": {"type": str, "description": str, "severity": "low"|"medium"|"high"|"critical", "suggested_fix": str, "line": int (optional)}
+- Only report an issue when the code contains concrete evidence for it. Include a
+  "line" whenever a specific statement/function causes the issue; use file-level
+  narrative only for whole-file facts such as no functions or global state.
+- Keep this agent in its lane: do not penalize missing docstrings, naming style, or
+  formatting unless they materially affect maintainability or complexity.
+- Apply score caps: syntax/runtime impossibility or unrelated deliverable should stay
+  very low; severe algorithmic mismatch for the assignment should stay below 55 even
+  if the code is otherwise tidy.
 - Prefer the canonical "type" labels when applicable (use them verbatim):
   high_complexity, redundant_loop, unoptimized_lookup, memory_leak,
   unbounded_recursion, magic_number, long_function, dead_code,
