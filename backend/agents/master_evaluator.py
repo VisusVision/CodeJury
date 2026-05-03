@@ -84,6 +84,11 @@ Rules:
 - strengths, weaknesses, recommendations: arrays of short strings.
 - summary: one or two sentences.
 - Be fair and resolve serious contradictions between agents in a balanced way.
+- Treat sandbox/runtime facts and security facts as hard constraints, not opinions. A runtime-failing normal
+  script, compilation failure, timeout, memory overflow, or critical/high security issue must appear in
+  weaknesses and must materially cap the final grade.
+- Do not let high style/seniority scores compensate for a submission that does not run, is off-topic, or
+  contains critical unsafe code.
 - If an ASSIGNMENT BRIEF block appears in the user message, you must judge whether the submission
   fulfills that brief (topic, required concepts, deliverables). Clear mismatch (wrong task, missing
   required paradigm such as OOP when required) should lower final_score and must appear in weaknesses
@@ -123,6 +128,11 @@ Rules:
 - "weighted_score": set equal to "score" (points earned for that row).
 - "justification": Turkish (or report_language), specific to that criterion and the actual code/run results.
 - final_score: single number 0–100: 100 * (sum of earned scores) / (sum of weights). Compute it correctly.
+- Treat sandbox/runtime facts and security facts as hard constraints. If the code does not run, times out
+  unexpectedly, exceeds memory, or contains critical/high security risks, cap the affected rubric rows and
+  explain the cap in the relevant justifications.
+- Never award near-full final credit to a runtime-failing or critically unsafe submission merely because it
+  has good structure, naming, or partial implementation.
 - If the assignment brief implies wrong topic / missing required concepts, heavily penalize the relevant criteria
   (e.g. scope/requirements/correctness rows).
 - Use brief_code_alignment in the compact hint (0–1): if below ~0.45 and the brief is on record, cap points on

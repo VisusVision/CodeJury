@@ -361,6 +361,9 @@ Rules:
 - If the assignment mentions unit tests, pytest, unittest, or testing, include a dedicated testing criterion.
 - Do NOT invent presentation, slide, poster, video, or visual-design criteria unless the assignment explicitly asks for those deliverables.
 - Every criterion should grade the submitted software/code artifact: correctness, requirements, tests, error handling, data model, algorithmic efficiency, style, documentation, security, or maintainability.
+- Names must be distinct; avoid duplicate or near-duplicate criteria.
+- Descriptions must be measurable: say what evidence earns full credit and what defects lose credit.
+- Do not include vague criteria such as "Genel", "Sunum", "Sekil", or "Kalite" unless the description ties them to concrete code evidence.
 """
 
 
@@ -405,10 +408,79 @@ _RUBRIC_PRESENTATION_TOKENS = (
     "resim",
 )
 
+_RUBRIC_WEAK_NAME_TOKENS = (
+    "genel",
+    "kalite",
+    "sekil",
+    "şekil",
+    "sunum",
+)
+
+_RUBRIC_CONCRETE_DESC_TOKENS = (
+    "api",
+    "endpoint",
+    "algorit",
+    "arama",
+    "agac",
+    "ağaç",
+    "veri",
+    "girdi",
+    "cikti",
+    "çıktı",
+    "test",
+    "pytest",
+    "unittest",
+    "hata",
+    "exception",
+    "edge",
+    "kose",
+    "köşe",
+    "fonksiyon",
+    "metot",
+    "sinif",
+    "sınıf",
+    "dosya",
+    "sql",
+    "sqlite",
+    "guven",
+    "güven",
+    "performans",
+    "karma",
+    "pep",
+    "dokuman",
+    "doküm",
+)
+
 
 def _assignment_allows_presentation_criteria(title: str, description: str) -> bool:
     blob = f"{title}\n{description}".lower()
     return any(token in blob for token in _RUBRIC_PRESENTATION_TOKENS)
+
+
+def _next_rubric_replacement_name(used_names: set[str]) -> str:
+    for candidate in _RUBRIC_FALLBACK_NAMES:
+        key = candidate.lower()
+        if key not in used_names:
+            used_names.add(key)
+            return candidate
+    suffix = len(used_names) + 1
+    name = f"Gereksinimlere Uyum {suffix}"
+    used_names.add(name.lower())
+    return name
+
+
+def _rubric_description_is_concrete(description: str) -> bool:
+    blob = (description or "").lower()
+    return any(token in blob for token in _RUBRIC_CONCRETE_DESC_TOKENS)
+
+
+def _rubric_name_is_too_weak(name: str, description: str) -> bool:
+    blob = (name or "").strip().lower()
+    return (
+        bool(blob)
+        and any(token in blob for token in _RUBRIC_WEAK_NAME_TOKENS)
+        and not _rubric_description_is_concrete(description)
+    )
 
 
 def _sanitize_rubric_scope(
@@ -417,27 +489,27 @@ def _sanitize_rubric_scope(
     assignment_title: str,
     assignment_description: str,
 ) -> list[dict[str, Any]]:
-    """Remove LLM-invented non-code deliverables from programming rubrics."""
-    if _assignment_allows_presentation_criteria(assignment_title, assignment_description):
-        return criteria
+    """Remove LLM-invented, duplicate, or vague non-code rubric rows."""
+    allow_presentation = _assignment_allows_presentation_criteria(
+        assignment_title,
+        assignment_description,
+    )
 
-    used_names = {str(c.get("name", "")).strip().lower() for c in criteria}
-    fallback_iter = iter(_RUBRIC_FALLBACK_NAMES)
+    used_names: set[str] = set()
     sanitized: list[dict[str, Any]] = []
     for criterion in criteria:
         name = str(criterion.get("name", "")).strip()
         desc = str(criterion.get("description", "")).strip()
         blob = f"{name}\n{desc}".lower()
-        if any(token in blob for token in _RUBRIC_PRESENTATION_TOKENS):
-            replacement = next(
-                (
-                    candidate
-                    for candidate in fallback_iter
-                    if candidate.lower() not in used_names
-                ),
-                "Gereksinimlere Uyum",
-            )
-            used_names.add(replacement.lower())
+        key = name.lower()
+        should_replace = (
+            not name
+            or key in used_names
+            or (not allow_presentation and any(token in blob for token in _RUBRIC_PRESENTATION_TOKENS))
+            or _rubric_name_is_too_weak(name, desc)
+        )
+        if should_replace:
+            replacement = _next_rubric_replacement_name(used_names)
             criterion = {
                 **criterion,
                 "name": replacement,
@@ -446,6 +518,8 @@ def _sanitize_rubric_scope(
                     "dogruluk ve kalite gereksinimlerinin ne kadar karsilandigini olcer."
                 ),
             }
+        else:
+            used_names.add(key)
         sanitized.append(criterion)
     return sanitized
 
@@ -2098,6 +2172,26 @@ def _build_agents_list(cq, sn, gl, sc, ta, ev) -> list[dict]:
             "line": claim.get("lines", [None])[0] if claim.get("lines") else None,
             "agent": "Kanıtlandırma Ajanı",
             "code": claim.get("code_snippet"),
+        })
+    for rejected in (ev.get("rejected_claims", []) or [])[:4]:
+        if isinstance(rejected, dict):
+            text = str(
+                rejected.get("reason")
+                or rejected.get("feedback")
+                or rejected.get("description")
+                or rejected
+            )
+        else:
+            text = str(rejected)
+        text = text.strip()
+        if not text:
+            continue
+        ev_findings.append({
+            "severity": "info",
+            "message": f"KanÄ±tlanamayan iddia reddedildi: {text}",
+            "line": None,
+            "agent": "KanÄ±tlandÄ±rma AjanÄ±",
+            "code": None,
         })
     total_claims = ev.get("total_claims_received", 0)
     validated = ev.get("total_claims_validated", 0)

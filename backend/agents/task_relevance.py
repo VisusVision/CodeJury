@@ -46,6 +46,12 @@ Output JSON fields:
 
 Rules:
 - Compare **only** the stated assignment (brief + rubric) to the code. Do not assume a favorite domain.
+- Do NOT mark a submission off-topic just because it lacks tests, comments, type hints, perfect error
+  handling, or a preferred framework. Those are quality/completeness issues, not topic mismatch.
+- If the code implements the core data model, algorithm, API shape, CLI shape, or main functions requested
+  by the brief, keep off_topic false and use a middle relevance_factor for incomplete work.
+- Set off_topic true only for a different problem/domain, wrong file, empty placeholder, or a submission
+  that cannot reasonably be considered an attempt at the assignment.
 - If brief + rubric are too vague to infer a task, set relevance_factor 1.0, off_topic false,
   student_fulfills_assignment true, and say the task was underspecified.
 - Empty or placeholder code → very low relevance_factor, student_fulfills_assignment false.

@@ -37,8 +37,14 @@ What you must report:
   large input, duplicate keys, negative numbers, boundary indexes, IO failure,
   concurrent access — only those relevant to this code.
 - performance_notes: comment on time and memory ranges based on sandbox metrics.
-- Score 0–100. Compilation failure → 0. Timeout / memory-exceeded → ~5. If a
-  brief is on record and the code is off-topic, do not award high score even if
+- Score 0–100 using these bands:
+  * compilation failure = 0.
+  * timeout / memory exceeded for normal scripts = 0-10.
+  * uncaught runtime exception / non-zero exit for normal scripts = 0-35.
+  * CLI usage error because required arguments were not supplied = not a runtime failure; grade as limited smoke coverage.
+  * long-running API/server process = not a timeout failure when the code is clearly a service.
+  * passing smoke run with no formal tests = at most "fair" evidence unless edge cases are visible in code.
+  If a brief is on record and the code is off-topic, do not award high score even if
   the binary runs — trust the brief_alignment hint.
 
 Reply with ONLY this JSON shape:
