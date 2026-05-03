@@ -77,6 +77,22 @@ _TR_TRANSLATION = str.maketrans({
 })
 
 
+_TR_TRANSLATION.update(str.maketrans({
+    "ç": "c",
+    "ğ": "g",
+    "ı": "i",
+    "İ": "i",
+    "ö": "o",
+    "ş": "s",
+    "ü": "u",
+    "Ç": "c",
+    "Ğ": "g",
+    "Ö": "o",
+    "Ş": "s",
+    "Ü": "u",
+}))
+
+
 def _normalize_text(value: str) -> str:
     text = unicodedata.normalize("NFKD", value or "")
     text = text.translate(_TR_TRANSLATION).lower()
@@ -121,6 +137,7 @@ _PROGRAMMING_STRONG_PATTERNS: tuple[str, ...] = (
     r"\bbst\b",
     r"\bapi\b",
     r"\brest\b",
+    r"\bbot\b",
     r"\bfrontend\b",
     r"\bbackend\b",
     r"\bweb\b",
@@ -163,7 +180,7 @@ _PROGRAMMING_SOFT_PATTERNS: tuple[str, ...] = (
     r"\botomobil\b",
     r"\btasit\b",
     r"\bvehicle\b",
-    r"\barac\b",
+    r"\barac(i)?\b",
     r"\bpark\b",
     r"\benvanter\b",
 )
@@ -184,18 +201,24 @@ _UNSAFE_CATEGORY_PATTERNS: dict[str, tuple[str, ...]] = {
         r"\bhirsizlik\b",
         r"\bdolandiricilik\b",
         r"\bsahtecilik\b",
+        r"\bsahte (belge|kimlik|fatura)",
         r"\bkimlik (cal|hirsiz)",
         r"\bkredi karti\b.*\b(cal|kopya|sahte)",
         r"\bphishing\b",
         r"\boltala(ma)?\b",
         r"\bmalware\b",
         r"\bzararli yazilim\b",
+        r"\bvirus\b",
+        r"\btrojan\b",
         r"\bransomware\b",
         r"\bkeylogger\b",
         r"\bddos\b",
+        r"\bcredential\b",
+        r"\bsifre (topla|cal|kir|kirma)",
         r"\bbrute force\b",
         r"\bbypass\b.*\b(sifre|guvenlik|login)",
         r"\bhack(le|lemek|leme)?\b",
+        r"\byasa disi\b.*\b(satis|pazar|market)",
     ),
     "sexual": (
         r"\bcinsellik\b",
@@ -211,10 +234,13 @@ _UNSAFE_CATEGORY_PATTERNS: dict[str, tuple[str, ...]] = {
     "drugs": (
         r"\buyusturucu\b",
         r"\bmadde kullanimi\b",
+        r"\bmadde satisi\b",
         r"\besrar\b",
         r"\bkokain\b",
         r"\beroin\b",
         r"\bmetamfetamin\b",
+        r"\bmet\b",
+        r"\bfentanil\b",
         r"\bnarkotik\b",
         r"\bdrug\b",
     ),
@@ -223,6 +249,7 @@ _UNSAFE_CATEGORY_PATTERNS: dict[str, tuple[str, ...]] = {
         r"\bterror",
         r"\bterorist\b",
         r"\bpropaganda\b.*\bteror",
+        r"\bradikallesme\b",
         r"\bbomba\b",
         r"\bpatlayici\b",
         r"\bied\b",
@@ -230,11 +257,47 @@ _UNSAFE_CATEGORY_PATTERNS: dict[str, tuple[str, ...]] = {
     ),
     "violence": (
         r"\bsilah\b",
+        r"\bsilahli\b",
         r"\boldur(me|mek|me)\b",
+        r"\byarala(ma|mak)?\b",
         r"\bintihar\b",
         r"\bkendine zarar\b",
     ),
 }
+
+_SAFETY_OR_EDUCATIONAL_CONTEXT_PATTERNS: tuple[str, ...] = (
+    r"\bfarkindalik\b",
+    r"\btespit\b",
+    r"\bsiniflandir",
+    r"\bfiltre(le|leme)?\b",
+    r"\bmoderasyon\b",
+    r"\braporla",
+    r"\banaliz\b",
+    r"\bonle(me|yici)?\b",
+    r"\bsavunmaci\b",
+    r"\bguvenli\b",
+    r"\boyuncak veri\b",
+    r"\bsentetik veri\b",
+    r"\bkimlik bilgisi toplama(yacak|dan)?\b",
+    r"\bgercek (kimlik|sifre|kullanici) bilgisi (toplama|kullanma)",
+    r"\bbildirim sistemi\b",
+    r"\bdestek sistemi\b",
+    r"\brisk anketi\b",
+)
+
+_CLEAR_ENABLEMENT_PATTERNS: tuple[str, ...] = (
+    r"\b(cal|calma|hirsizla|topla|kopyala)\b.*\b(sifre|kimlik|kredi karti|credential)",
+    r"\b(sifre|kimlik|kredi karti|credential)\b.*\b(cal|topla|kopyala)",
+    r"\b(phishing|oltalama)\b.*\b(mail|eposta|sayfa|site)\b.*\b(gonder|yay|kur|olustur)",
+    r"\b(malware|zararli yazilim|ransomware|keylogger|trojan)\b.*\b(yaz|gelistir|uret|kur|calistir)",
+    r"\bddos\b.*\b(yap|duzenle|baslat|araci|bot)",
+    r"\bbypass\b.*\b(sifre|guvenlik|login)",
+    r"\b(satis|sat|stok|musteri|pazar|market)\b.*\b(uyusturucu|esrar|kokain|eroin|metamfetamin|fentanil)",
+    r"\b(uyusturucu|esrar|kokain|eroin|metamfetamin|fentanil)\b.*\b(satis|sat|stok|musteri|pazar|market)",
+    r"\b(teror|terorist|terror)\b.*\b(yay|reklam|uye kazan|radikallestir)",
+    r"\b(bomba|patlayici|ied)\b.*\b(yap|uret|tasarla|tarif|plan)",
+    r"\b(silah|saldiri|oldur|yarala)\b.*\b(plan|optimiz|hedef|simulasyon)",
+)
 
 _CATEGORY_LABELS = {
     "crime": "suc",
@@ -250,6 +313,22 @@ class AssignmentSafetyAgent:
 
     name = "assignment_safety"
     description = "Odevin programlama odevine uygunlugunu ve riskli icerigi denetler."
+
+    def _is_safe_educational_context(self, category: str, text: str, matches: tuple[str, ...]) -> bool:
+        if not matches:
+            return False
+        clear_enablement = _find_patterns(text, _CLEAR_ENABLEMENT_PATTERNS)
+        has_clear_negative_guardrail = bool(
+            re.search(r"\b(gercek )?(kimlik|sifre|kullanici) bilgisi toplama(yacak|dan)?\b", text)
+            or re.search(r"\b(credential|sifre|kimlik) toplama(yacak|dan)?\b", text)
+        )
+        if clear_enablement and not has_clear_negative_guardrail:
+            return False
+        if not _find_patterns(text, _SAFETY_OR_EDUCATIONAL_CONTEXT_PATTERNS):
+            return False
+        if category == "sexual":
+            return bool(re.search(r"\b(bildirim|destek|moderasyon|filtre|taciz onleme)\b", text))
+        return True
 
     def analyze(self, *, title: str, description: str | None = None, course_context: str | None = None) -> AssignmentSafetyResult:
         """Deterministic baseline review."""
@@ -285,6 +364,8 @@ class AssignmentSafetyAgent:
         for category, patterns in _UNSAFE_CATEGORY_PATTERNS.items():
             matches = _find_patterns(combined, patterns)
             if not matches:
+                continue
+            if self._is_safe_educational_context(category, combined, matches):
                 continue
             issues.append(
                 AssignmentSafetyIssue(
