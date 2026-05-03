@@ -711,6 +711,94 @@ class AssignmentAssistantSuggestionsRequest(BaseModel):
     prefer_fresh: bool = False  # True → Ollama önbelleğini atl (yeniden öner)
 
 
+def _strip_course_context_from_hint(raw: str) -> str:
+    text = re.sub(r"\s+", " ", (raw or "").strip())
+    if not text:
+        return ""
+    parts = [p.strip() for p in text.split(",") if p.strip()]
+    if len(parts) <= 1:
+        return text
+    course_like = re.compile(
+        r"\([A-Z]{2,}\d{2,}\)|\b\d+\.\s*s[ıi]n[ıi]f\b|\bgenel\b",
+        re.IGNORECASE,
+    )
+    while len(parts) > 1 and course_like.search(parts[0]):
+        parts.pop(0)
+    return ", ".join(parts).strip() or text
+
+
+def _is_detailed_assignment_hint(raw: str) -> bool:
+    text = _strip_course_context_from_hint(raw)
+    lower = text.lower()
+    words = re.findall(r"\w+", lower, flags=re.UNICODE)
+    requirement_hits = sum(
+        1
+        for token in (
+            "yaz",
+            "geliştir",
+            "gelistir",
+            "oluştur",
+            "olustur",
+            "uygula",
+            "tasarla",
+            "teslim",
+            "rapor",
+            "test",
+            "hata",
+            "kenar",
+            "dosya",
+            "api",
+            "endpoint",
+            "sınıf",
+            "sinif",
+            "fonksiyon",
+            "metot",
+        )
+        if token in lower
+    )
+    return len(words) >= 22 and requirement_hits >= 2
+
+
+def _title_from_assignment_hint(raw: str) -> str:
+    text = _strip_course_context_from_hint(raw)
+    if not text:
+        return "Yeni Programlama Odevi"
+    first_line = next((line.strip() for line in re.split(r"[\r\n]+", text) if line.strip()), text)
+    heading_match = re.match(
+        r"^(?:baslik|başlık|odev|ödev)\s*[:\-]\s*(.+)$",
+        first_line,
+        flags=re.IGNORECASE,
+    )
+    if heading_match:
+        first_line = heading_match.group(1).strip()
+    first_sentence = re.split(r"[.!?]\s+", first_line, maxsplit=1)[0].strip()
+    title = re.sub(
+        r"^(ogrenciler|öğrenciler|ogrenci|öğrenci)\s+",
+        "",
+        first_sentence,
+        flags=re.IGNORECASE,
+    )
+    title = re.sub(r"\s+", " ", title).strip(" -:;")
+    if len(title) > 90:
+        title = title[:87].rstrip(" ,;:-") + "..."
+    return title or "Yeni Programlama Odevi"
+
+
+def _direct_assignment_suggestion_from_hint(raw: str) -> dict[str, str] | None:
+    if not _is_detailed_assignment_hint(raw):
+        return None
+    text = _strip_course_context_from_hint(raw)
+    title = _title_from_assignment_hint(text)
+    desc = _strip_md_leaks(text)
+    if len(desc) > 1400:
+        desc = desc[:1390].rstrip(" ,;:-") + "..."
+    return {
+        "title": title,
+        "summary": "Egitimcinin uzun aciklamasindan dogrudan olusturulan odev taslagi.",
+        "description": desc,
+    }
+
+
 _ASSIGNMENT_SUGGEST_SYSTEM = """\
 You reply with a single JSON object only. No markdown, no # headings, no bullet markdown,
 no code fences, no ** bold — plain text inside JSON string values only.
@@ -738,6 +826,11 @@ elsewhere. If the hint is broad (e.g. a domain name like "matematik", "fizik", "
 "oyun", "yapay zeka", "veri bilimi", "biyoloji", "kimya"), generate PROGRAMMING homework
 that APPLIES that domain: numerical methods, simulation, data analysis, mini engine,
 mini API, etc. Each suggestion must explicitly mention the domain in title.
+
+If the instructor wrote a long complete assignment brief (deliverables, constraints,
+edge cases, tests, dates, or grading expectations), do NOT reinterpret it as a vague
+topic. Preserve the intent. The first suggestion should be a clean assignment draft
+faithful to that exact brief; the other suggestions may be nearby alternatives.
 
 If the hint contradicts itself (e.g. "matematik ama OOP istiyorum"), respect both —
 generate object-oriented programming exercises modelled on math (e.g. Vector class,
@@ -3061,16 +3154,11 @@ async def assignment_assistant_suggestions(req: AssignmentAssistantSuggestionsRe
     """Ollama ile yapilandirilmis odev konusu onerileri (markdown yok)."""
     from backend.core.config import settings as _llm_cfg
 
-    if not _llm_cfg.ollama_enabled:
-        raise HTTPException(
-            status_code=503,
-            detail="LLM su an kapali (ollama_enabled=false).",
-        )
-
     n = max(3, min(8, int(req.count or 5)))
     hint = (req.course_hint or "").strip()
     focus = _assignment_focus_extra(hint)
     tier = _normalize_assignment_difficulty(req.difficulty)
+    direct_suggestion = _direct_assignment_suggestion_from_hint(hint)
 
     user_prompt = (
         f"Uretilecek oneri sayisi: {n}.\n"
@@ -3091,16 +3179,23 @@ async def assignment_assistant_suggestions(req: AssignmentAssistantSuggestionsRe
             "tekrar etme.\n"
         )
 
-    result = await chat_json(
-        system_prompt=_ASSIGNMENT_SUGGEST_SYSTEM,
-        user_prompt=user_prompt,
-        temperature=0.55,
-        num_predict=4096,
-        use_cache=not bool(req.prefer_fresh),
-    )
+    result: dict[str, Any] = {}
+    if _llm_cfg.ollama_enabled:
+        try:
+            result = await chat_json(
+                system_prompt=_ASSIGNMENT_SUGGEST_SYSTEM,
+                user_prompt=user_prompt,
+                temperature=0.55,
+                num_predict=4096,
+                use_cache=not bool(req.prefer_fresh),
+            )
+        except Exception as exc:
+            logger.warning("assignment-assistant: LLM cagrisi basarisiz, fallback kullanilacak: %s", exc)
+    else:
+        logger.info("assignment-assistant: Ollama kapali, fallback oneriler kullaniliyor")
 
     raw_list: list[Any] | None = None
-    if result:
+    if isinstance(result, dict) and result:
         raw_list = _suggestions_list_from_llm(result)
         if raw_list is None:
             logger.warning(
@@ -3125,6 +3220,11 @@ async def assignment_assistant_suggestions(req: AssignmentAssistantSuggestionsRe
             seen_titles.add(k)
             merged.append(dict(it))
 
+    if direct_suggestion:
+        key = direct_suggestion["title"].strip().lower()
+        if key not in seen_titles:
+            merged.append(dict(direct_suggestion))
+            seen_titles.add(key)
     _extend_unique(cleaned)
     if len(merged) < n:
         _extend_unique(_fallback_assignment_suggestions(hint, tier))

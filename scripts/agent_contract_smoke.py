@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import sys
+import asyncio
 from pathlib import Path
 from typing import Any
 
@@ -344,6 +345,61 @@ def BadFunction(X):
     )
 
 
+def test_assignment_assistant_long_hint_contracts() -> None:
+    os.environ.setdefault("DEMO_MODE", "1")
+    from backend.core.config import settings
+    from frontend.backend import main as api_main
+    from frontend.backend.main import (
+        AssignmentAssistantSuggestionsRequest,
+        _direct_assignment_suggestion_from_hint,
+        _is_detailed_assignment_hint,
+        _strip_course_context_from_hint,
+    )
+
+    long_hint = (
+        "Programlama II (PRG201), 2.sinif, Baslik: Log Dosyasi Ozetleme Araci. "
+        "Ogrenciler Python ile komut satirindan bir log dosyasi yolu alan, satirlari seviye bazli "
+        "sayip ERROR ve CRITICAL mesajlarini ayri listeleyen bir CLI uygulamasi gelistirsin. "
+        "Bozuk satirlari raporlasin, dosya yoksa anlasilir hata mesaji versin, parse fonksiyonlarini "
+        "test edilebilir yazsin ve en az uc ornek girdi/cikti senaryosu teslim etsin."
+    )
+    stripped = _strip_course_context_from_hint(long_hint)
+    _assert(stripped.startswith("Baslik:"), "Ders baglami uzun ipucundan ayrilmali.")
+    _assert(_is_detailed_assignment_hint(long_hint), "Uzun odev aciklamasi detayli brief sayilmali.")
+    direct = _direct_assignment_suggestion_from_hint(long_hint)
+    _assert(direct is not None, "Uzun brief dogrudan odev taslagina donusmeli.")
+    assert direct is not None
+    _assert("Log Dosyasi" in direct["title"], "Taslak basligi egitmen metninden cikmali.")
+    _assert("ERROR" in direct["description"], "Taslak aciklamasi kritik teslim kosullarini korumali.")
+
+    short_hint = "agac"
+    _assert(
+        not _is_detailed_assignment_hint(short_hint),
+        "Kisa konu ipucu dogrudan brief olarak yorumlanmamali.",
+    )
+
+    original_ollama = settings.ollama_enabled
+    try:
+        settings.ollama_enabled = False
+        response = asyncio.run(
+            api_main.assignment_assistant_suggestions(
+                AssignmentAssistantSuggestionsRequest(
+                    course_hint=long_hint,
+                    count=3,
+                    difficulty="medium",
+                )
+            )
+        )
+    finally:
+        settings.ollama_enabled = original_ollama
+    suggestions = response.get("suggestions", [])
+    _assert(len(suggestions) >= 3, "LLM kapaliyken chatbot fallback oneriler donmeli.")
+    _assert(
+        suggestions[0]["title"] == direct["title"],
+        "Uzun brief LLM kapaliyken ilk taslak olarak korunmali.",
+    )
+
+
 def main() -> int:
     tests = [
         test_rubric_sanitizer,
@@ -352,6 +408,7 @@ def main() -> int:
         test_master_guards,
         test_evidence_contracts,
         test_agent_quality_benchmark,
+        test_assignment_assistant_long_hint_contracts,
     ]
     for test in tests:
         test()

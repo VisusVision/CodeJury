@@ -85,6 +85,49 @@ const commentaryForHint = (hint: string): string => {
   }
 };
 
+const normalizeLongText = (raw: string) => raw.replace(/\s+/g, " ").trim();
+
+const isDetailedAssignmentBrief = (raw: string) => {
+  const text = normalizeLongText(raw).toLowerCase();
+  const words = text.match(/[\p{L}\p{N}_]+/gu) ?? [];
+  const hits = [
+    "yaz",
+    "geliştir",
+    "gelistir",
+    "oluştur",
+    "olustur",
+    "tasarla",
+    "uygula",
+    "teslim",
+    "rapor",
+    "test",
+    "hata",
+    "kenar",
+    "dosya",
+    "api",
+    "endpoint",
+    "sınıf",
+    "sinif",
+    "fonksiyon",
+    "metot",
+  ].filter((token) => text.includes(token)).length;
+  return words.length >= 22 && hits >= 2;
+};
+
+const titleFromLongBrief = (raw: string) => {
+  const firstLine = raw
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .find(Boolean) ?? raw;
+  const cleaned = firstLine
+    .replace(/^(başlık|baslik|ödev|odev)\s*[:\-]\s*/i, "")
+    .replace(/^(öğrenciler|ogrenciler|öğrenci|ogrenci)\s+/i, "")
+    .split(/[.!?]\s+/)[0]
+    .trim();
+  if (!cleaned) return "Yeni Ödev";
+  return cleaned.length > 90 ? `${cleaned.slice(0, 87).trim()}...` : cleaned;
+};
+
 const AssignmentChatbot = ({ open, onClose, courses, teacherId, onCreated }: Props) => {
   void teacherId;
   const [step, setStep] = useState<Step>("greet");
@@ -206,6 +249,26 @@ const AssignmentChatbot = ({ open, onClose, courses, teacherId, onCreated }: Pro
     if (!text) return;
     addMsg({ from: "user", text });
     setHintInput("");
+
+    if (!hintMemo.trim() && isDetailedAssignmentBrief(text)) {
+      const draftTitle = titleFromLongBrief(text);
+      const draftDescription = normalizeLongText(text);
+      setHintMemo(draftTitle);
+      setDifficultyLevel(null);
+      setSuggestions([]);
+      setSelectedSuggestionId("direct-brief");
+      setTitle(draftTitle);
+      setDescription(draftDescription);
+      setEditingDesc(false);
+      addMsg({
+        from: "bot",
+        text:
+          "Uzun metni doğrudan ödev taslağı olarak anladım. Başlık ve açıklamayı hazırladım; istersen düzenleyebilir, uygunsa tarihe geçebiliriz.",
+      });
+      setStep("rateDesc");
+      return;
+    }
+
     const previous = hintMemo.trim();
     let nextHint: string;
     if (!previous) {
@@ -613,19 +676,24 @@ const AssignmentChatbot = ({ open, onClose, courses, teacherId, onCreated }: Pro
               </button>
             </div>
           )}
-          <div className="flex items-center gap-2">
-            <input
+          <div className="flex items-end gap-2">
+            <textarea
               autoFocus
-              type="text"
               value={hintInput}
               onChange={(e) => setHintInput(e.target.value)}
-              onKeyDown={(e) => e.key === "Enter" && handleHintSubmit()}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && !e.shiftKey) {
+                  e.preventDefault();
+                  handleHintSubmit();
+                }
+              }}
               placeholder={
                 step === "askHint"
-                  ? "Konu / anahtar kelimeler..."
+                  ? "Konu, anahtar kelime veya uzun ödev açıklaması yazın..."
                   : "Daraltmak için yaz (örn. 'matris çarpımı', 'AVL ağacı')..."
               }
-              className="flex-1 px-3 py-2 rounded-lg border border-input bg-background text-foreground text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+              rows={hintInput.length > 120 ? 4 : 2}
+              className="flex-1 max-h-32 resize-y px-3 py-2 rounded-lg border border-input bg-background text-foreground text-sm focus:outline-none focus:ring-2 focus:ring-ring"
             />
             <button
               onClick={handleHintSubmit}
