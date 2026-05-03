@@ -18,6 +18,7 @@ import sys
 import time
 import traceback
 import tracemalloc
+import unicodedata
 import uuid
 from datetime import datetime
 from pathlib import Path
@@ -834,6 +835,9 @@ terms like titrasyon, randevu, sarki, tur, sinav, stok, muhasebe, lojistik, huku
 tarim, sanat, tarih, psikoloji, biyoloji, kimya, or fizik into English unless the
 instructor wrote them in English. Each title or the first sentence of the summary must
 include at least one concrete noun from the instructor's text.
+Write natural Turkish. Do not use English UI adjectives or labels such as user-friendly,
+mobile, dashboard, CRUD, unless the instructor explicitly used them; prefer kullanici
+dostu, mobil, panel, ekleme-guncelleme-silme-listeleme.
 
 If the instructor writes English or mixed-language domain terms, preserve their meaning
 exactly. You may use a correct Turkish equivalent only when it is unambiguous
@@ -854,7 +858,10 @@ class, grade level, classroom, or OOP class.
 
 If the instructor wrote a long complete assignment brief, do not reinterpret it as a
 vague topic. The first suggestion should be a clean assignment draft faithful to that
-brief; other suggestions may be nearby alternatives that keep the same intent.
+brief. Other suggestions must stay within the same core assignment and may vary only
+scope, interface style, architecture, testing expectations, or reporting detail. Do not
+replace the requested system, dataset, actors, domain, or business object with another
+one.
 
 Generate varied suggestions under the instructor's intent, not copies of the same
 exercise. Each description should be detailed enough that an instructor can paste it
@@ -966,7 +973,65 @@ def _suggestions_list_from_llm(result: dict[str, Any]) -> list[Any] | None:
     return None
 
 
-def _clean_assignment_suggestion_items(raw_list: list[Any], n: int) -> list[dict[str, str]]:
+_TURKISH_FOLD_MAP = str.maketrans({
+    "ç": "c", "Ç": "c",
+    "ğ": "g", "Ğ": "g",
+    "ı": "i", "İ": "i",
+    "ö": "o", "Ö": "o",
+    "ş": "s", "Ş": "s",
+    "ü": "u", "Ü": "u",
+})
+
+
+def _fold_for_match(text: str) -> str:
+    folded = text.translate(_TURKISH_FOLD_MAP)
+    folded = unicodedata.normalize("NFKD", folded)
+    folded = "".join(ch for ch in folded if not unicodedata.combining(ch))
+    return folded.lower()
+
+
+def _looks_garbled_llm_text(text: str) -> bool:
+    if any(marker in text for marker in ("�", "Ã", "Ä", "Å", "Ţ", "ţ", "�")):
+        return True
+    return text.count("?") >= 2
+
+
+def _long_brief_anchor_terms(direct_suggestion: dict[str, str] | None) -> list[str]:
+    if not direct_suggestion:
+        return []
+    generic = {
+        "odev", "odevi", "proje", "projesi", "sistem", "sistemi", "takip", "arac", "araci",
+        "uygulama", "uygulamasi", "panel", "paneli", "veri", "dosya", "dosyasi", "mini",
+        "taban", "tabani", "sistemleri", "ders", "dersi", "icin", "ogrenci", "ogrenciler",
+        "ogrencilerden", "kucuk", "gelistirme", "gelistirmelerini", "istiyorum", "olsun",
+        "olacak", "kullanmali", "teslim", "kisa", "orta", "gercekci", "duzenli", "baslik",
+    }
+    source = f"{direct_suggestion.get('title', '')} {direct_suggestion.get('description', '')}"
+    folded = _fold_for_match(source)
+    terms = [t for t in re.findall(r"[a-z0-9_]+", folded) if len(t) >= 3 and t not in generic]
+    seen: set[str] = set()
+    out: list[str] = []
+    for term in terms:
+        if term in seen:
+            continue
+        seen.add(term)
+        out.append(term)
+    return out[:4]
+
+
+def _matches_long_brief_anchor(text: str, anchor_terms: list[str]) -> bool:
+    if not anchor_terms:
+        return True
+    folded = _fold_for_match(text)
+    hits = sum(1 for term in anchor_terms if term in folded)
+    return hits >= min(2, len(anchor_terms))
+
+
+def _clean_assignment_suggestion_items(
+    raw_list: list[Any],
+    n: int,
+    anchor_terms: list[str] | None = None,
+) -> list[dict[str, str]]:
     cleaned: list[dict[str, str]] = []
     seen_lower: set[str] = set()
     for item in raw_list:
@@ -986,6 +1051,11 @@ def _clean_assignment_suggestion_items(raw_list: list[Any], n: int) -> list[dict
                 f"{title} konusunda ogrenciler problemi modullere bolmeli, "
                 "kenar durumlarini test etmeli ve tasarim kararlarini kisa bir raporda aciklamalidir."
             )
+        combined_text = f"{title} {summary} {desc}"
+        if _looks_garbled_llm_text(combined_text):
+            continue
+        if anchor_terms and not _matches_long_brief_anchor(combined_text, anchor_terms):
+            continue
         tl = title.lower()
         if tl in seen_lower:
             continue
@@ -3120,6 +3190,7 @@ async def assignment_assistant_suggestions(req: AssignmentAssistantSuggestionsRe
     focus = _assignment_focus_extra(hint)
     tier = _normalize_assignment_difficulty(req.difficulty)
     direct_suggestion = _direct_assignment_suggestion_from_hint(hint)
+    anchor_terms = _long_brief_anchor_terms(direct_suggestion)
 
     user_prompt = (
         f"Uretilecek oneri sayisi: {n}.\n"
@@ -3130,10 +3201,18 @@ async def assignment_assistant_suggestions(req: AssignmentAssistantSuggestionsRe
     )
     if focus:
         user_prompt += focus + "\n"
+    if direct_suggestion:
+        user_prompt += (
+            "UZUN BRIEF MODU (ZORUNLU): Egitmen zaten ayrintili bir odev tanimi yazmis. "
+            "Yeni konu veya baska domain icat etme. Tum oneriler ayni ana odev etrafinda kalsin; "
+            "yalnizca kapsam, arayuz tipi, modulerlik, test/rapor beklentisi veya teslim formati farklilastirilsin. "
+            f"Cekirdek baslik/niyet: {direct_suggestion['title']}.\n"
+        )
     user_prompt += (
         "Her oneri farkli bir teknik konu olsun. Turkce yaz. "
         "Egitimcinin yazdigi ipucuna uy: alakasiz genel konular onerme. "
-        "Egitimcinin somut konu kelimelerini baslik veya ozetin ilk cumlesinde koru."
+        "Egitimcinin somut konu kelimelerini baslik veya ozetin ilk cumlesinde koru. "
+        "Cumleleri dogal ve dilbilgisi duzgun Turkceyle yaz."
     )
     if req.prefer_fresh:
         user_prompt += (
@@ -3165,7 +3244,7 @@ async def assignment_assistant_suggestions(req: AssignmentAssistantSuggestionsRe
         result = await chat_json(
             system_prompt=_ASSIGNMENT_SUGGEST_SYSTEM,
             user_prompt=user_prompt,
-            temperature=0.55,
+            temperature=0.35 if direct_suggestion else 0.55,
             num_predict=4096,
             use_cache=not bool(req.prefer_fresh),
         )
@@ -3198,15 +3277,18 @@ async def assignment_assistant_suggestions(req: AssignmentAssistantSuggestionsRe
     else:
         logger.warning("assignment-assistant: LLM sonuc bos (Ollama yanit/timeout/parse)")
 
-    cleaned = _clean_assignment_suggestion_items(raw_list or [], n)
+    cleaned = _clean_assignment_suggestion_items(raw_list or [], n, anchor_terms=anchor_terms)
     min_expected = min(n, 3)
     if len(cleaned) < min_expected:
         retry_prompt = (
             user_prompt
             + "\nONEMLI DUZELTME: Onceki LLM yaniti yeterli sayida gecerli oneri vermedi. "
             f"Simdi tam olarak {n} adet, birbirinden farkli, JSON sozlesmesine uyan oneri dondur. "
-            "Ogretim uyesinin somut terimlerini baslik veya ozetin ilk cumlesinde koru; anlam kaydirmasi yapma."
+            "Ogretim uyesinin somut terimlerini baslik veya ozetin ilk cumlesinde koru; anlam kaydirmasi yapma. "
+            "Bozuk karakter kullanma; Turkce karakterlerden emin degilsen ASCII Turkce yaz."
         )
+        if anchor_terms:
+            retry_prompt += f" Cekirdek terimler kaybolmasin: {', '.join(anchor_terms)}."
         try:
             retry_result = await chat_json(
                 system_prompt=_ASSIGNMENT_SUGGEST_SYSTEM,
@@ -3216,7 +3298,7 @@ async def assignment_assistant_suggestions(req: AssignmentAssistantSuggestionsRe
                 use_cache=False,
             )
             retry_list = _suggestions_list_from_llm(retry_result) if isinstance(retry_result, dict) else None
-            retry_cleaned = _clean_assignment_suggestion_items(retry_list or [], n)
+            retry_cleaned = _clean_assignment_suggestion_items(retry_list or [], n, anchor_terms=anchor_terms)
             if retry_cleaned:
                 combined: list[dict[str, str]] = []
                 seen_retry_titles: set[str] = set()
@@ -3246,12 +3328,12 @@ async def assignment_assistant_suggestions(req: AssignmentAssistantSuggestionsRe
             seen_titles.add(k)
             merged.append(dict(it))
 
-    if direct_suggestion:
+    _extend_unique(cleaned)
+    if not merged and direct_suggestion:
         key = direct_suggestion["title"].strip().lower()
         if key not in seen_titles:
             merged.append(dict(direct_suggestion))
             seen_titles.add(key)
-    _extend_unique(cleaned)
 
     if not merged:
         logger.error("assignment-assistant: LLM gecerli odev onerisi uretmedi (n=%s)", n)

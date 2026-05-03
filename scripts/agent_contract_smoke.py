@@ -353,8 +353,10 @@ def test_assignment_assistant_long_hint_contracts() -> None:
         AssignmentAssistantSuggestionsRequest,
         HTTPException,
         _assignment_focus_extra,
+        _clean_assignment_suggestion_items,
         _direct_assignment_suggestion_from_hint,
         _is_detailed_assignment_hint,
+        _long_brief_anchor_terms,
         _strip_course_context_from_hint,
     )
 
@@ -373,6 +375,25 @@ def test_assignment_assistant_long_hint_contracts() -> None:
     assert direct is not None
     _assert("Log Dosyasi" in direct["title"], "Taslak basligi egitmen metninden cikmali.")
     _assert("ERROR" in direct["description"], "Taslak aciklamasi kritik teslim kosullarini korumali.")
+    anchor_terms = _long_brief_anchor_terms(direct)
+    filtered = _clean_assignment_suggestion_items(
+        [
+            {
+                "title": "LLM Log Dosyasi Analiz Odevi",
+                "summary": "Log Dosyasi Ozetleme Araci briefini korur.",
+                "description": "ERROR ve CRITICAL satirlarini raporlayan CLI uygulamasi.",
+            },
+            {
+                "title": "Belediye SHAKE Sistemi",
+                "summary": "Bozuk ? karakterli ve alakasiz bir yanit.",
+                "description": "Bu ? metin uzun brief cekirdegini kaybetmistir.",
+            },
+        ],
+        3,
+        anchor_terms=anchor_terms,
+    )
+    _assert(len(filtered) == 1, "Uzun brief temizleyici bozuk veya cekirdek terimi kaymis oneriyi elemeli.")
+    _assert(filtered[0]["title"].startswith("LLM Log"), "Uzun brief temizleyici gecerli LLM oneriyi korumali.")
 
     short_hint = "agac"
     _assert(
@@ -402,6 +423,52 @@ def test_assignment_assistant_long_hint_contracts() -> None:
     )
 
     original_ollama = settings.ollama_enabled
+    original_chat_json = api_main.chat_json
+
+    async def fake_long_brief_chat_json(**kwargs):
+        return {
+            "suggestions": [
+                {
+                    "title": "LLM Log Dosyasi Analiz Odevi",
+                    "summary": "Log Dosyasi Ozetleme Araci briefini LLM ile duzenleyen odev.",
+                    "description": "Ogrenciler ERROR ve CRITICAL satirlarini ayiran, bozuk satirlari raporlayan ve test edilebilir parse fonksiyonlari yazan bir CLI uygulamasi gelistirir.",
+                },
+                {
+                    "title": "LLM Log Hata Raporlama Araci",
+                    "summary": "Log seviyeleri ve hatali satirlar icin LLM tabanli taslak.",
+                    "description": "Ogrenciler log dosyasini okuyup seviye sayimlari, dosya yok hatasi ve ornek girdi cikti senaryolarini teslim eder.",
+                },
+                {
+                    "title": "LLM Log Parser Test Odevi",
+                    "summary": "Log parser fonksiyonlarini test edilebilir modullere bolen odev.",
+                    "description": "Ogrenciler parse, sayim ve raporlama fonksiyonlarini ayirir; ERROR, CRITICAL ve bozuk satir durumlari icin test senaryolari yazar.",
+                },
+            ]
+        }
+
+    try:
+        settings.ollama_enabled = True
+        api_main.chat_json = fake_long_brief_chat_json
+        response = asyncio.run(
+            api_main.assignment_assistant_suggestions(
+                AssignmentAssistantSuggestionsRequest(
+                    course_hint=long_hint,
+                    count=3,
+                    difficulty="medium",
+                )
+            )
+        )
+    finally:
+        api_main.chat_json = original_chat_json
+        settings.ollama_enabled = original_ollama
+    llm_suggestions = response.get("suggestions", [])
+    _assert(llm_suggestions[0]["title"].startswith("LLM "), "LLM basariliyse uzun brief sonucu LLM onerisi olmali.")
+    _assert(
+        llm_suggestions[0]["title"] != direct["title"],
+        "Uzun brief LLM basariliyken programatik dogrudan taslak one alinmamali.",
+    )
+
+    original_ollama = settings.ollama_enabled
     try:
         settings.ollama_enabled = False
         try:
@@ -424,6 +491,17 @@ def test_assignment_assistant_long_hint_contracts() -> None:
     focus = _assignment_focus_extra("kimya laboratuvar titrasyon verileri icin rapor araci")
     _assert("kimya laboratuvar" in focus, "Serbest konu LLM promptuna korunarak tasinmali.")
     _assert("sabit kategori" in focus.lower(), "Focus metni programatik kategoriye sikismamayi soylemeli.")
+
+    civic_direct = _direct_assignment_suggestion_from_hint(
+        "Veri Tabani Sistemleri dersi icin ogrencilerden kucuk bir belediye sikayet takip sistemi "
+        "gelistirmelerini istiyorum. Vatandas adi, mahalle, kategori, aciklama, oncelik ve durum "
+        "alanlari olacak. CSV import, SQLite, endpointler, edge case ve README teslimi zorunlu olsun."
+    )
+    civic_terms = _long_brief_anchor_terms(civic_direct)
+    _assert(
+        "belediye" in civic_terms and "sikayet" in civic_terms,
+        "Uzun brief anchor cikarimi ders kelimeleri yerine cekirdek domaini yakalamali.",
+    )
 
     original_ollama = settings.ollama_enabled
     original_chat_json = api_main.chat_json

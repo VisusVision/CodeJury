@@ -250,25 +250,6 @@ const AssignmentChatbot = ({ open, onClose, courses, teacherId, onCreated }: Pro
     addMsg({ from: "user", text });
     setHintInput("");
 
-    if (!hintMemo.trim() && isDetailedAssignmentBrief(text)) {
-      const draftTitle = titleFromLongBrief(text);
-      const draftDescription = normalizeLongText(text);
-      setHintMemo(draftTitle);
-      setDifficultyLevel(null);
-      setSuggestions([]);
-      setSelectedSuggestionId("direct-brief");
-      setTitle(draftTitle);
-      setDescription(draftDescription);
-      setEditingDesc(false);
-      addMsg({
-        from: "bot",
-        text:
-          "Uzun metni doğrudan ödev taslağı olarak anladım. Başlık ve açıklamayı hazırladım; istersen düzenleyebilir, uygunsa tarihe geçebiliriz.",
-      });
-      setStep("rateDesc");
-      return;
-    }
-
     const previous = hintMemo.trim();
     let nextHint: string;
     if (!previous) {
