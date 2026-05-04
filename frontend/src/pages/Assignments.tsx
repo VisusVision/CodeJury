@@ -253,7 +253,7 @@ const Assignments = () => {
                         onMouseLeave={() => handleBadgeMouseLeave(assignment.id)}
                         className="absolute top-2 right-2 px-2 py-0.5 rounded-full bg-slate-500/15 text-slate-600 dark:text-slate-400 text-[10px] font-semibold cursor-pointer hover:bg-slate-500/25 transition-colors"
                       >
-                        {t("assignments.questions")}
+                        {t("assignments.tasks")}
                       </div>
                     </button>
 
@@ -277,7 +277,7 @@ const Assignments = () => {
                         }}
                       >
                         <div className="flex items-center justify-between px-3 py-2 bg-slate-500/10 border-b border-border">
-                          <span className="text-xs font-semibold text-slate-600 dark:text-slate-400">{t("assignments.questions").toUpperCase()}</span>
+                          <span className="text-xs font-semibold text-slate-600 dark:text-slate-400">{t("assignments.tasks").toUpperCase()}</span>
                           <button
                             onClick={(e) => {
                               e.preventDefault();
@@ -290,9 +290,9 @@ const Assignments = () => {
                         </div>
                         <div className="max-h-80 overflow-y-auto">
                           {isLoading ? (
-                            <div className="p-3 text-xs text-muted-foreground text-center">{t("common.loading")}</div>
+                            <div className="p-3 text-xs text-muted-foreground text-center">{t("assignments.tasksLoading")}</div>
                           ) : questions.length === 0 ? (
-                            <div className="p-3 text-xs text-muted-foreground text-center">{t("assignments.noQuestions")}</div>
+                            <div className="p-3 text-xs text-muted-foreground text-center">{t("assignments.noTasks")}</div>
                           ) : (
                             <div className="divide-y divide-border">
                               {questions.map((q) => (

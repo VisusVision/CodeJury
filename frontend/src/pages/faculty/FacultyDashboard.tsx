@@ -425,7 +425,20 @@ const FacultyDashboard = () => {
               {/* Left: Add form */}
               <div>
                 <div className="flex items-center justify-between mb-3">
-                  <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wider">Yeni Ödev</h2>
+                  <div className="flex items-center gap-2">
+                    <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wider">Yeni Ödev</h2>
+                    <div className="group relative">
+                      <div className="inline-flex h-6 w-6 items-center justify-center rounded-full border border-emerald-500/30 bg-emerald-500/10 text-emerald-600">
+                        <ShieldCheck className="h-3.5 w-3.5" />
+                      </div>
+                      <div className="pointer-events-none absolute left-0 top-8 z-20 w-72 rounded-lg border border-border bg-card p-3 text-xs shadow-lg opacity-0 transition-opacity duration-150 group-hover:opacity-100">
+                        <p className="font-semibold text-emerald-700 dark:text-emerald-300">Ödev Güvenlik Ajanı Aktif</p>
+                        <p className="mt-1 text-muted-foreground">
+                          Kayıt öncesi suç, cinsellik, madde kullanımı, terör gibi riskli içerikler kontrol edilir.
+                        </p>
+                      </div>
+                    </div>
+                  </div>
                   <button
                     onClick={() => setChatbotOpen(true)}
                     className="group relative flex items-center gap-1.5 pl-2 pr-3 py-1.5 rounded-full bg-gradient-to-r from-primary to-purple-600 text-primary-foreground text-xs font-semibold shadow-lg hover:shadow-xl transition-all hover:scale-105 hover:-translate-y-0.5"
@@ -462,15 +475,6 @@ const FacultyDashboard = () => {
                     rows={4}
                     className="px-3 py-2 rounded-lg border border-input bg-background text-foreground text-sm placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring resize-none"
                   />
-                  <div className="flex items-start gap-2 rounded-xl border border-emerald-500/25 bg-emerald-500/10 px-3 py-2 text-xs">
-                    <ShieldCheck className="mt-0.5 h-4 w-4 shrink-0 text-emerald-600" />
-                    <div>
-                      <p className="font-semibold text-emerald-700 dark:text-emerald-300">Ödev Güvenlik Ajanı aktif</p>
-                      <p className="text-muted-foreground">
-                        Kayıt öncesi suç, cinsellik, madde kullanımı, terör gibi riskli içerikleri kontrol eder; diğer ödevleri onaylar.
-                      </p>
-                    </div>
-                  </div>
                   {/* Due date & time */}
                   <div className="flex gap-2">
                     <Popover>

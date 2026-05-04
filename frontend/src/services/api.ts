@@ -258,7 +258,7 @@ export async function loginStudent(studentNo: string, tcNo: string): Promise<Stu
 
   if (!response.ok) {
     const errorText = await response.text();
-    throw new Error(`Ogrenci giris hatasi (${response.status}): ${errorText}`);
+    throw new Error(`Öğrenci giriş hatası (${response.status}): ${errorText}`);
   }
 
   return response.json();
@@ -268,7 +268,7 @@ export async function getStudents(): Promise<Student[]> {
   const response = await fetch(`${API_BASE_URL}/api/students`);
   if (!response.ok) {
     const errorText = await response.text();
-    throw new Error(`Ogrenci listesi hatasi (${response.status}): ${errorText}`);
+    throw new Error(`Öğrenci listesi hatası (${response.status}): ${errorText}`);
   }
   return response.json();
 }
@@ -288,7 +288,7 @@ export async function createStudent(payload: {
   });
   if (!response.ok) {
     const errorText = await response.text();
-    throw new Error(`Ogrenci ekleme hatasi (${response.status}): ${errorText}`);
+    throw new Error(`Öğrenci ekleme hatası (${response.status}): ${errorText}`);
   }
   return response.json();
 }
@@ -308,7 +308,7 @@ export async function updateStudent(studentId: string, payload: {
   });
   if (!response.ok) {
     const errorText = await response.text();
-    throw new Error(`Ogrenci guncelleme hatasi (${response.status}): ${errorText}`);
+    throw new Error(`Öğrenci güncelleme hatası (${response.status}): ${errorText}`);
   }
   return response.json();
 }
@@ -317,7 +317,7 @@ export async function deleteStudent(studentId: string): Promise<void> {
   const response = await fetch(`${API_BASE_URL}/api/students/${studentId}`, { method: "DELETE" });
   if (!response.ok) {
     const errorText = await response.text();
-    throw new Error(`Ogrenci silme hatasi (${response.status}): ${errorText}`);
+    throw new Error(`Öğrenci silme hatası (${response.status}): ${errorText}`);
   }
 }
 
@@ -331,7 +331,7 @@ export async function importStudentsCsv(file: File): Promise<StudentImportRespon
   });
   if (!response.ok) {
     const errorText = await response.text();
-    throw new Error(`CSV ogrenci yukleme hatasi (${response.status}): ${errorText}`);
+    throw new Error(`CSV öğrenci yükleme hatası (${response.status}): ${errorText}`);
   }
   return response.json();
 }
@@ -340,7 +340,7 @@ export async function getStudentCourses(studentId: string): Promise<Course[]> {
   const response = await fetch(`${API_BASE_URL}/api/student/${studentId}/courses`);
   if (!response.ok) {
     const errorText = await response.text();
-    throw new Error(`Ders listesi hatasi (${response.status}): ${errorText}`);
+    throw new Error(`Ders listesi hatası (${response.status}): ${errorText}`);
   }
   return response.json();
 }
@@ -349,7 +349,7 @@ export async function getCourse(courseId: string): Promise<Course> {
   const response = await fetch(`${API_BASE_URL}/api/courses/${courseId}`);
   if (!response.ok) {
     const errorText = await response.text();
-    throw new Error(`Ders detayi hatasi (${response.status}): ${errorText}`);
+    throw new Error(`Ders detayı hatası (${response.status}): ${errorText}`);
   }
   return response.json();
 }
@@ -358,7 +358,7 @@ export async function getCourseAssignments(courseId: string): Promise<Assignment
   const response = await fetch(`${API_BASE_URL}/api/courses/${courseId}/assignments`);
   if (!response.ok) {
     const errorText = await response.text();
-    throw new Error(`Odev listesi hatasi (${response.status}): ${errorText}`);
+    throw new Error(`Ödev listesi hatası (${response.status}): ${errorText}`);
   }
   return response.json();
 }
@@ -367,7 +367,7 @@ export async function getAssignment(assignmentId: string): Promise<Assignment> {
   const response = await fetch(`${API_BASE_URL}/api/assignments/${assignmentId}`);
   if (!response.ok) {
     const errorText = await response.text();
-    throw new Error(`Odev detayi hatasi (${response.status}): ${errorText}`);
+    throw new Error(`Ödev detayı hatası (${response.status}): ${errorText}`);
   }
   return response.json();
 }
@@ -389,7 +389,7 @@ export async function createUploadHistoryRecord(payload: {
 
   if (!response.ok) {
     const errorText = await response.text();
-    throw new Error(`Yukleme gecmisi kayit hatasi (${response.status}): ${errorText}`);
+    throw new Error(`Yükleme geçmişi kaydı hatası (${response.status}): ${errorText}`);
   }
 }
 
@@ -412,7 +412,7 @@ export async function getUploadHistoryRecords(studentNo: string, assignmentId?: 
   const response = await fetch(url.toString());
   if (!response.ok) {
     const errorText = await response.text();
-    throw new Error(`Yukleme gecmisi listeleme hatasi (${response.status}): ${errorText}`);
+    throw new Error(`Yükleme geçmişi listeleme hatası (${response.status}): ${errorText}`);
   }
   const data = await response.json();
   return Array.isArray(data) ? data as UploadHistoryApiRecord[] : [];
@@ -432,7 +432,7 @@ export async function registerTeacher(payload: {
 
   if (!response.ok) {
     const errorText = await response.text();
-    throw new Error(`Ogretmen kayit hatasi (${response.status}): ${errorText}`);
+    throw new Error(`Öğretmen kaydı hatası (${response.status}): ${errorText}`);
   }
 
   return response.json();
@@ -447,7 +447,7 @@ export async function loginTeacher(email: string, password: string): Promise<Tea
 
   if (!response.ok) {
     const errorText = await response.text();
-    throw new Error(`Ogretmen giris hatasi (${response.status}): ${errorText}`);
+    throw new Error(`Öğretmen girişi hatası (${response.status}): ${errorText}`);
   }
 
   return response.json();
@@ -457,7 +457,7 @@ export async function getDepartments(): Promise<Department[]> {
   const response = await fetch(`${API_BASE_URL}/api/departments`);
   if (!response.ok) {
     const errorText = await response.text();
-    throw new Error(`Bolum listesi hatasi (${response.status}): ${errorText}`);
+    throw new Error(`Bölüm listesi hatası (${response.status}): ${errorText}`);
   }
   return response.json();
 }
@@ -470,7 +470,7 @@ export async function createDepartment(payload: { name: string; created_by?: str
   });
   if (!response.ok) {
     const errorText = await response.text();
-    throw new Error(`Bolum ekleme hatasi (${response.status}): ${errorText}`);
+    throw new Error(`Bölüm ekleme hatası (${response.status}): ${errorText}`);
   }
   return response.json();
 }
@@ -479,7 +479,7 @@ export async function deleteDepartment(departmentId: string): Promise<void> {
   const response = await fetch(`${API_BASE_URL}/api/departments/${departmentId}`, { method: "DELETE" });
   if (!response.ok) {
     const errorText = await response.text();
-    throw new Error(`Bolum silme hatasi (${response.status}): ${errorText}`);
+    throw new Error(`Bölüm silme hatası (${response.status}): ${errorText}`);
   }
 }
 
@@ -487,7 +487,7 @@ export async function getCourses(): Promise<Course[]> {
   const response = await fetch(`${API_BASE_URL}/api/courses`);
   if (!response.ok) {
     const errorText = await response.text();
-    throw new Error(`Ders listesi hatasi (${response.status}): ${errorText}`);
+    throw new Error(`Ders listesi hatası (${response.status}): ${errorText}`);
   }
   return response.json();
 }
@@ -500,7 +500,7 @@ export async function createCourse(payload: { name: string; code: string; depart
   });
   if (!response.ok) {
     const errorText = await response.text();
-    throw new Error(`Ders ekleme hatasi (${response.status}): ${errorText}`);
+    throw new Error(`Ders ekleme hatası (${response.status}): ${errorText}`);
   }
   return response.json();
 }
@@ -509,7 +509,7 @@ export async function deleteCourse(courseId: string): Promise<void> {
   const response = await fetch(`${API_BASE_URL}/api/courses/${courseId}`, { method: "DELETE" });
   if (!response.ok) {
     const errorText = await response.text();
-    throw new Error(`Ders silme hatasi (${response.status}): ${errorText}`);
+    throw new Error(`Ders silme hatası (${response.status}): ${errorText}`);
   }
 }
 
@@ -517,7 +517,7 @@ export async function getAssignments(): Promise<Assignment[]> {
   const response = await fetch(`${API_BASE_URL}/api/assignments`);
   if (!response.ok) {
     const errorText = await response.text();
-    throw new Error(`Odev listesi hatasi (${response.status}): ${errorText}`);
+    throw new Error(`Ödev listesi hatası (${response.status}): ${errorText}`);
   }
   return response.json();
 }
@@ -535,7 +535,7 @@ export async function createAssignment(payload: {
   });
   if (!response.ok) {
     const errorText = await response.text();
-    throw new Error(`Odev ekleme hatasi (${response.status}): ${apiErrorMessage(errorText, "Odev eklenemedi")}`);
+    throw new Error(`Ödev ekleme hatası (${response.status}): ${apiErrorMessage(errorText, "Ödev eklenemedi")}`);
   }
   return response.json();
 }
@@ -544,7 +544,7 @@ export async function deleteAssignment(assignmentId: string): Promise<void> {
   const response = await fetch(`${API_BASE_URL}/api/assignments/${assignmentId}`, { method: "DELETE" });
   if (!response.ok) {
     const errorText = await response.text();
-    throw new Error(`Odev silme hatasi (${response.status}): ${errorText}`);
+    throw new Error(`Ödev silme hatası (${response.status}): ${errorText}`);
   }
 }
 
@@ -552,7 +552,7 @@ export async function getRubrics(): Promise<Rubric[]> {
   const response = await fetch(`${API_BASE_URL}/api/rubrics`);
   if (!response.ok) {
     const errorText = await response.text();
-    throw new Error(`Rubrik listesi hatasi (${response.status}): ${errorText}`);
+    throw new Error(`Rubrik listesi hatası (${response.status}): ${errorText}`);
   }
   const data = await response.json();
   return Array.isArray(data) ? data.map(normalizeRubric) : [];
@@ -562,7 +562,7 @@ export async function getRubricByAssignment(assignmentId: string): Promise<Rubri
   const response = await fetch(`${API_BASE_URL}/api/rubrics/by-assignment/${assignmentId}`);
   if (!response.ok) {
     const errorText = await response.text();
-    throw new Error(`Rubrik detayi hatasi (${response.status}): ${errorText}`);
+    throw new Error(`Rubrik detayı hatası (${response.status}): ${errorText}`);
   }
   const data = await response.json();
   if (!data) return null;
@@ -582,7 +582,7 @@ export async function upsertRubric(payload: {
   });
   if (!response.ok) {
     const errorText = await response.text();
-    throw new Error(`Rubrik kaydetme hatasi (${response.status}): ${errorText}`);
+    throw new Error(`Rubrik kaydetme hatası (${response.status}): ${errorText}`);
   }
   const data = await response.json();
   return normalizeRubric(data);
@@ -596,7 +596,7 @@ export async function updateRubricStatusByAssignment(assignmentId: string, statu
   });
   if (!response.ok) {
     const errorText = await response.text();
-    throw new Error(`Rubrik durum guncelleme hatasi (${response.status}): ${errorText}`);
+    throw new Error(`Rubrik durum güncelleme hatası (${response.status}): ${errorText}`);
   }
   return response.json();
 }
@@ -614,7 +614,7 @@ export async function suggestRubric(payload: {
   });
   if (!response.ok) {
     const errorText = await response.text();
-    throw new Error(`Rubrik AI onerisi hatasi (${response.status}): ${errorText}`);
+    throw new Error(`Rubrik AI önerisi hatası (${response.status}): ${errorText}`);
   }
   return response.json();
 }
@@ -708,7 +708,7 @@ export async function updateAssignmentQuestions(payload: {
   });
   if (!response.ok) {
     const errorText = await response.text();
-    throw new Error(`Sorular güncelleme hatası (${response.status}): ${errorText}`);
+    throw new Error(`Soru güncelleme hatası (${response.status}): ${errorText}`);
   }
 }
 
@@ -720,7 +720,7 @@ export async function updateTeacherEmail(teacherId: string, email: string): Prom
   });
   if (!response.ok) {
     const errorText = await response.text();
-    throw new Error(`Ogretmen e-posta guncelleme hatasi (${response.status}): ${errorText}`);
+    throw new Error(`Öğretmen e-posta güncelleme hatası (${response.status}): ${errorText}`);
   }
   return response.json();
 }
@@ -736,6 +736,6 @@ export async function updateTeacherPassword(
   });
   if (!response.ok) {
     const errorText = await response.text();
-    throw new Error(`Ogretmen sifre guncelleme hatasi (${response.status}): ${errorText}`);
+    throw new Error(`Öğretmen şifre güncelleme hatası (${response.status}): ${errorText}`);
   }
 }
