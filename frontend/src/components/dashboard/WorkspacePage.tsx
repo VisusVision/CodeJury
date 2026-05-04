@@ -656,7 +656,7 @@ const WorkspacePage = ({ sidebarTitle, sidebarSubtitle, headerTitle, assignmentI
                   onMouseEnter={handleBadgeMouseEnter}
                   onMouseLeave={handleBadgeMouseLeave}
                   className="p-1 text-muted-foreground hover:text-foreground hover:bg-muted/50 rounded transition-colors"
-                  title="Soruları göster"
+                  title={t("assignments.showTasks")}
                 >
                   <BookOpen className="h-4 w-4" />
                 </button>
@@ -667,7 +667,7 @@ const WorkspacePage = ({ sidebarTitle, sidebarSubtitle, headerTitle, assignmentI
                     onMouseLeave={handleBadgeMouseLeave}
                   >
                     <div className="flex items-center justify-between px-3 py-2 bg-muted/50 border-b border-border">
-                      <span className="text-xs font-semibold text-muted-foreground">GÖREVLER</span>
+                      <span className="text-xs font-semibold text-muted-foreground">{t("assignments.tasks").toUpperCase()}</span>
                       <button
                         onClick={(e) => {
                           e.preventDefault();
@@ -680,9 +680,9 @@ const WorkspacePage = ({ sidebarTitle, sidebarSubtitle, headerTitle, assignmentI
                     </div>
                     <div className="max-h-80 overflow-y-auto">
                       {loadingQuestions[assignmentId] ? (
-                        <div className="p-3 text-xs text-muted-foreground text-center">Sorular yükleniyor...</div>
+                        <div className="p-3 text-xs text-muted-foreground text-center">{t("assignments.tasksLoading")}</div>
                       ) : (assignmentQuestions[assignmentId] || []).length === 0 ? (
-                        <div className="p-3 text-xs text-muted-foreground text-center">Henüz soru atanmamış</div>
+                        <div className="p-3 text-xs text-muted-foreground text-center">{t("assignments.noTasks")}</div>
                       ) : (
                         <div className="divide-y divide-border">
                           {(assignmentQuestions[assignmentId] || []).map((q) => (

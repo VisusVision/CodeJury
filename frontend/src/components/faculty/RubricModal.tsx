@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Sparkles, Check, Trash2, Plus, Loader2, X, Search } from "lucide-react";
+import { Sparkles, Check, Trash2, Plus, Loader2, X, Search, Info } from "lucide-react";
 import { toast } from "sonner";
 import {
   getRubricByAssignment,
@@ -57,10 +57,10 @@ const clampCriterionCount = (value: number) =>
 
 const getRubricValidationMessage = (criteria: RubricCriterion[]) => {
   if (criteria.length < RUBRIC_MIN_CRITERIA || criteria.length > RUBRIC_MAX_CRITERIA) {
-    return `Rubrik ${RUBRIC_MIN_CRITERIA}-${RUBRIC_MAX_CRITERIA} kriterden olusmali.`;
+    return `Rubrik ${RUBRIC_MIN_CRITERIA}-${RUBRIC_MAX_CRITERIA} kriterden oluşmalıdır.`;
   }
   if (criteria.some((criterion) => !criterion.name.trim())) {
-    return "Tum kriterlerin adi doldurulmalidir.";
+    return "Tum kriterlerin adı doldurulmalıdır.";
   }
   if (
     criteria.some((criterion) => {
@@ -68,11 +68,11 @@ const getRubricValidationMessage = (criteria: RubricCriterion[]) => {
       return !Number.isInteger(score) || score < RUBRIC_MIN_POINTS || score > RUBRIC_MAX_POINTS;
     })
   ) {
-    return `Her kriter puani ${RUBRIC_MIN_POINTS}-${RUBRIC_MAX_POINTS} arasinda tam sayi olmalidir.`;
+    return `Her kriter puanı ${RUBRIC_MIN_POINTS}-${RUBRIC_MAX_POINTS} arasında tam sayı olmalıdır.`;
   }
   const total = criteria.reduce((sum, criterion) => sum + (Number(criterion.max_score) || 0), 0);
   if (total !== RUBRIC_TOTAL_POINTS) {
-    return `Rubrik toplam puani ${RUBRIC_TOTAL_POINTS} olmalidir.`;
+    return `Rubrik toplam puanı ${RUBRIC_TOTAL_POINTS} olmalıdır.`;
   }
   return null;
 };
@@ -87,6 +87,7 @@ const RubricModal = ({ assignment, teacherId, open, onClose }: RubricModalProps)
   const [criterionCount, setCriterionCount] = useState(RUBRIC_MIN_CRITERIA);
   const [loading, setLoading] = useState(true);
   const [aiLoading, setAiLoading] = useState(false);
+  const [criterionCountTooltipOpen, setCriterionCountTooltipOpen] = useState(false);
 
   // Questions states
   const [questions, setQuestions] = useState<QuestionItem[]>([]);
@@ -292,6 +293,13 @@ const RubricModal = ({ assignment, teacherId, open, onClose }: RubricModalProps)
     yellow: "bg-yellow-100 border-yellow-300 dark:bg-yellow-900 dark:border-yellow-700",
   };
 
+  const borderSelectClasses: Record<string, string> = {
+    blue: "border-blue-600 dark:border-blue-400",
+    green: "border-green-600 dark:border-green-400",
+    pink: "border-pink-600 dark:border-pink-400",
+    yellow: "border-yellow-600 dark:border-yellow-400",
+  };
+
   if (!open) return null;
 
   const totalScore = criteria.reduce((sum, c) => sum + (Number(c.max_score) || 0), 0);
@@ -363,11 +371,24 @@ const RubricModal = ({ assignment, teacherId, open, onClose }: RubricModalProps)
                     <p className="text-xs text-muted-foreground bg-muted/50 p-3 rounded-lg">{assignment.description}</p>
                   )}
 
-                  <div className="flex flex-col gap-3 rounded-xl border border-border bg-muted/20 p-3 sm:flex-row sm:items-end sm:justify-between">
-                    <div className="space-y-1">
+                  <div className="flex items-center justify-between gap-3 rounded-xl border border-border bg-muted/20 p-3">
+                    <div className="flex items-center gap-1.5">
                       <label htmlFor="rubric-criterion-count" className="text-xs font-medium text-foreground">
-                        Kriter sayisi
+                        Kriter Sayısı
                       </label>
+                      <div className="relative">
+                        <Info
+                          className="h-3.5 w-3.5 text-muted-foreground cursor-help flex-shrink-0"
+                          onMouseEnter={() => setCriterionCountTooltipOpen(true)}
+                          onMouseLeave={() => setCriterionCountTooltipOpen(false)}
+                        />
+                        {criterionCountTooltipOpen && (
+                          <div className="absolute bottom-full left-0 mb-1 bg-popover border border-border rounded-lg px-2 py-1 text-xs text-muted-foreground whitespace-nowrap z-50">
+                            10-20 kriterden her kriter 5-10 puan arası, toplam 100 puan.
+                          </div>
+                        )}
+                      </div>
+                      <span className="text-xs text-foreground">:</span>
                       <select
                         id="rubric-criterion-count"
                         value={criterionCount}
@@ -378,9 +399,6 @@ const RubricModal = ({ assignment, teacherId, open, onClose }: RubricModalProps)
                           <option key={count} value={count}>{count} madde</option>
                         ))}
                       </select>
-                      <p className="text-[11px] text-muted-foreground">
-                        10-20 kriter, her kriter 5-10 puan, toplam 100.
-                      </p>
                     </div>
                     <button
                       type="button"
@@ -460,24 +478,24 @@ const RubricModal = ({ assignment, teacherId, open, onClose }: RubricModalProps)
                   {/* Create new question */}
                   <div className="p-3 rounded-lg border border-border bg-card space-y-2">
                     <p className="text-xs font-medium text-foreground">Yeni Soru Oluştur</p>
-                    <textarea
-                      value={newQuestionContent}
-                      onChange={(e) => setNewQuestionContent(e.target.value)}
-                      placeholder="Soru metnini girin..."
-                      rows={2}
-                      className="w-full px-3 py-1 rounded-lg border border-input bg-background text-foreground text-sm focus:outline-none focus:ring-2 focus:ring-ring resize-none"
-                    />
                     <div className="flex items-center gap-2">
-                      <div className="flex gap-1">
+                      <textarea
+                        value={newQuestionContent}
+                        onChange={(e) => setNewQuestionContent(e.target.value)}
+                        placeholder="Soru metnini girin..."
+                        rows={2}
+                        className="flex-1 px-3 py-0 rounded-lg border border-input bg-background text-foreground text-sm focus:outline-none focus:ring-2 focus:ring-ring resize-none"
+                      />
+                      <div className="flex items-center gap-1.5 flex-shrink-0">
                         {(["blue", "green", "pink", "yellow"] as const).map((color) => (
                           <button
                             key={color}
                             type="button"
                             onClick={() => setNewQuestionColor(color)}
-                            className={`w-6 h-6 rounded-full border-2 transition-all ${
+                            className={`w-7 h-7 rounded-full border-2 transition-all ${
                               newQuestionColor === color
-                                ? `${colorSelectClasses[color]} border-offset-2`
-                                : "border-gray-300 dark:border-gray-600"
+                                ? `${colorSelectClasses[color]} border-4 ${borderSelectClasses[color]}`
+                                : `${colorSelectClasses[color]} border-2 border-gray-300 dark:border-gray-600`
                             }`}
                             title={color}
                           />
@@ -487,7 +505,7 @@ const RubricModal = ({ assignment, teacherId, open, onClose }: RubricModalProps)
                         type="button"
                         onClick={handleCreateQuestion}
                         disabled={questionCreateLoading}
-                        className="ml-auto px-3 py-1 rounded-lg bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90 transition-colors disabled:opacity-50 flex items-center gap-1"
+                        className="px-3 py-1 rounded-lg bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90 transition-colors disabled:opacity-50 flex items-center gap-1 flex-shrink-0"
                       >
                         {questionCreateLoading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Plus className="h-3.5 w-3.5" />}
                         Ekle

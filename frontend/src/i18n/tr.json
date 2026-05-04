@@ -72,7 +72,10 @@
     "noDescription": "Açıklama yok",
     "startAssignment": "Ödeve Başla",
     "questions": "Sorular",
-    "noQuestions": "Bu ödev için soru atanmamış.",
+    "tasks": "Görevler",
+    "showTasks": "Görevleri göster",
+    "tasksLoading": "Görevler yükleniyor...",
+    "noTasks": "Bu ödev için görev atanmamış.",
     "loadError": "Veri yüklenirken hata oluştu"
   },
   "workspace": {

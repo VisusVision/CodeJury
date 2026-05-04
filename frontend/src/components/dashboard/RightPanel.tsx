@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { motion } from "framer-motion";
 import {
   Activity,
@@ -6,6 +6,7 @@ import {
   FileText,
   Download,
   ChevronDown,
+  ChevronUp,
   AlertTriangle,
   CheckCircle2,
   Info,
@@ -129,8 +130,8 @@ function RubricBarSmall({ name, score, maxScore }: { name: string; score: number
 function RubricDetailRow({ name, score, maxScore }: { name: string; score: number; maxScore: number }) {
   const pct = maxScore > 0 ? Math.round((score / maxScore) * 100) : 0;
   return (
-    <div className="rounded-lg border border-border bg-background/80 p-2.5">
-      <div className="mb-1 flex items-start justify-between gap-2">
+    <div className="space-y-1">
+      <div className="flex items-start justify-between gap-2">
         <span className="text-[11px] font-medium leading-snug text-foreground">{name}</span>
         <span className="shrink-0 text-[11px] font-semibold tabular-nums text-foreground">
           {score}/{maxScore}
@@ -164,6 +165,7 @@ const RightPanel = ({
   const { t } = useTranslation();
   const [activeTab, setActiveTab] = useState<TabId>("process");
   const [rubricOpen, setRubricOpen] = useState(false);
+  const [rubricPage, setRubricPage] = useState(0);
 
   const sortedFindings = [...findings].sort(
     (a, b) => severityOrder[a.severity] - severityOrder[b.severity]
@@ -171,6 +173,22 @@ const RightPanel = ({
 
   const errorCount = findings.filter((f) => f.severity === "error").length;
   const warningCount = findings.filter((f) => f.severity === "warning").length;
+  const rubricPageSize = 5;
+  const rubricTotalPages = report ? Math.max(1, Math.ceil(report.rubric.length / rubricPageSize)) : 1;
+  const rubricStart = rubricPage * rubricPageSize;
+  const rubricEnd = rubricStart + rubricPageSize;
+  const rubricItems = report?.rubric.slice(rubricStart, rubricEnd) ?? [];
+
+  useEffect(() => {
+    setRubricPage(0);
+    setRubricOpen(false);
+  }, [report]);
+
+  useEffect(() => {
+    if (rubricPage > rubricTotalPages - 1) {
+      setRubricPage(0);
+    }
+  }, [rubricPage, rubricTotalPages]);
 
   return (
     <div className="flex flex-col h-full rounded-xl bg-card shadow-card overflow-hidden">
@@ -306,12 +324,68 @@ const RightPanel = ({
                 </button>
 
                 {/* Score */}
-                <div className="flex items-center gap-4">
+                <div className="flex flex-col lg:flex-row lg:items-center gap-4">
                   <ScoreRingSmall score={report.totalScore} max={report.maxScore} />
-                  <div className="flex-1 space-y-2">
-                    {report.rubric.map((cat) => (
-                      <RubricBarSmall key={cat.name} name={cat.name} score={cat.score} maxScore={cat.maxScore} />
-                    ))}
+
+                  <div className="min-w-0 flex-1 overflow-hidden rounded-xl border border-border bg-card">
+                    <div className="flex items-stretch justify-between gap-3 px-3 py-2.5 text-left transition-colors hover:bg-muted/40">
+                      <button
+                        type="button"
+                        onClick={() => setRubricOpen((open) => !open)}
+                        className="min-w-0 flex-1 text-left"
+                        aria-expanded={rubricOpen}
+                        aria-controls="rubric-criteria-panel"
+                      >
+                        <h3 className="text-xs font-semibold text-foreground">Rubrik Kriterleri</h3>
+                        <p className="text-[11px] text-muted-foreground">
+                          {report.rubric.length} kriter • {rubricPage + 1}/{rubricTotalPages} sayfa
+                        </p>
+                      </button>
+                      <div className="flex items-center gap-1 self-center">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setRubricPage((page) => Math.max(0, page - 1));
+                            setRubricOpen(true);
+                          }}
+                          disabled={rubricPage === 0}
+                          className="rounded-md p-1 text-muted-foreground transition-colors hover:bg-muted disabled:cursor-not-allowed disabled:opacity-40"
+                          aria-label="Önceki 5 kriter"
+                        >
+                          <ChevronUp className="h-4 w-4" />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setRubricPage((page) => Math.min(rubricTotalPages - 1, page + 1));
+                            setRubricOpen(true);
+                          }}
+                          disabled={rubricPage >= rubricTotalPages - 1}
+                          className="rounded-md p-1 text-muted-foreground transition-colors hover:bg-muted disabled:cursor-not-allowed disabled:opacity-40"
+                          aria-label="Sonraki 5 kriter"
+                        >
+                          <ChevronDown className="h-4 w-4" />
+                        </button>
+                      </div>
+                    </div>
+                    {rubricOpen && (
+                      <motion.div
+                        id="rubric-criteria-panel"
+                        initial={{ height: 0, opacity: 0 }}
+                        animate={{ height: "auto", opacity: 1 }}
+                        exit={{ height: 0, opacity: 0 }}
+                        className="space-y-2 border-t border-border bg-muted/20 px-3 py-2.5"
+                      >
+                        {rubricItems.map((cat) => (
+                          <RubricDetailRow
+                            key={cat.name}
+                            name={cat.name}
+                            score={cat.score}
+                            maxScore={cat.maxScore}
+                          />
+                        ))}
+                      </motion.div>
+                    )}
                   </div>
                 </div>
 
@@ -338,43 +412,6 @@ const RightPanel = ({
                   })}
                 </div>
 
-                {/* Rubric details */}
-                {report.rubric.length > 0 && (
-                  <div className="overflow-hidden rounded-xl border border-border bg-card">
-                    <button
-                      type="button"
-                      onClick={() => setRubricOpen((open) => !open)}
-                      className="flex w-full items-center justify-between gap-3 px-3 py-2.5 text-left transition-colors hover:bg-muted/40"
-                    >
-                      <div>
-                        <h3 className="text-xs font-semibold text-foreground">{t("rightPanel.rubricScores")}</h3>
-                        <p className="text-[11px] text-muted-foreground">
-                          {report.rubric.length} {t("rightPanel.items")}, {t("rightPanel.total")} {report.totalScore}/{report.maxScore}
-                        </p>
-                      </div>
-                      <ChevronDown
-                        className={`h-4 w-4 shrink-0 text-muted-foreground transition-transform ${rubricOpen ? "rotate-180" : ""}`}
-                      />
-                    </button>
-                    {rubricOpen && (
-                      <motion.div
-                        initial={{ height: 0, opacity: 0 }}
-                        animate={{ height: "auto", opacity: 1 }}
-                        exit={{ height: 0, opacity: 0 }}
-                        className="space-y-2 border-t border-border bg-muted/20 p-3"
-                      >
-                        {report.rubric.map((cat) => (
-                          <RubricDetailRow
-                            key={cat.name}
-                            name={cat.name}
-                            score={cat.score}
-                            maxScore={cat.maxScore}
-                          />
-                        ))}
-                      </motion.div>
-                    )}
-                  </div>
-                )}
               </>
             )}
           </div>

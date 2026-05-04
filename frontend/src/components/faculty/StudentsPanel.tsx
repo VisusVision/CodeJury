@@ -234,7 +234,7 @@ const StudentsPanel = ({ departments }: StudentsPanelProps) => {
       await loadStudents();
     } catch (error) {
       const detail = extractDetailMessage(error);
-      if (detail.toLowerCase().includes("zaten kayıtlı") || detail.toLowerCase().includes("zaten kayitli")) {
+      if (detail.toLowerCase().includes("zaten kayıtlı") || detail.toLowerCase().includes("zaten kayıtlı")) {
         toast.error("Aynı öğrenci zaten kayıtlı.");
         return;
       }
@@ -288,7 +288,7 @@ const StudentsPanel = ({ departments }: StudentsPanelProps) => {
       await loadStudents();
     } catch (error) {
       const detail = extractDetailMessage(error);
-      if (detail.toLowerCase().includes("zaten kayıtlı") || detail.toLowerCase().includes("zaten kayitli")) {
+      if (detail.toLowerCase().includes("zaten kayıtlı") || detail.toLowerCase().includes("zaten kayıtlı")) {
         toast.error("Aynı öğrenci zaten kayıtlı.");
         return;
       }
@@ -421,7 +421,7 @@ const StudentsPanel = ({ departments }: StudentsPanelProps) => {
             <div className="relative ml-0.5 inline-flex items-center group">
               <CircleHelp className="h-3.5 w-3.5 text-muted-foreground cursor-help" />
               <div className="pointer-events-none absolute left-full top-1/2 z-20 ml-2 w-72 -translate-y-1/2 rounded-lg border border-border bg-popover px-3 py-2 text-xs font-normal leading-relaxed text-popover-foreground opacity-0 shadow-lg transition-opacity duration-150 group-hover:opacity-100">
-                ogrenci no, tc, ad, soyad, bolum, sinif. Bolum adi mevcut bolumlerle, sinif 1-4 arasinda olmalidir.
+                ogrenci no, tc, ad, soyad, bolum, sinif. Bolum adi mevcut bölümlerle, sinif 1-4 arasında olmalıdır.
               </div>
             </div>
           </div>

@@ -72,7 +72,10 @@
     "noDescription": "No description",
     "startAssignment": "Start Assignment",
     "questions": "Questions",
-    "noQuestions": "No questions assigned to this assignment.",
+    "tasks": "Tasks",
+    "showTasks": "Show tasks",
+    "tasksLoading": "Loading tasks...",
+    "noTasks": "No tasks assigned to this assignment.",
     "loadError": "An error occurred while loading data"
   },
   "workspace": {
