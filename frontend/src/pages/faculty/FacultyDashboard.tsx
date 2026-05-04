@@ -4,8 +4,10 @@ import {
   GraduationCap, LogOut, Building2, BookOpen, FileText, Plus, Trash2, Pencil, Settings, CalendarIcon, Clock, Users, ShieldCheck, Loader2,
 } from "lucide-react";
 import { format, differenceInDays, differenceInHours } from "date-fns";
-import { tr } from "date-fns/locale";
+import { tr as trLocale } from "date-fns/locale";
+import { enUS as enLocale } from "date-fns/locale";
 import { cn } from "@/lib/utils";
+import { useTranslation, LanguageToggle } from "@/i18n/LanguageContext";
 import { Calendar } from "@/components/ui/calendar";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import RubricModal from "@/components/faculty/RubricModal";
@@ -66,6 +68,8 @@ const getErrorMessage = (error: unknown, fallback: string) =>
   error instanceof Error ? error.message : fallback;
 
 const FacultyDashboard = () => {
+  const { t, language } = useTranslation();
+  const dateLocale = language === "tr" ? trLocale : enLocale;
   const navigate = useNavigate();
   const [teacher, setTeacher] = useState<Teacher | null>(null);
   const [activeTab, setActiveTab] = useState<Tab>("departments");
@@ -243,15 +247,15 @@ const FacultyDashboard = () => {
   };
 
   if (loading || !teacher) {
-    return <div className="min-h-screen flex items-center justify-center text-muted-foreground">Yükleniyor...</div>;
+    return <div className="min-h-screen flex items-center justify-center text-muted-foreground">{t("common.loading")}</div>;
   }
 
   const tabs: { key: Tab; label: string; icon: React.ReactNode }[] = [
-    { key: "departments", label: "Bölümler", icon: <Building2 className="h-4 w-4" /> },
-    { key: "courses", label: "Dersler", icon: <BookOpen className="h-4 w-4" /> },
-    { key: "assignments", label: "Ödevler", icon: <FileText className="h-4 w-4" /> },
-    { key: "students", label: "Öğrenciler", icon: <Users className="h-4 w-4" /> },
-    { key: "settings", label: "Ayarlar", icon: <Settings className="h-4 w-4" /> },
+    { key: "departments", label: t("faculty.tabs.departments"), icon: <Building2 className="h-4 w-4" /> },
+    { key: "courses", label: t("faculty.tabs.courses"), icon: <BookOpen className="h-4 w-4" /> },
+    { key: "assignments", label: t("faculty.tabs.assignments"), icon: <FileText className="h-4 w-4" /> },
+    { key: "students", label: t("faculty.tabs.students"), icon: <Users className="h-4 w-4" /> },
+    { key: "settings", label: t("faculty.tabs.settings"), icon: <Settings className="h-4 w-4" /> },
   ];
 
   return (
@@ -267,7 +271,7 @@ const FacultyDashboard = () => {
               {teacher.first_name} {teacher.last_name}
             </h1>
           </div>
-          <p className="text-xs text-muted-foreground mt-1">Öğretim Üyesi Paneli</p>
+          <p className="text-xs text-muted-foreground mt-1">{t("faculty.title")}</p>
         </div>
 
         <nav className="flex-1 px-3 space-y-0.5 overflow-auto">
@@ -293,7 +297,7 @@ const FacultyDashboard = () => {
             className="flex items-center gap-2 w-full px-3 py-2 rounded-lg text-sm text-muted-foreground hover:text-foreground hover:bg-muted/50 transition-colors duration-150"
           >
             <LogOut className="h-4 w-4" />
-            <span>Çıkış Yap</span>
+            <span>{t("common.logout")}</span>
           </button>
         </div>
       </aside>
@@ -302,8 +306,11 @@ const FacultyDashboard = () => {
       <main className={cn("flex flex-col p-6 lg:p-8", (activeTab === "settings" || activeTab === "students") ? "overflow-hidden" : "overflow-y-auto")}>
         {activeTab === "departments" && (
           <>
-            <h1 className="text-2xl font-bold tracking-tight text-foreground mb-1">Bölümler</h1>
-            <p className="text-sm text-muted-foreground mb-6">Bölüm ekleyin veya mevcut bölümleri yönetin.</p>
+            <div className="flex items-center justify-between mb-1">
+              <h1 className="text-2xl font-bold tracking-tight text-foreground">{t("faculty.departments.title")}</h1>
+              <LanguageToggle />
+            </div>
+            <p className="text-sm text-muted-foreground mb-6">{t("faculty.departments.subtitle")}</p>
 
             <div className="flex gap-2 mb-6 max-w-lg">
               <input
@@ -476,7 +483,7 @@ const FacultyDashboard = () => {
                           )}
                         >
                           <CalendarIcon className="h-4 w-4" />
-                          {dueDate ? format(dueDate, "dd MMM yyyy", { locale: tr }) : "Son tarih seçin"}
+                          {dueDate ? format(dueDate, "dd MMM yyyy", { locale: dateLocale }) : (language === "tr" ? "Son tarih seçin" : "Select deadline")}
                         </button>
                       </PopoverTrigger>
                       <PopoverContent className="w-auto p-0" align="start">
@@ -588,7 +595,7 @@ const FacultyDashboard = () => {
                               </div>
                               <p className="text-xs text-muted-foreground">
                                 {course?.name || "—"}{course?.code ? ` (${course.code})` : ""}{course?.class_year ? ` - ${course.class_year}. sınıf` : ""}
-                                {a.due_date && ` · ${format(new Date(a.due_date), "dd MMM yyyy HH:mm", { locale: tr })}`}
+                                {a.due_date && ` · ${format(new Date(a.due_date), "dd MMM yyyy HH:mm", { locale: dateLocale })}`}
                               </p>
                             </div>
                           </div>

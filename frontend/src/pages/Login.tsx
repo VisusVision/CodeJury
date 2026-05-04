@@ -2,6 +2,7 @@ import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { loginStudent, loginTeacher, registerTeacher } from "@/services/api";
 import { GraduationCap, User, BookOpen } from "lucide-react";
+import { useTranslation, LanguageToggle } from "@/i18n/LanguageContext";
 
 type Tab = "student" | "teacher";
 
@@ -9,6 +10,7 @@ const getErrorMessage = (error: unknown, fallback: string) =>
   error instanceof Error ? error.message : fallback;
 
 const Login = () => {
+  const { t } = useTranslation();
   const [tab, setTab] = useState<Tab>("student");
 
   // Student state
@@ -30,14 +32,14 @@ const Login = () => {
     e.preventDefault();
     setError("");
     if (!studentNo.trim() || !tcNo.trim()) {
-      setError("Lütfen tüm alanları doldurun.");
+      setError(t("login.studentNotFound"));
       return;
     }
     setLoading(true);
     try {
       const student = await loginStudent(studentNo.trim(), tcNo.trim());
       if (!student) {
-        setError("Öğrenci numarası veya TC kimlik numarası hatalı.");
+        setError(t("login.studentNotFound"));
         setLoading(false);
         return;
       }
@@ -45,7 +47,7 @@ const Login = () => {
       navigate("/courses");
     } catch (err) {
       console.error(err);
-      setError("Bir hata oluştu. Lütfen tekrar deneyin.");
+      setError(t("login.networkError"));
     } finally {
       setLoading(false);
     }
@@ -55,14 +57,14 @@ const Login = () => {
     e.preventDefault();
     setError("");
     if (!email.trim() || !password.trim()) {
-      setError("Lütfen tüm alanları doldurun.");
+      setError(t("login.networkError"));
       return;
     }
     setLoading(true);
     try {
       if (isSignUp) {
         if (!firstName.trim() || !lastName.trim()) {
-          setError("Ad ve soyad zorunludur.");
+          setError(t("login.networkError"));
           setLoading(false);
           return;
         }
@@ -72,7 +74,7 @@ const Login = () => {
           email: email.trim(),
           password: password.trim(),
         });
-        setError("Kayıt başarılı! Şimdi giriş yapabilirsiniz.");
+        setError(t("common.success") + "! " + t("login.loginLink"));
         setIsSignUp(false);
       } else {
         const teacher = await loginTeacher(email.trim(), password.trim());
@@ -81,21 +83,26 @@ const Login = () => {
       }
     } catch (err: unknown) {
       console.error(err);
-      setError(getErrorMessage(err, "Bir hata oluştu."));
+      setError(getErrorMessage(err, t("login.networkError")));
     } finally {
       setLoading(false);
     }
   };
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-background p-4">
+    <div className="min-h-screen flex items-center justify-center bg-background p-4 relative">
+      {/* Language Toggle - top right */}
+      <div className="absolute top-4 right-4 z-10">
+        <LanguageToggle />
+      </div>
+
       <div className="w-full max-w-sm">
         <div className="flex flex-col items-center mb-8">
           <div className="h-12 w-12 rounded-xl bg-primary flex items-center justify-center mb-3">
             <GraduationCap className="h-6 w-6 text-primary-foreground" />
           </div>
-          <h1 className="text-xl font-bold text-foreground">Giriş Yap</h1>
-          <p className="text-sm text-muted-foreground mt-1">ABC Üniversitesi Giriş Ekranı</p>
+          <h1 className="text-xl font-bold text-foreground">{t("login.title")}</h1>
+          <p className="text-sm text-muted-foreground mt-1">{t("login.subtitle")}</p>
         </div>
 
         {/* Tabs */}
@@ -109,7 +116,7 @@ const Login = () => {
             }`}
           >
             <User className="h-4 w-4" />
-            Öğrenci
+            {t("login.studentTab")}
           </button>
           <button
             onClick={() => { setTab("teacher"); setError(""); }}
@@ -120,7 +127,7 @@ const Login = () => {
             }`}
           >
             <BookOpen className="h-4 w-4" />
-            Öğretim Üyesi
+            {t("login.teacherTab")}
           </button>
         </div>
 
@@ -128,7 +135,7 @@ const Login = () => {
         {tab === "student" && (
           <form onSubmit={handleStudentLogin} className="space-y-4">
             <div>
-              <label className="block text-sm font-medium text-foreground mb-1.5">Öğrenci Numarası</label>
+              <label className="block text-sm font-medium text-foreground mb-1.5">{t("login.studentNo")}</label>
               <input
                 type="text"
                 value={studentNo}
@@ -138,7 +145,7 @@ const Login = () => {
               />
             </div>
             <div>
-              <label className="block text-sm font-medium text-foreground mb-1.5">TC Kimlik Numarası</label>
+              <label className="block text-sm font-medium text-foreground mb-1.5">{t("login.tcNo")}</label>
               <input
                 type="password"
                 value={tcNo}
@@ -157,7 +164,7 @@ const Login = () => {
               disabled={loading}
               className="w-full py-2.5 rounded-lg bg-primary text-primary-foreground text-sm font-medium hover:brightness-110 transition-all disabled:opacity-50"
             >
-              {loading ? "Giriş yapılıyor..." : "Giriş Yap"}
+              {loading ? t("login.loggingIn") : t("login.loginButton")}
             </button>
 
             <button
@@ -166,7 +173,7 @@ const Login = () => {
               aria-hidden="true"
               className="w-full text-sm opacity-0 pointer-events-none"
             >
-              Hesabınız yok mu? Kayıt olun
+              {t("login.noAccount")} {t("login.registerLink")}
             </button>
           </form>
         )}
@@ -177,7 +184,7 @@ const Login = () => {
             {isSignUp && (
               <div className="grid grid-cols-2 gap-3">
                 <div>
-                  <label className="block text-sm font-medium text-foreground mb-1.5">Ad</label>
+                  <label className="block text-sm font-medium text-foreground mb-1.5">{t("login.firstName")}</label>
                   <input
                     type="text"
                     value={firstName}
@@ -186,7 +193,7 @@ const Login = () => {
                   />
                 </div>
                 <div>
-                  <label className="block text-sm font-medium text-foreground mb-1.5">Soyad</label>
+                  <label className="block text-sm font-medium text-foreground mb-1.5">{t("login.lastName")}</label>
                   <input
                     type="text"
                     value={lastName}
@@ -198,7 +205,7 @@ const Login = () => {
             )}
 
             <div>
-              <label className="block text-sm font-medium text-foreground mb-1.5">E-posta</label>
+              <label className="block text-sm font-medium text-foreground mb-1.5">{t("login.email")}</label>
               <input
                 type="email"
                 value={email}
@@ -209,7 +216,7 @@ const Login = () => {
             </div>
 
             <div>
-              <label className="block text-sm font-medium text-foreground mb-1.5">Şifre</label>
+              <label className="block text-sm font-medium text-foreground mb-1.5">{t("login.password")}</label>
               <input
                 type="password"
                 value={password}
@@ -228,7 +235,7 @@ const Login = () => {
               disabled={loading}
               className="w-full py-2.5 rounded-lg bg-primary text-primary-foreground text-sm font-medium hover:brightness-110 transition-all disabled:opacity-50"
             >
-              {loading ? "İşleniyor..." : isSignUp ? "Kayıt Ol" : "Giriş Yap"}
+              {loading ? t("login.loggingIn") : isSignUp ? t("login.registerButton") : t("login.loginButton")}
             </button>
 
             <button
@@ -236,7 +243,7 @@ const Login = () => {
               onClick={() => { setIsSignUp(!isSignUp); setError(""); }}
               className="w-full text-sm text-muted-foreground hover:text-foreground transition-colors"
             >
-              {isSignUp ? "Zaten hesabınız var mı? Giriş yapın" : "Hesabınız yok mu? Kayıt olun"}
+              {isSignUp ? `${t("login.hasAccount")} ${t("login.loginLink")}` : `${t("login.noAccount")} ${t("login.registerLink")}`}
             </button>
           </form>
         )}

@@ -1,5 +1,6 @@
 import { Timer, Cpu, MemoryStick } from "lucide-react";
 import { motion } from "framer-motion";
+import { useTranslation } from "@/i18n/LanguageContext";
 
 interface ExecutionStatsProps {
   executionTimeMs: number;
@@ -8,6 +9,8 @@ interface ExecutionStatsProps {
 }
 
 const ExecutionStats = ({ executionTimeMs, memoryUsageMb, peakMemoryMb }: ExecutionStatsProps) => {
+  const { t } = useTranslation();
+
   const formatTime = (ms: number) => {
     if (ms < 1000) return `${ms} ms`;
     return `${(ms / 1000).toFixed(2)} s`;
@@ -16,25 +19,25 @@ const ExecutionStats = ({ executionTimeMs, memoryUsageMb, peakMemoryMb }: Execut
   const stats = [
     {
       icon: Timer,
-      label: "Çalışma Süresi",
+      label: t("report.executionTime"),
       value: formatTime(executionTimeMs),
-      sub: executionTimeMs < 1000 ? "Hızlı" : executionTimeMs < 3000 ? "Normal" : "Yavaş",
+      sub: executionTimeMs < 1000 ? t("report.fast") : executionTimeMs < 3000 ? t("report.normal") : t("report.slow"),
       color: executionTimeMs < 1000 ? "text-success" : executionTimeMs < 3000 ? "text-warning" : "text-destructive",
       bgColor: executionTimeMs < 1000 ? "bg-success/10" : executionTimeMs < 3000 ? "bg-warning/10" : "bg-destructive/10",
     },
     {
       icon: MemoryStick,
-      label: "Bellek Kullanımı",
+      label: t("report.memoryUsage"),
       value: `${memoryUsageMb.toFixed(1)} MB`,
-      sub: memoryUsageMb < 50 ? "Düşük" : memoryUsageMb < 150 ? "Orta" : "Yüksek",
+      sub: memoryUsageMb < 50 ? t("report.low") : memoryUsageMb < 150 ? t("report.medium") : t("report.high"),
       color: memoryUsageMb < 50 ? "text-success" : memoryUsageMb < 150 ? "text-warning" : "text-destructive",
       bgColor: memoryUsageMb < 50 ? "bg-success/10" : memoryUsageMb < 150 ? "bg-warning/10" : "bg-destructive/10",
     },
     {
       icon: Cpu,
-      label: "Tepe Bellek",
+      label: t("report.peakMemory"),
       value: `${peakMemoryMb.toFixed(1)} MB`,
-      sub: "Maksimum",
+      sub: t("report.maximum"),
       color: "text-primary",
       bgColor: "bg-primary/10",
     },

@@ -207,7 +207,7 @@ function apiErrorMessage(errorText: string, fallback: string): string {
   return errorText || fallback;
 }
 
-export async function analyzeCode(fileName: string, fileContent: string, assignmentId?: string): Promise<ApiAnalysisResult> {
+export async function analyzeCode(fileName: string, fileContent: string, assignmentId?: string, reportLanguage?: string): Promise<ApiAnalysisResult> {
   let response: Response;
   try {
     response = await fetch(`${API_BASE_URL}/api/analyze`, {
@@ -217,6 +217,7 @@ export async function analyzeCode(fileName: string, fileContent: string, assignm
         file_name: fileName,
         file_content: fileContent,
         assignment_id: assignmentId,
+        report_language: reportLanguage || "tr",
       }),
     });
   } catch (e) {
@@ -229,7 +230,9 @@ export async function analyzeCode(fileName: string, fileContent: string, assignm
 
   if (!response.ok) {
     const errorText = await response.text();
-    throw new Error(`Analiz hatası (${response.status}): ${errorText}`);
+    const statusCode = response.status;
+    const msg = apiErrorMessage(errorText, `Server Error (${statusCode})`);
+    throw new Error(msg);
   }
 
   return response.json();
@@ -602,6 +605,7 @@ export async function suggestRubric(payload: {
   assignment_title: string;
   assignment_description: string;
   criterion_count?: number;
+  report_language?: string;
 }): Promise<{ criteria: RubricCriterion[] }> {
   const response = await fetch(`${API_BASE_URL}/api/rubric/suggest`, {
     method: "POST",
@@ -629,6 +633,7 @@ export async function fetchAssignmentSuggestions(
   count?: number,
   difficulty?: AssignmentDifficulty | null,
   preferFresh?: boolean,
+  reportLanguage?: string,
 ): Promise<{ suggestions: AssignmentSuggestion[] }> {
   const response = await fetch(`${API_BASE_URL}/api/faculty/assignment-assistant/suggestions`, {
     method: "POST",
@@ -638,6 +643,7 @@ export async function fetchAssignmentSuggestions(
       count: count ?? 5,
       difficulty: difficulty ?? "medium",
       prefer_fresh: Boolean(preferFresh),
+      report_language: reportLanguage || "tr",
     }),
   });
   if (!response.ok) {

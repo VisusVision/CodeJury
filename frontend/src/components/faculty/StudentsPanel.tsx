@@ -40,6 +40,7 @@ import {
   Users,
   X,
 } from "lucide-react";
+import { useTranslation } from "@/i18n/LanguageContext";
 
 interface StudentsPanelProps {
   departments: Department[];
@@ -96,6 +97,7 @@ const extractDetailMessage = (error: unknown) => {
 const STUDENTS_PER_PAGE = 10;
 
 const StudentsPanel = ({ departments }: StudentsPanelProps) => {
+  const { t } = useTranslation();
   const [students, setStudents] = useState<Student[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);

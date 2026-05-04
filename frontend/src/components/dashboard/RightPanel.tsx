@@ -15,6 +15,7 @@ import {
 import AgentCard, { type AgentStatus } from "./AgentCard";
 import type { ReportData } from "./AnalysisReport";
 import type { CodeAnnotation } from "./CodeEditor";
+import { useTranslation } from "@/i18n/LanguageContext";
 
 /* ─── Types ─── */
 
@@ -160,6 +161,7 @@ const RightPanel = ({
   onExportPdf,
   onFindingClick,
 }: RightPanelProps) => {
+  const { t } = useTranslation();
   const [activeTab, setActiveTab] = useState<TabId>("process");
   const [rubricOpen, setRubricOpen] = useState(false);
 
@@ -188,7 +190,7 @@ const RightPanel = ({
               }`}
             >
               <Icon className="h-3.5 w-3.5" />
-              {tab.label}
+              {t(`rightPanel.${tab.id}`)}
               {tab.id === "findings" && findings.length > 0 && (
                 <span className="ml-1 text-[10px] bg-destructive/10 text-destructive px-1.5 py-0.5 rounded-full tabular-nums">
                   {findings.length}
@@ -235,22 +237,22 @@ const RightPanel = ({
               <div className="flex items-center gap-3 px-3 py-2 rounded-lg bg-muted/50 text-[11px]">
                 {errorCount > 0 && (
                   <span className="flex items-center gap-1 text-destructive font-medium">
-                    <XCircle className="h-3 w-3" /> {errorCount} hata
+                    <XCircle className="h-3 w-3" /> {errorCount} {t("rightPanel.error")}
                   </span>
                 )}
                 {warningCount > 0 && (
                   <span className="flex items-center gap-1 text-warning font-medium">
-                    <AlertTriangle className="h-3 w-3" /> {warningCount} uyarı
+                    <AlertTriangle className="h-3 w-3" /> {warningCount} {t("rightPanel.warning")}
                   </span>
                 )}
-                <span className="text-muted-foreground ml-auto">{findings.length} bulgu</span>
+                <span className="text-muted-foreground ml-auto">{findings.length} {t("rightPanel.finding")}</span>
               </div>
             )}
 
             {sortedFindings.length === 0 ? (
               <div className="flex flex-col items-center justify-center py-12 text-muted-foreground/50">
                 <ListChecks className="h-8 w-8 mb-2" />
-                <p className="text-xs">Henüz bulgu yok</p>
+                <p className="text-xs">{t("rightPanel.noFindings")}</p>
               </div>
             ) : (
               sortedFindings.map((f, i) => {
@@ -265,7 +267,7 @@ const RightPanel = ({
                     <div className="flex-1 min-w-0">
                       <div className="flex items-center gap-1.5 mb-0.5">
                         <span className={`text-[10px] font-semibold uppercase ${severityColor[f.severity]}`}>
-                          {severityLabel[f.severity]}
+                          {t(`rightPanel.${f.severity}`)}
                         </span>
                         {f.agent && (
                           <span className="text-[10px] text-muted-foreground">• {f.agent}</span>
@@ -289,7 +291,7 @@ const RightPanel = ({
             {!report ? (
               <div className="flex flex-col items-center justify-center py-12 text-muted-foreground/50">
                 <FileText className="h-8 w-8 mb-2" />
-                <p className="text-xs">Analiz tamamlandığında rapor burada görünecek</p>
+                <p className="text-xs">{t("rightPanel.reportWaiting")}</p>
               </div>
             ) : (
               <>
@@ -300,7 +302,7 @@ const RightPanel = ({
                   className="w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg bg-primary text-primary-foreground text-sm font-medium shadow-button-primary hover:brightness-110 transition-all disabled:opacity-50"
                 >
                   <Download className="h-4 w-4" />
-                  {exporting ? "Dışa aktarılıyor..." : "PDF İndir"}
+                  {exporting ? t("rightPanel.exporting") : t("rightPanel.exportPdf")}
                 </button>
 
                 {/* Score */}
@@ -315,7 +317,7 @@ const RightPanel = ({
 
                 {/* Agent summaries */}
                 <div className="space-y-2">
-                  <h3 className="text-xs font-semibold text-foreground">Ajan Özetleri</h3>
+                  <h3 className="text-xs font-semibold text-foreground">{t("rightPanel.agentSummaries")}</h3>
                   {report.agents.map((agent) => {
                     const pct = Math.round((agent.score / agent.maxScore) * 100);
                     const Icon = agent.icon;
@@ -345,9 +347,9 @@ const RightPanel = ({
                       className="flex w-full items-center justify-between gap-3 px-3 py-2.5 text-left transition-colors hover:bg-muted/40"
                     >
                       <div>
-                        <h3 className="text-xs font-semibold text-foreground">Rubrik Puanlari</h3>
+                        <h3 className="text-xs font-semibold text-foreground">{t("rightPanel.rubricScores")}</h3>
                         <p className="text-[11px] text-muted-foreground">
-                          {report.rubric.length} madde, toplam {report.totalScore}/{report.maxScore}
+                          {report.rubric.length} {t("rightPanel.items")}, {t("rightPanel.total")} {report.totalScore}/{report.maxScore}
                         </p>
                       </div>
                       <ChevronDown

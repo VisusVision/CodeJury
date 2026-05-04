@@ -2,6 +2,7 @@ import { useState, useEffect } from "react";
 import { toast } from "sonner";
 import { Mail, Lock, Save } from "lucide-react";
 import { updateTeacherEmail, updateTeacherPassword } from "@/services/api";
+import { useTranslation } from "@/i18n/LanguageContext";
 
 interface Teacher {
   id: string;
@@ -19,6 +20,7 @@ const getErrorMessage = (error: unknown, fallback: string) =>
   error instanceof Error ? error.message : fallback;
 
 const SettingsPanel = ({ teacher, onTeacherUpdate }: SettingsPanelProps) => {
+  const { t } = useTranslation();
   const [currentEmail, setCurrentEmail] = useState("");
   const [newEmail, setNewEmail] = useState("");
   const [currentPassword, setCurrentPassword] = useState("");

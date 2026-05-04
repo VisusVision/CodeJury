@@ -3,10 +3,12 @@ import { X, Send, Sparkles, Pencil, Check, ThumbsUp, ThumbsDown, CalendarIcon, C
 import { Calendar } from "@/components/ui/calendar";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { format } from "date-fns";
-import { tr } from "date-fns/locale";
+import { tr as trLocale } from "date-fns/locale";
+import { enUS as enLocale } from "date-fns/locale";
 import { cn } from "@/lib/utils";
 import { createAssignment, fetchAssignmentSuggestions, type AssignmentSuggestion, type AssignmentDifficulty } from "@/services/api";
 import { toast } from "sonner";
+import { useTranslation } from "@/i18n/LanguageContext";
 
 interface Course { id: string; name: string; code: string; class_year?: number | null }
 interface Props {
@@ -129,6 +131,8 @@ const titleFromLongBrief = (raw: string) => {
 };
 
 const AssignmentChatbot = ({ open, onClose, courses, teacherId, onCreated }: Props) => {
+  const { t, language } = useTranslation();
+  const dateLocale = language === "tr" ? trLocale : enLocale;
   void teacherId;
   const [step, setStep] = useState<Step>("greet");
   const [messages, setMessages] = useState<ChatMsg[]>([]);
@@ -220,6 +224,7 @@ const AssignmentChatbot = ({ open, onClose, courses, teacherId, onCreated }: Pro
         5,
         difficulty,
         preferFresh,
+        language,
       );
       setSuggestions(list);
       if (!list.length) {
@@ -324,14 +329,14 @@ const AssignmentChatbot = ({ open, onClose, courses, teacherId, onCreated }: Pro
   const handleDatePick = (d: Date | undefined) => {
     if (!d) return;
     setDate(d);
-    addMsg({ from: "user", text: format(d, "dd MMM yyyy", { locale: tr }) });
+    addMsg({ from: "user", text: format(d, "dd MMM yyyy", { locale: dateLocale }) });
     addMsg({ from: "bot", text: "Şimdi son teslim saatini belirleyin. ⏰" });
     setStep("askTime");
   };
 
   const handleTimeConfirm = () => {
     addMsg({ from: "user", text: time });
-    const dueLabel = `${format(date!, "dd MMM yyyy", { locale: tr })} - ${time}`;
+    const dueLabel = `${format(date!, "dd MMM yyyy", { locale: dateLocale })} - ${time}`;
     addMsg({
       from: "bot",
       text: `Tamamdır! 📋 Aşağıdaki ödevi oluşturmak istediğinizi onaylıyor musunuz?\n\n• Ders: ${course?.name}${course?.class_year ? ` (${course.class_year}. sınıf)` : ""}\n• Başlık: ${title}\n• Son Teslim: ${dueLabel}`,
@@ -576,7 +581,7 @@ const AssignmentChatbot = ({ open, onClose, courses, teacherId, onCreated }: Pro
                 <PopoverTrigger asChild>
                   <button className="flex items-center gap-2 px-3 py-2 rounded-lg bg-primary/10 text-primary text-xs font-medium hover:bg-primary/20 transition-colors">
                     <CalendarIcon className="h-3.5 w-3.5" />
-                    {date ? format(date, "dd MMM yyyy", { locale: tr }) : "Tarih seçin"}
+                    {date ? format(date, "dd MMM yyyy", { locale: dateLocale }) : t("chatbot.selectDate")}
                   </button>
                 </PopoverTrigger>
                 <PopoverContent className="w-auto p-0" align="start">

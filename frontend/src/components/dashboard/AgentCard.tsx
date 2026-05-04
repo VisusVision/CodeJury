@@ -1,5 +1,6 @@
 import { motion } from "framer-motion";
 import { LucideIcon } from "lucide-react";
+import { useTranslation } from "@/i18n/LanguageContext";
 
 export type AgentStatus = "idle" | "thinking" | "acting" | "done" | "error";
 
@@ -11,15 +12,17 @@ interface AgentCardProps {
   lastAction?: string;
 }
 
-const statusConfig: Record<AgentStatus, { label: string; dotClass: string; bgClass: string }> = {
-  idle: { label: "Bekliyor", dotClass: "bg-muted-foreground", bgClass: "" },
-  thinking: { label: "Analiz Ediyor", dotClass: "bg-warning animate-pulse-dot", bgClass: "ring-1 ring-warning/20" },
-  acting: { label: "Çalışıyor", dotClass: "bg-primary animate-pulse-dot", bgClass: "ring-1 ring-primary/20" },
-  done: { label: "Tamamlandı", dotClass: "bg-success", bgClass: "ring-1 ring-success/20" },
-  error: { label: "Hata", dotClass: "bg-destructive", bgClass: "ring-1 ring-destructive/20" },
-};
-
 const AgentCard = ({ name, description, icon: Icon, status, lastAction }: AgentCardProps) => {
+  const { t } = useTranslation();
+
+  const statusConfig: Record<AgentStatus, { label: string; dotClass: string; bgClass: string }> = {
+    idle: { label: t("agents.status.idle"), dotClass: "bg-muted-foreground", bgClass: "" },
+    thinking: { label: t("agents.status.thinking"), dotClass: "bg-warning animate-pulse-dot", bgClass: "ring-1 ring-warning/20" },
+    acting: { label: t("agents.status.acting"), dotClass: "bg-primary animate-pulse-dot", bgClass: "ring-1 ring-primary/20" },
+    done: { label: t("agents.status.done"), dotClass: "bg-success", bgClass: "ring-1 ring-success/20" },
+    error: { label: t("agents.status.error"), dotClass: "bg-destructive", bgClass: "ring-1 ring-destructive/20" },
+  };
+
   const config = statusConfig[status];
 
   return (

@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { BookOpen, LogOut, GraduationCap } from "lucide-react";
 import { getStudentCourses } from "@/services/api";
+import { useTranslation, LanguageToggle } from "@/i18n/LanguageContext";
 
 interface Student {
   id: string;
@@ -20,6 +21,7 @@ interface Course {
 }
 
 const Courses = () => {
+  const { t } = useTranslation();
   const [student, setStudent] = useState<Student | null>(null);
   const [courses, setCourses] = useState<Course[]>([]);
   const [loading, setLoading] = useState(true);
@@ -69,7 +71,7 @@ const Courses = () => {
             </h1>
           </div>
           <p className="text-xs text-muted-foreground mt-1">
-            {student.student_no}{student.class_year ? ` - ${student.class_year}. sınıf` : ""}
+            {student.student_no}{student.class_year ? ` - ${student.class_year}. ${t("courses.classYear")}` : ""}
           </p>
           <p className="text-xs text-muted-foreground">
             {student.department_name || "—"}
@@ -78,17 +80,17 @@ const Courses = () => {
 
         <nav className="flex-1 px-3 space-y-0.5">
           <div className="px-2 py-2">
-            <span className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wider">Dersler</span>
+            <span className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wider">{t("courses.title")}</span>
           </div>
 
           {loading ? (
             <div className="px-2 py-6 text-center">
-              <p className="text-xs text-muted-foreground/60">Yükleniyor...</p>
+              <p className="text-xs text-muted-foreground/60">{t("common.loading")}</p>
             </div>
           ) : courses.length === 0 ? (
             <div className="px-2 py-6 text-center">
               <BookOpen className="h-5 w-5 text-muted-foreground/40 mx-auto mb-2" />
-              <p className="text-xs text-muted-foreground/60">Kayıtlı ders bulunamadı</p>
+              <p className="text-xs text-muted-foreground/60">{t("courses.noCourses")}</p>
             </div>
           ) : (
             courses.map((course) => (
@@ -110,15 +112,18 @@ const Courses = () => {
             className="flex items-center gap-2 w-full px-3 py-2 rounded-lg text-sm text-muted-foreground hover:text-foreground hover:bg-muted/50 transition-colors duration-150"
           >
             <LogOut className="h-4 w-4" />
-            <span>Çıkış Yap</span>
+            <span>{t("common.logout")}</span>
           </button>
         </div>
       </aside>
 
       {/* Main content */}
       <main className="flex flex-col p-6 lg:p-8">
-        <h1 className="text-2xl font-bold tracking-tight text-foreground mb-1">Derslerim</h1>
-        <p className="text-sm text-muted-foreground mb-6">Bir ders seçerek ödevlerinizi görüntüleyebilirsiniz.</p>
+        <div className="flex items-center justify-between mb-1">
+          <h1 className="text-2xl font-bold tracking-tight text-foreground">{t("courses.title")}</h1>
+          <LanguageToggle />
+        </div>
+        <p className="text-sm text-muted-foreground mb-6">{t("courses.subtitle")}</p>
 
         {!loading && courses.length > 0 && (
           <div className="grid gap-3 max-w-lg">
@@ -134,7 +139,7 @@ const Courses = () => {
                 <div>
                   <p className="font-medium text-foreground">{course.name}</p>
                   <p className="text-xs text-muted-foreground">
-                    {course.code} {course.class_year ? `- ${course.class_year}. sınıf` : "- Genel"}
+                    {course.code} {course.class_year ? `- ${course.class_year}. ${t("courses.classYear")}` : `- ${t("courses.general")}`}
                   </p>
                 </div>
               </button>

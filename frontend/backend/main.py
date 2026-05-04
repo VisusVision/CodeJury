@@ -484,6 +484,7 @@ class AnalysisRequest(BaseModel):
     file_name: str
     file_content: str
     assignment_id: Optional[str] = None
+    report_language: Optional[str] = None
 
 
 class StudentLoginRequest(BaseModel):
@@ -2212,6 +2213,7 @@ async def run_analysis_pipeline(
     *,
     assignment_brief: str = "",
     faculty_rubric_criteria: list[dict[str, Any]] | None = None,
+    report_language: str = "tr",
 ) -> dict[str, Any]:
     tracemalloc.start()
     start_time = time.time()
@@ -2241,7 +2243,7 @@ async def run_analysis_pipeline(
         assignment_description=brief,
         source_code=file_content,
         rubric_criteria=fac if fac else None,
-        report_language="tr",
+        report_language=report_language,
     )
     task_alignment = merge_task_alignment(prog_f, prog_rs, llm_rel)
     if not task_alignment.get("llm_skipped"):
@@ -2260,7 +2262,7 @@ async def run_analysis_pipeline(
     inp = {
         "source_code": file_content,
         "language": language,
-        "report_language": "tr",
+        "report_language": report_language,
         "assignment_description": brief,
         "task_alignment": task_alignment,
     }
@@ -2753,6 +2755,7 @@ async def analyze_code(req: AnalysisRequest):
             req.file_content,
             assignment_brief=brief,
             faculty_rubric_criteria=faculty,
+            report_language=req.report_language or "tr",
         )
         return result
     except Exception as e:
