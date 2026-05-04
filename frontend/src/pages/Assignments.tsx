@@ -3,8 +3,10 @@ import { useNavigate, useParams } from "react-router-dom";
 import { BookOpen, LogOut, GraduationCap, FileText, ArrowLeft, X } from "lucide-react";
 import { getCourse, getCourseAssignments, getStudentCourses, getAssignmentQuestions, QuestionItem } from "@/services/api";
 import { differenceInDays, differenceInHours, format } from "date-fns";
-import { tr } from "date-fns/locale";
+import { tr as trLocale } from "date-fns/locale";
+import { enUS as enLocale } from "date-fns/locale";
 import { cn } from "@/lib/utils";
+import { useTranslation } from "@/i18n/LanguageContext";
 
 interface Student {
   id: string;
@@ -29,6 +31,8 @@ interface Assignment {
 }
 
 const Assignments = () => {
+  const { t, language } = useTranslation();
+  const dateLocale = language === "tr" ? trLocale : enLocale;
   const { courseId } = useParams<{ courseId: string }>();
   const [student, setStudent] = useState<Student | null>(null);
   const [course, setCourse] = useState<Course | null>(null);
@@ -126,7 +130,7 @@ const Assignments = () => {
             </h1>
           </div>
           <p className="text-xs text-muted-foreground mt-1">
-            {student.student_no}{student.class_year ? ` - ${student.class_year}. sınıf` : ""}
+            {student.student_no}{student.class_year ? ` - ${student.class_year}. ${t("courses.classYear")}` : ""}
           </p>
           <p className="text-xs text-muted-foreground">
             {student.department_name || "—"}
@@ -135,7 +139,7 @@ const Assignments = () => {
 
         <nav className="flex-1 px-3 space-y-0.5">
           <div className="px-2 py-2">
-            <span className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wider">Dersler</span>
+            <span className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wider">{t("courses.title")}</span>
           </div>
           {allCourses.map((c) => (
             <button
@@ -159,7 +163,7 @@ const Assignments = () => {
             className="flex items-center gap-2 w-full px-3 py-2 rounded-lg text-sm text-muted-foreground hover:text-foreground hover:bg-muted/50 transition-colors duration-150"
           >
             <LogOut className="h-4 w-4" />
-            <span>Çıkış Yap</span>
+            <span>{t("common.logout")}</span>
           </button>
         </div>
       </aside>
@@ -170,20 +174,20 @@ const Assignments = () => {
           onClick={() => navigate("/courses")}
           className="flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground mb-4 w-fit transition-colors"
         >
-          <ArrowLeft className="h-4 w-4" /> Derslere Dön
+          <ArrowLeft className="h-4 w-4" /> {t("assignments.backToCourses")}
         </button>
 
-        <h1 className="text-2xl font-bold tracking-tight text-foreground mb-1">Ödevler</h1>
+        <h1 className="text-2xl font-bold tracking-tight text-foreground mb-1">{t("assignments.title")}</h1>
         <p className="text-sm text-muted-foreground mb-6">
           {course?.name} — {course?.code}
         </p>
 
         {loading ? (
-          <p className="text-sm text-muted-foreground">Yükleniyor...</p>
+          <p className="text-sm text-muted-foreground">{t("common.loading")}</p>
         ) : assignments.length === 0 ? (
           <div className="text-center py-12">
             <FileText className="h-8 w-8 text-muted-foreground/40 mx-auto mb-3" />
-            <p className="text-sm text-muted-foreground">Bu ders için henüz ödev tanımlanmamış.</p>
+            <p className="text-sm text-muted-foreground">{t("assignments.noAssignments")}</p>
           </div>
         ) : (
           <div className="grid gap-2 max-w-2xl relative">
@@ -197,13 +201,13 @@ const Assignments = () => {
                   const days = differenceInDays(due, now);
                   const hours = differenceInHours(due, now);
                   if (hours <= 0) {
-                    remainingLabel = "Teslim tarihi geçmiştir";
+                    remainingLabel = language === "tr" ? "Teslim tarihi geçmiştir" : "Past due";
                     remainingColor = "text-destructive";
                   } else if (days === 0) {
-                    remainingLabel = `${hours} saat kaldı`;
+                    remainingLabel = language === "tr" ? `${hours} saat kaldı` : `${hours}h left`;
                     remainingColor = "text-orange-500";
                   } else {
-                    remainingLabel = `${days} gün kaldı`;
+                    remainingLabel = language === "tr" ? `${days} gün kaldı` : `${days}d left`;
                     remainingColor = days <= 3 ? "text-orange-500" : "text-emerald-500";
                   }
                 }
@@ -238,7 +242,7 @@ const Assignments = () => {
                         )}
                         {assignment.due_date && (
                           <p className="text-xs text-muted-foreground mt-0.5">
-                            Son teslim: {format(new Date(assignment.due_date), "dd MMM yyyy HH:mm", { locale: tr })}
+                            {t("assignments.dueDate")}: {format(new Date(assignment.due_date), "dd MMM yyyy HH:mm", { locale: dateLocale })}
                           </p>
                         )}
                       </div>
@@ -249,7 +253,7 @@ const Assignments = () => {
                         onMouseLeave={() => handleBadgeMouseLeave(assignment.id)}
                         className="absolute top-2 right-2 px-2 py-0.5 rounded-full bg-slate-500/15 text-slate-600 dark:text-slate-400 text-[10px] font-semibold cursor-pointer hover:bg-slate-500/25 transition-colors"
                       >
-                        Görevler
+                        {t("assignments.questions")}
                       </div>
                     </button>
 
@@ -273,7 +277,7 @@ const Assignments = () => {
                         }}
                       >
                         <div className="flex items-center justify-between px-3 py-2 bg-slate-500/10 border-b border-border">
-                          <span className="text-xs font-semibold text-slate-600 dark:text-slate-400">GÖREVLER</span>
+                          <span className="text-xs font-semibold text-slate-600 dark:text-slate-400">{t("assignments.questions").toUpperCase()}</span>
                           <button
                             onClick={(e) => {
                               e.preventDefault();
@@ -286,9 +290,9 @@ const Assignments = () => {
                         </div>
                         <div className="max-h-80 overflow-y-auto">
                           {isLoading ? (
-                            <div className="p-3 text-xs text-muted-foreground text-center">Sorular yükleniyor...</div>
+                            <div className="p-3 text-xs text-muted-foreground text-center">{t("common.loading")}</div>
                           ) : questions.length === 0 ? (
-                            <div className="p-3 text-xs text-muted-foreground text-center">Henüz soru atanmamış</div>
+                            <div className="p-3 text-xs text-muted-foreground text-center">{t("assignments.noQuestions")}</div>
                           ) : (
                             <div className="divide-y divide-border">
                               {questions.map((q) => (

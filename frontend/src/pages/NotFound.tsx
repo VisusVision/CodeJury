@@ -1,21 +1,21 @@
-import { useLocation } from "react-router-dom";
-import { useEffect } from "react";
+import { useNavigate } from "react-router-dom";
+import { useTranslation } from "@/i18n/LanguageContext";
 
 const NotFound = () => {
-  const location = useLocation();
-
-  useEffect(() => {
-    console.error("404 Error: User attempted to access non-existent route:", location.pathname);
-  }, [location.pathname]);
+  const navigate = useNavigate();
+  const { t } = useTranslation();
 
   return (
-    <div className="flex min-h-screen items-center justify-center bg-muted">
+    <div className="min-h-screen flex items-center justify-center bg-background">
       <div className="text-center">
-        <h1 className="mb-4 text-4xl font-bold">404</h1>
-        <p className="mb-4 text-xl text-muted-foreground">Oops! Page not found</p>
-        <a href="/" className="text-primary underline hover:text-primary/90">
-          Return to Home
-        </a>
+        <h1 className="text-4xl font-bold text-foreground mb-2">404</h1>
+        <p className="text-muted-foreground mb-4">{t("notFound.message")}</p>
+        <button
+          onClick={() => navigate("/login")}
+          className="px-4 py-2 rounded-lg bg-primary text-primary-foreground text-sm font-medium hover:brightness-110 transition-all"
+        >
+          {t("notFound.backHome")}
+        </button>
       </div>
     </div>
   );

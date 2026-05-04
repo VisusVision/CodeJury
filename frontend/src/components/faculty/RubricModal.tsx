@@ -12,6 +12,7 @@ import {
   updateAssignmentQuestions,
   QuestionItem,
 } from "@/services/api";
+import { useTranslation } from "@/i18n/LanguageContext";
 
 interface RubricCriterion {
   name: string;
@@ -77,6 +78,7 @@ const getRubricValidationMessage = (criteria: RubricCriterion[]) => {
 };
 
 const RubricModal = ({ assignment, teacherId, open, onClose }: RubricModalProps) => {
+  const { t, language } = useTranslation();
   const [activeTab, setActiveTab] = useState<TabType>("rubric");
   
   // Rubric states
@@ -148,11 +150,12 @@ const RubricModal = ({ assignment, teacherId, open, onClose }: RubricModalProps)
         assignment_title: assignment.name,
         assignment_description: assignment.description || "",
         criterion_count: criterionCount,
+        report_language: language,
       });
       setCriteria(data.criteria || []);
-      toast.success("AI rubrik önerisi oluşturuldu. Lütfen kontrol edip onaylayın.");
+      toast.success(t("rubricModal.aiSuccess"));
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : "AI önerisi alınamadı";
+      const msg = err instanceof Error ? err.message : t("common.error");
       toast.error(msg);
     } finally {
       setAiLoading(false);

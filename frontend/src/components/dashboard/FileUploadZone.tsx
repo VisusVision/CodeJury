@@ -1,6 +1,7 @@
 import { useCallback, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { Upload, FileCode, X, CheckCircle } from "lucide-react";
+import { useTranslation } from "@/i18n/LanguageContext";
 
 interface UploadedFile {
   name: string;
@@ -18,6 +19,7 @@ interface FileUploadZoneProps {
 }
 
 const FileUploadZone = ({ onFilesUploaded, uploadedFiles, onRemoveFile, compact, disableRemove }: FileUploadZoneProps) => {
+  const { t } = useTranslation();
   const [isDragging, setIsDragging] = useState(false);
 
   const handleDrag = useCallback((e: React.DragEvent) => {
@@ -93,7 +95,7 @@ const FileUploadZone = ({ onFilesUploaded, uploadedFiles, onRemoveFile, compact,
         }`}
       >
         <Upload className="h-3.5 w-3.5 shrink-0" />
-        <span className="text-xs font-medium">Kod dosyanızı buraya sürükleyin veya tıklayın</span>
+        <span className="text-xs font-medium">{t("workspace.dropHere")} {t("workspace.orClick")}</span>
         <input
           id="file-upload-compact"
           type="file"
@@ -124,8 +126,8 @@ const FileUploadZone = ({ onFilesUploaded, uploadedFiles, onRemoveFile, compact,
         <div className="rounded-full bg-card p-3 shadow-card mb-3">
           <Upload className={`h-5 w-5 transition-colors duration-150 ${isDragging ? "text-primary" : "text-muted-foreground"}`} />
         </div>
-        <p className="text-sm font-medium text-foreground">Kod dosyanızı buraya sürükleyin</p>
-        <p className="text-xs text-muted-foreground mt-1">Python, JavaScript, C++, Java veya JSON (Maks 10MB)</p>
+        <p className="text-sm font-medium text-foreground">{t("workspace.dropHere")}</p>
+        <p className="text-xs text-muted-foreground mt-1">{t("workspace.supportedFormats")}: Python, JS, C++, Java, JSON ({t("workspace.maxSize")}: 10MB)</p>
         <input
           id="file-upload"
           type="file"

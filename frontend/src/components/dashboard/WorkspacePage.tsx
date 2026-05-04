@@ -1,4 +1,4 @@
-import { useState, useCallback, useRef, useEffect } from "react";
+import { useState, useCallback, useRef, useEffect, useMemo } from "react";
 import { Play, StopCircle, ArrowLeft, LogOut, BookOpen } from "lucide-react";
 import { motion } from "framer-motion";
 import html2canvas from "html2canvas-pro";
@@ -25,6 +25,7 @@ import UploadHistory, { type UploadRecord } from "@/components/dashboard/UploadH
 import ExecutionStats from "@/components/dashboard/ExecutionStats";
 import RightPanel from "@/components/dashboard/RightPanel";
 import { cn } from "@/lib/utils";
+import { useTranslation } from "@/i18n/LanguageContext";
 
 interface UploadedFile {
   name: string;
@@ -40,14 +41,14 @@ interface AgentDef {
   icon: typeof FlaskConical;
 }
 
-const agentDefs: AgentDef[] = [
-  { id: "testing", name: "Test Ajanı", description: "Derleme, birim test ve çalışma zamanı çıktılarını inceler.", icon: FlaskConical },
-  { id: "quality", name: "Kod Kalitesi Ajanı", description: "Algoritma, veri yapıları ve Big-O karmaşıklığını değerlendirir.", icon: Code2 },
-  { id: "seniority", name: "Kıdem Ajanı", description: "Kodun olgunluk seviyesini ve modern dil kullanımını analiz eder.", icon: GraduationCap },
-  { id: "guideline", name: "Standartlar Ajanı", description: "Temiz kod prensipleri ve stil kılavuzlarına uyumu denetler.", icon: BookCheck },
-  { id: "security", name: "Güvenlik Ajanı", description: "SQL injection, kod enjeksiyonu, tehlikeli import ve sandbox ihlallerini tespit eder.", icon: ShieldAlert },
-  { id: "evidence", name: "Kanıtlandırma Ajanı", description: "Bulguları satır numaralarıyla eşleştirerek somutlaştırır.", icon: Search },
-  { id: "orchestrator", name: "Rubrik Ajanı", description: "Tüm bulguları toplar ve rubriğe göre nihai notu oluşturur.", icon: Brain },
+const agentKeys = [
+  { id: "testing", nameKey: "agents.testAgent", descKey: "agents.testAgentDesc", icon: FlaskConical },
+  { id: "quality", nameKey: "agents.codeQuality", descKey: "agents.codeQualityDesc", icon: Code2 },
+  { id: "seniority", nameKey: "agents.seniority", descKey: "agents.seniorityDesc", icon: GraduationCap },
+  { id: "guideline", nameKey: "agents.guideline", descKey: "agents.guidelineDesc", icon: BookCheck },
+  { id: "security", nameKey: "agents.security", descKey: "agents.securityDesc", icon: ShieldAlert },
+  { id: "evidence", nameKey: "agents.evidence", descKey: "agents.evidenceDesc", icon: Search },
+  { id: "orchestrator", nameKey: "agents.rubric", descKey: "agents.rubricDesc", icon: Brain },
 ];
 
 // Map agent IDs to their icons for restoring from sessionStorage
@@ -112,6 +113,12 @@ const savePersistedState = (assignmentId: string, studentNo: string, state: Pers
 };
 
 const WorkspacePage = ({ sidebarTitle, sidebarSubtitle, headerTitle, assignmentId, studentNo, assignmentDueDate, onBack }: WorkspacePageProps) => {
+  const { t, language } = useTranslation();
+  const agentDefs: AgentDef[] = useMemo(() =>
+    agentKeys.map((a) => ({ id: a.id, name: t(a.nameKey), description: t(a.descKey), icon: a.icon })),
+    [t],
+  );
+
   const persisted = useRef(loadPersistedState(assignmentId, studentNo));
   const studentInitial = (sidebarTitle?.trim().charAt(0) || "A").toUpperCase();
   const isPastDue = Boolean(assignmentDueDate && new Date(assignmentDueDate) < new Date());
@@ -119,7 +126,7 @@ const WorkspacePage = ({ sidebarTitle, sidebarSubtitle, headerTitle, assignmentI
   const [files, setFiles] = useState<UploadedFile[]>(persisted.current?.files || []);
   const [activeFile, setActiveFile] = useState<string | null>(persisted.current?.activeFile || null);
   const [agentStatuses, setAgentStatuses] = useState<Record<string, AgentStatus>>(
-    Object.fromEntries(agentDefs.map((a) => [a.id, (persisted.current?.hasEverRun ? "done" : "idle") as AgentStatus]))
+    Object.fromEntries(agentKeys.map((a) => [a.id, (persisted.current?.hasEverRun ? "done" : "idle") as AgentStatus]))
   );
   const [agentActions, setAgentActions] = useState<Record<string, string>>({});
   const [logs, setLogs] = useState<LogEntry[]>(persisted.current?.logs || []);
@@ -234,7 +241,7 @@ const WorkspacePage = ({ sidebarTitle, sidebarSubtitle, headerTitle, assignmentI
 
   const runAnalysis = useCallback(async () => {
     if (isPastDue) {
-      addLog("Sistem", "Teslim tarihi geçtiği için analiz başlatılamaz.", "error");
+      addLog("System", t("workspace.analysisError"), "error");
       return;
     }
     if (files.length === 0) return;
@@ -258,17 +265,17 @@ const WorkspacePage = ({ sidebarTitle, sidebarSubtitle, headerTitle, assignmentI
     };
     setUploadRecords((prev) => [...prev, newRecord]);
 
-    addLog("Sistem", `${files.length} dosya analiz için hazırlanıyor...`, "info");
+    addLog("System", t("workspace.analyzing") + `... (${files.length})`, "info");
 
     // Set all agents to thinking
     agentDefs.forEach((a) => {
       setAgentStatuses((p) => ({ ...p, [a.id]: "thinking" }));
     });
-    addLog("Sistem", "Ajanlar başlatılıyor...", "info");
+    addLog("System", t("workspace.running"), "info");
 
     try {
       // Call the FastAPI backend
-      const result: ApiAnalysisResult = await analyzeCode(firstFile.name, firstFile.content, assignmentId);
+      const result: ApiAnalysisResult = await analyzeCode(firstFile.name, firstFile.content, assignmentId, language);
 
       // Update agent statuses from the result
       result.agents.forEach((agent) => {
@@ -281,8 +288,8 @@ const WorkspacePage = ({ sidebarTitle, sidebarSubtitle, headerTitle, assignmentI
       // Set orchestrator as done
       const totalPct = Math.round((result.totalScore / result.maxScore) * 100);
       setAgentStatuses((p) => ({ ...p, orchestrator: "done" }));
-      setAgentActions((p) => ({ ...p, orchestrator: `Nihai puan: ${result.totalScore}/${result.maxScore}` }));
-      addLog("Rubrik Ajanı", `Nihai puan: ${result.totalScore}/${result.maxScore} (${totalPct}%) — Rapor hazır.`, "success");
+      setAgentActions((p) => ({ ...p, orchestrator: `${language === "tr" ? "Nihai puan" : "Final score"}: ${result.totalScore}/${result.maxScore}` }));
+      addLog(t("agents.rubric"), `${language === "tr" ? "Nihai puan" : "Final score"}: ${result.totalScore}/${result.maxScore} (${totalPct}%)`, "success");
 
       // Map API agent icons
       const agentIconForReport = result.agents.map((a) => ({
@@ -349,8 +356,8 @@ const WorkspacePage = ({ sidebarTitle, sidebarSubtitle, headerTitle, assignmentI
       }
 
     } catch (err: unknown) {
-      const errorMsg = err instanceof Error ? err.message : "Bilinmeyen hata";
-      addLog("Sistem", `Analiz hatası: ${errorMsg}`, "error");
+      const errorMsg = err instanceof Error ? err.message : t("common.error");
+      addLog("System", `${t("workspace.analysisError")}: ${errorMsg}`, "error");
       agentDefs.forEach((a) => {
         setAgentStatuses((p) => ({ ...p, [a.id]: "error" }));
       });
@@ -389,7 +396,7 @@ const WorkspacePage = ({ sidebarTitle, sidebarSubtitle, headerTitle, assignmentI
     } finally {
       setIsRunning(false);
     }
-  }, [files, addLog, assignmentId, isPastDue]);
+  }, [files, addLog, assignmentId, isPastDue, language, t]);
 
   const handleFindingClick = useCallback((line: number) => {
     setHighlightedLine(line);
@@ -577,13 +584,13 @@ const WorkspacePage = ({ sidebarTitle, sidebarSubtitle, headerTitle, assignmentI
 
         <nav className="flex-1 px-3 space-y-0.5 overflow-auto">
           <div className="px-2 py-2">
-            <span className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wider">Proje Dosyaları</span>
+            <span className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wider">{t("workspace.projectFiles")}</span>
           </div>
 
           {files.length === 0 ? (
             <div className="px-2 py-6 text-center">
               <FolderOpen className="h-5 w-5 text-muted-foreground/40 mx-auto mb-2" />
-              <p className="text-xs text-muted-foreground/60">Henüz dosya yüklenmedi</p>
+              <p className="text-xs text-muted-foreground/60">{t("workspace.noFiles")}</p>
             </div>
           ) : (
             files.map((file) => (
@@ -610,7 +617,7 @@ const WorkspacePage = ({ sidebarTitle, sidebarSubtitle, headerTitle, assignmentI
                       ? "opacity-50 cursor-not-allowed text-muted-foreground/40"
                       : "opacity-0 group-hover:opacity-100 text-muted-foreground hover:text-destructive hover:bg-destructive/10"
                   }`}
-                  title={isPastDue ? "Teslim tarihi geçtiği için dosya kaldırılamaz" : "Dosyayı kaldır"}
+                  title={isPastDue ? "Teslim tarihi geçtiği için dosya kaldırılamaz" : t("workspace.removeFile")}
                 >
                   <X className="h-3.5 w-3.5" />
                 </button>
@@ -628,7 +635,7 @@ const WorkspacePage = ({ sidebarTitle, sidebarSubtitle, headerTitle, assignmentI
             className="flex items-center gap-2 w-full px-3 py-2 rounded-lg text-sm text-muted-foreground hover:text-foreground hover:bg-muted/50 transition-colors duration-150"
           >
             <LogOut className="h-4 w-4" />
-            <span>Çıkış Yap</span>
+            <span>{t("common.logout")}</span>
           </button>
         </div>
       </aside>
@@ -640,7 +647,7 @@ const WorkspacePage = ({ sidebarTitle, sidebarSubtitle, headerTitle, assignmentI
               onClick={onBack}
               className="flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground transition-colors"
             >
-              <ArrowLeft className="h-4 w-4" /> Ödevlere Dön
+              <ArrowLeft className="h-4 w-4" /> {t("workspace.backToAssignments")}
             </button>
             <div>
               <div className="flex items-center gap-2 relative">
@@ -702,9 +709,9 @@ const WorkspacePage = ({ sidebarTitle, sidebarSubtitle, headerTitle, assignmentI
                 )}
               </div>
               <p className="text-xs text-muted-foreground">
-                {!hasFiles
-                  ? "Başlamak için kod dosyanızı yükleyin."
-                  : `${files.length} dosya yüklendi${isRunning ? " — analiz devam ediyor..." : report ? " — analiz tamamlandı" : ""}`}
+                  {!hasFiles
+                   ? t("workspace.uploadFirst")
+                   : `${files.length} ${language === "tr" ? "dosya yüklendi" : "files uploaded"}${isRunning ? " — " + t("workspace.running") : report ? " — " + t("workspace.analysisComplete") : ""}`}
               </p>
             </div>
           </div>
@@ -714,14 +721,14 @@ const WorkspacePage = ({ sidebarTitle, sidebarSubtitle, headerTitle, assignmentI
                 onClick={() => setIsRunning(false)}
                 className="flex items-center gap-2 px-4 py-2 rounded-lg bg-destructive text-destructive-foreground text-sm font-medium transition-all active:scale-95"
               >
-                <StopCircle className="h-4 w-4" /> Durdur
+                <StopCircle className="h-4 w-4" /> {language === "tr" ? "Durdur" : "Stop"}
               </button>
             ) : isPastDue ? (
               <button
                 disabled
                 className="flex items-center gap-2 px-4 py-2 rounded-lg bg-destructive/15 text-destructive text-sm font-medium cursor-not-allowed"
               >
-                <StopCircle className="h-4 w-4" /> Teslim tarihi geçmiştir
+                <StopCircle className="h-4 w-4" /> {language === "tr" ? "Teslim tarihi geçmiştir" : "Past due"}
               </button>
             ) : (
               <motion.button
@@ -730,7 +737,7 @@ const WorkspacePage = ({ sidebarTitle, sidebarSubtitle, headerTitle, assignmentI
                 disabled={!hasFiles}
                 className="flex items-center gap-2 px-4 py-2 rounded-lg bg-primary text-primary-foreground text-sm font-medium shadow-button-primary transition-all hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:brightness-100"
               >
-                <Play className="h-4 w-4" /> Ajanları Çalıştır
+                <Play className="h-4 w-4" /> {t("workspace.runAgents")}
               </motion.button>
             )}
           </div>
@@ -760,7 +767,7 @@ const WorkspacePage = ({ sidebarTitle, sidebarSubtitle, headerTitle, assignmentI
                   />
                 ) : (
                   <div className="flex items-center justify-center h-full text-muted-foreground/50 text-sm">
-                    Bir dosya seçin
+                    {language === "tr" ? "Bir dosya seçin" : "Select a file"}
                   </div>
                 )}
               </div>

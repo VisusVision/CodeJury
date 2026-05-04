@@ -1,6 +1,7 @@
 import { useRef, useEffect } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { Terminal } from "lucide-react";
+import { useTranslation } from "@/i18n/LanguageContext";
 
 export interface LogEntry {
   id: string;
@@ -22,6 +23,7 @@ const typeColorMap: Record<LogEntry["type"], string> = {
 };
 
 const LogPanel = ({ logs }: LogPanelProps) => {
+  const { t } = useTranslation();
   const scrollRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -34,15 +36,15 @@ const LogPanel = ({ logs }: LogPanelProps) => {
     <div className="flex flex-col rounded-xl overflow-hidden shadow-card">
       <div className="flex items-center gap-2 px-4 py-2.5 bg-card border-b border-border">
         <Terminal className="h-4 w-4 text-muted-foreground" />
-        <span className="text-sm font-medium text-foreground">Ajan Logları</span>
-        <span className="ml-auto text-xs text-muted-foreground tabular-nums">{logs.length} kayıt</span>
+        <span className="text-sm font-medium text-foreground">{t("logs.title")}</span>
+        <span className="ml-auto text-xs text-muted-foreground tabular-nums">{logs.length} {t("logs.records")}</span>
       </div>
       <div
         ref={scrollRef}
         className="terminal-bg p-4 max-h-[300px] overflow-auto font-mono-code text-xs leading-relaxed space-y-1"
       >
         {logs.length === 0 && (
-          <p className="text-muted-foreground/60 italic">Henüz log yok. Ajanları çalıştırarak başlayın.</p>
+          <p className="text-muted-foreground/60 italic">{t("logs.noLogs")}</p>
         )}
         <AnimatePresence initial={false}>
           {logs.map((log, i) => (

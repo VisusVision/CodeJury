@@ -135,7 +135,7 @@ class BaseAgent(ABC):
         """Ollama uzerinden JSON yanit alir; basarisizda `LLMInferenceError` firlatirir."""
         if not settings.ollama_enabled:
             raise LLMInferenceError(
-                f"[{self.name}] Ollama devre disi (ollama_enabled=false); LLM zorunlu."
+                f"[{self.name}] Ollama is disabled (ollama_enabled=false); LLM is required."
             )
         try:
             result = await chat_json(
@@ -148,10 +148,10 @@ class BaseAgent(ABC):
             )
         except Exception as exc:
             logger.warning("[%s] LLM cagrisi basarisiz: %s", self.name, exc)
-            raise LLMInferenceError(f"[{self.name}] LLM cagrisi basarisiz.") from exc
+            raise LLMInferenceError(f"[{self.name}] LLM call failed.") from exc
 
         if result is None:
-            raise LLMInferenceError(f"[{self.name}] LLM bos veya cozumlenemeyen yanit dondu.")
+            raise LLMInferenceError(f"[{self.name}] LLM returned an empty or unparseable response.")
 
         if required_keys:
             result = self._unwrap_required_response(result, required_keys)
@@ -200,7 +200,7 @@ class BaseAgent(ABC):
             missing = [k for k in required_keys if k not in result]
             if missing:
                 raise LLMInferenceError(
-                    f"[{self.name}] LLM yanitinda eksik alanlar: {', '.join(missing)}"
+                    f"[{self.name}] Missing required keys in LLM response: {', '.join(missing)}"
                 )
 
         if output_json_schema:
@@ -211,7 +211,7 @@ class BaseAgent(ABC):
                     break
                 if attempt >= max_schema_repair_attempts:
                     raise LLMInferenceError(
-                        f"[{self.name}] JSON Schema dogrulanamadi: "
+                        f"[{self.name}] JSON Schema validation failed: "
                         + "; ".join(schema_msgs[:8])
                     )
                 logger.warning(

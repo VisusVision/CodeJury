@@ -1,5 +1,6 @@
 import { motion, AnimatePresence } from "framer-motion";
 import { History, Upload, AlertCircle, CheckCircle2, TrendingUp, TrendingDown } from "lucide-react";
+import { useTranslation } from "@/i18n/LanguageContext";
 
 export interface UploadRecord {
   id: string;
@@ -14,6 +15,7 @@ interface UploadHistoryProps {
 }
 
 const UploadHistory = ({ records }: UploadHistoryProps) => {
+  const { t, language } = useTranslation();
   const totalUploads = records.length;
   const errorCount = records.filter((r) => r.hasError).length;
   const successCount = totalUploads - errorCount;
@@ -32,7 +34,7 @@ const UploadHistory = ({ records }: UploadHistoryProps) => {
 
   const formatDate = (date: Date | string) => {
     const d = date instanceof Date ? date : new Date(date);
-    return d.toLocaleDateString("tr-TR", {
+    return d.toLocaleDateString(language === "tr" ? "tr-TR" : "en-US", {
       day: "2-digit",
       month: "short",
       year: "numeric",
@@ -46,23 +48,23 @@ const UploadHistory = ({ records }: UploadHistoryProps) => {
       {/* Header */}
       <div className="flex items-center gap-2 px-4 py-3 border-b border-border">
         <History className="h-4 w-4 text-muted-foreground" />
-        <span className="text-sm font-semibold text-foreground">Yükleme Geçmişi</span>
-        <span className="ml-auto text-xs text-muted-foreground tabular-nums">{totalUploads} yükleme</span>
+        <span className="text-sm font-semibold text-foreground">{t("uploadHistory.title")}</span>
+        <span className="ml-auto text-xs text-muted-foreground tabular-nums">{totalUploads} {t("uploadHistory.uploads")}</span>
       </div>
 
       {/* Summary stats */}
       <div className="grid grid-cols-3 gap-px bg-border/50">
         <div className="bg-card px-4 py-3 text-center">
           <p className="text-lg font-bold text-foreground tabular-nums">{totalUploads}</p>
-          <p className="text-[11px] text-muted-foreground">Toplam</p>
+          <p className="text-[11px] text-muted-foreground">{t("uploadHistory.total")}</p>
         </div>
         <div className="bg-card px-4 py-3 text-center">
           <p className="text-lg font-bold text-success tabular-nums">{successCount}</p>
-          <p className="text-[11px] text-muted-foreground">Başarılı</p>
+          <p className="text-[11px] text-muted-foreground">{t("uploadHistory.successful")}</p>
         </div>
         <div className="bg-card px-4 py-3 text-center">
           <p className={`text-lg font-bold tabular-nums ${errorCount > 0 ? "text-destructive" : "text-foreground"}`}>{errorCount}</p>
-          <p className="text-[11px] text-muted-foreground">Hatalı</p>
+          <p className="text-[11px] text-muted-foreground">{t("uploadHistory.failed")}</p>
         </div>
       </div>
 
@@ -77,10 +79,10 @@ const UploadHistory = ({ records }: UploadHistoryProps) => {
             <CheckCircle2 className="h-3.5 w-3.5 text-muted-foreground" />
           )}
           <span className={`text-xs font-medium ${trend === "up" ? "text-success" : trend === "down" ? "text-warning" : "text-muted-foreground"}`}>
-            {trend === "up" ? "Değerlendirme sonucu yükseldi ↑" : trend === "down" ? "Değerlendirme sonucu azaldı ↓" : "Değerlendirme sonucu değişmedi"}
+            {trend === "up" ? t("uploadHistory.trendUp") : trend === "down" ? t("uploadHistory.trendDown") : t("uploadHistory.trendEqual")}
           </span>
           {errorRate > 0 && (
-            <span className="ml-auto text-[11px] text-muted-foreground">Hata oranı: %{errorRate}</span>
+            <span className="ml-auto text-[11px] text-muted-foreground">{t("uploadHistory.errorRate")}: %{errorRate}</span>
           )}
         </div>
       )}
@@ -90,7 +92,7 @@ const UploadHistory = ({ records }: UploadHistoryProps) => {
         {records.length === 0 ? (
           <div className="px-4 py-8 text-center">
             <Upload className="h-5 w-5 text-muted-foreground/40 mx-auto mb-2" />
-            <p className="text-xs text-muted-foreground/60">Henüz yükleme yapılmadı</p>
+            <p className="text-xs text-muted-foreground/60">{t("uploadHistory.noUploads")}</p>
           </div>
         ) : (
           <AnimatePresence initial={false}>
@@ -117,7 +119,7 @@ const UploadHistory = ({ records }: UploadHistoryProps) => {
                 <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium ${
                   record.hasError ? "bg-destructive/10 text-destructive" : "bg-success/10 text-success"
                 }`}>
-                  {record.hasError ? "Hata" : "OK"}
+                  {record.hasError ? t("common.error") : t("common.ok")}
                 </span>
               </motion.div>
             ))}
