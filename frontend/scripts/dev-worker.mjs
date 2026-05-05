@@ -127,11 +127,56 @@ async function ensureRedis() {
   }
 }
 
+function ensurePythonPackage(pythonExe, importName, requirementHint) {
+  try {
+    execFileSync(pythonExe, ["-c", `import ${importName}`], {
+      cwd: repoRootAbs,
+      encoding: "utf-8",
+      windowsHide: true,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    return true;
+  } catch {
+    console.error(`[dev-worker] Python paketi eksik gorunuyor: ${importName}. requirements.txt kuruluyor...`);
+  }
+
+  try {
+    execFileSync(pythonExe, ["-m", "pip", "install", "-r", path.join(repoRootAbs, "requirements.txt")], {
+      cwd: repoRootAbs,
+      encoding: "utf-8",
+      windowsHide: true,
+      stdio: "inherit",
+    });
+  } catch {
+    console.error(`[dev-worker] ${requirementHint} kurulamadi. Elle calistirin:`);
+    console.error(`[dev-worker] ${pythonExe} -m pip install -r requirements.txt`);
+    return false;
+  }
+
+  try {
+    execFileSync(pythonExe, ["-c", `import ${importName}`], {
+      cwd: repoRootAbs,
+      encoding: "utf-8",
+      windowsHide: true,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    return true;
+  } catch {
+    console.error(`[dev-worker] ${importName} hala import edilemiyor. Python ortamini kontrol edin: ${pythonExe}`);
+    return false;
+  }
+}
+
 async function start() {
   loadEnvFiles();
   const pythonExe = resolvePythonExe();
   if (!pythonExe) {
     console.error("[dev-worker] Calisan Python bulunamadi. VITE_PYTHON ile exe yolu verebilirsiniz.");
+    process.exit(1);
+  }
+  console.error("[dev-worker] python =", pythonExe);
+
+  if (!ensurePythonPackage(pythonExe, "redis", "redis>=5.0.0")) {
     process.exit(1);
   }
 
