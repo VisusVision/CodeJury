@@ -71,6 +71,18 @@ export interface ApiAnalysisResult {
   relevanceScoreWarning?: string | null;
 }
 
+interface AnalysisJobAccepted {
+  job_id: string;
+  status: "queued" | "running";
+}
+
+interface AnalysisJobStatus {
+  job_id: string;
+  status: "queued" | "running" | "completed" | "failed";
+  result?: ApiAnalysisResult;
+  error?: string;
+}
+
 export interface Student {
   id: string;
   student_no: string;
@@ -228,6 +240,36 @@ function apiErrorMessage(errorText: string, fallback: string): string {
   return errorText || fallback;
 }
 
+const sleep = (ms: number) => new Promise((resolve) => window.setTimeout(resolve, ms));
+
+function isAnalysisJobAccepted(value: unknown): value is AnalysisJobAccepted {
+  const record = (value ?? {}) as Record<string, unknown>;
+  return typeof record.job_id === "string" && (record.status === "queued" || record.status === "running");
+}
+
+async function pollAnalysisJob(jobId: string): Promise<ApiAnalysisResult> {
+  const maxAttempts = 120;
+  for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+    await sleep(1500);
+    const response = await fetch(`${API_BASE_URL}/api/analyze/jobs/${encodeURIComponent(jobId)}`, { cache: "no-store" });
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(apiErrorMessage(errorText, `Analiz durumu alinamadi (${response.status})`));
+    }
+    const job = (await response.json()) as AnalysisJobStatus;
+    if (job.status === "completed") {
+      if (!job.result) {
+        throw new Error("Analiz tamamlandi ancak sonuc alinamadi.");
+      }
+      return job.result;
+    }
+    if (job.status === "failed") {
+      throw new Error(job.error || "Analiz tamamlanamadi. Lutfen tekrar deneyin.");
+    }
+  }
+  throw new Error("Analiz zaman asimina ugradi. Lutfen tekrar deneyin.");
+}
+
 export async function analyzeCode(
   fileName: string,
   fileContent: string,
@@ -263,7 +305,11 @@ export async function analyzeCode(
     throw new Error(msg);
   }
 
-  return response.json();
+  const payload = await response.json();
+  if (isAnalysisJobAccepted(payload)) {
+    return pollAnalysisJob(payload.job_id);
+  }
+  return payload as ApiAnalysisResult;
 }
 
 export async function checkHealth(): Promise<boolean> {

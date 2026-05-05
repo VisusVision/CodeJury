@@ -20,6 +20,12 @@ class Settings(BaseSettings):
     ollama_max_concurrent: int = 4
     ollama_num_predict: int = 1024
 
+    redis_url: str = "redis://localhost:6379/0"
+    analysis_queue_name: str = "stream:analysis_jobs"
+    analysis_consumer_group: str = "group:analysis_workers"
+    analysis_job_ttl_seconds: int = 86400
+    analysis_worker_poll_timeout_seconds: int = 5
+
     model_config = {"env_file": str(_ENV_FILE), "extra": "ignore"}
 
 

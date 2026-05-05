@@ -114,7 +114,7 @@ npm run setup:demo      # Platforma göre otomatik kurulum (demo mode)
    `requirements.txt` kurulur (taşınabilir Python sürümleriyle uyumlu).
 4. **npm install**: `frontend/` klasöründe çalıştırır.
 5. **Sandbox imajı**: `docker build -t agentgrade-sandbox sandbox-images/agentgrade/`.
-6. **PostgreSQL**: `docker compose up -d postgres`.
+6. **PostgreSQL + Redis**: `docker compose up -d postgres redis`.
 7. **Ollama modeli**: `ollama pull qwen2.5:7b`.
 8. Sonunda renkli özet (uyarı/hata listesi) yazdırır.
 
@@ -156,6 +156,8 @@ Düzenlenebilir alanlar:
 | Anahtar | Varsayılan | Açıklama |
 |---------|------------|----------|
 | `DATABASE_URL` | `postgresql://semas:12345@localhost:5432/agent_db` | Postgres bağlantısı |
+| `REDIS_URL` | `redis://localhost:6379/0` | Analiz is kuyrugu baglantisi |
+| `ANALYSIS_QUEUE_NAME` | `stream:analysis_jobs` | Redis Streams analiz kuyrugu |
 | `OLLAMA_BASE_URL` | `http://localhost:11434` | Ollama servisi |
 | `OLLAMA_MODEL` | `qwen2.5:7b` | LLM model adı |
 | `SANDBOX_POOL_SIZE` | `10` | Önyüklenecek konteyner sayısı |
@@ -169,14 +171,14 @@ docker build -t agentgrade-sandbox sandbox-images/agentgrade/
 
 İlk build 3–5 dakika sürebilir (Python + g++ + OpenJDK 21 indirir).
 
-### 4.4 PostgreSQL
+### 4.4 PostgreSQL ve Redis
 
 İki seçenek vardır:
 
 **A) Docker compose (önerilen):**
 
 ```bash
-docker compose up -d postgres
+docker compose up -d postgres redis
 ```
 
 **B) Yerel PostgreSQL kurulumu varsa:**
@@ -197,6 +199,7 @@ ollama serve   # Servis arka planda çalışmıyorsa
 
 ```bash
 npm run dev:full
+python backend/workers/analysis_worker.py
 ```
 
 Ardından <http://localhost:8080> adresini açın.
