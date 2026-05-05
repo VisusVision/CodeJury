@@ -151,12 +151,13 @@ def _simulate_sandbox(source_code: str) -> dict:
 
     try:
         with tempfile.TemporaryDirectory(prefix="agentgrade-sim-") as tmp:
-            script_path = Path(tmp) / "submission.py"
+            tmp_path = Path(tmp)
+            script_path = tmp_path / "submission.py"
             script_path.write_text(source_code, encoding="utf-8")
             proc = subprocess.run(
                 [sys.executable, str(script_path)],
                 capture_output=True, text=True, timeout=10,
-                cwd=tmp or os.path.dirname(__file__) or ".",
+                cwd=str(tmp_path) or os.path.dirname(__file__) or ".",
             )
         result["stdout"]    = proc.stdout
         result["stderr"]    = proc.stderr

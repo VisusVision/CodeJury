@@ -77,6 +77,129 @@ def _task_domain_guess_from_text(text: str) -> str:
     return "programlama odevi"
 
 
+def _contains_marker(text: str, marker: str) -> bool:
+    marker_l = marker.lower()
+    if " " in marker_l:
+        return marker_l in text
+    if re.search(r"[a-z0-9_]", marker_l, flags=re.IGNORECASE):
+        return bool(re.search(rf"(?<![a-z0-9_]){re.escape(marker_l)}(?![a-z0-9_])", text))
+    return marker_l in text
+
+
+def _has_code_deliverable_intent(text: str) -> bool:
+    non_code_deliverables = ("makale", "rapor", "poster", "sunum", "slayt", "essay")
+    explicit_tech_markers = (
+        "api",
+        "endpoint",
+        "fonksiyon",
+        "kod",
+        "program",
+        "script",
+        "cli",
+        "web",
+        "react",
+        "html",
+        "css",
+        "python",
+        "javascript",
+        "typescript",
+        "c++",
+        "cpp",
+    )
+    if any(_contains_marker(text, marker) for marker in non_code_deliverables) and not any(
+        _contains_marker(text, marker) for marker in explicit_tech_markers
+    ):
+        return False
+
+    code_intent_markers = (
+        "yaz",
+        "yazin",
+        "gelistir",
+        "gelistirin",
+        "uygulama",
+        "arac",
+        "api",
+        "endpoint",
+        "fonksiyon",
+        "kod",
+        "program",
+        "script",
+        "cli",
+        "web",
+        "react",
+        "html",
+        "css",
+        "python",
+        "javascript",
+        "typescript",
+        "c++",
+        "cpp",
+    )
+    if any(_contains_marker(text, marker) for marker in code_intent_markers):
+        return True
+    return not any(_contains_marker(text, marker) for marker in non_code_deliverables)
+
+
+def _has_recognized_capability_requirement(text: str) -> bool:
+    task_text = (text or "").lower()
+    if not _has_code_deliverable_intent(task_text):
+        return False
+    marker_groups = (
+        ("api", "endpoint", "http", "server", "post", "put", "get", "route"),
+        (
+            "api istemcisi",
+            "istemci",
+            "client",
+            "api_url",
+            "ortam degisken",
+            "konfigurasyon",
+            "config",
+            "url",
+            "durum kodu",
+            "status code",
+            "http istek",
+        ),
+        ("react", "frontend", "ui", "arayuz", "bilesen", "component", "form", "state", "todo"),
+        ("html", "css", "responsive", "medya sorgusu", "portfolio", "portfolyo", "sayfa"),
+        ("javascript", "typescript", "node", "npm"),
+        ("c++", "cpp", "vektor", "vector", "sirala", "siralayan", "sort", "min", "max"),
+        ("sqlite", "sql", "database", "db", "tablo"),
+        ("log", "dosya", "file", "cli", "arguman", "komut", "satir", "rapor", "export", "cikti dosyasi"),
+        ("sinif", "class", "oop", "nesne", "kalitim", "encapsulation"),
+        ("agac", "tree", "bst", "dugum", "node", "traversal", "inorder", "preorder", "postorder"),
+        ("liste", "list", "veri", "data", "istatistik", "ortalama", "average", "flatten", "donustur", "dönüştür"),
+        ("pytest", "unittest", "unit test", "otomatik test"),
+    )
+    return any(any(_contains_marker(task_text, marker) for marker in group) for group in marker_groups)
+
+
+def _deterministic_capability_fallback(
+    *,
+    combined_task_text: str,
+    code_sample: str,
+    capability_match: float,
+) -> dict[str, Any] | None:
+    if not _has_recognized_capability_requirement(combined_task_text):
+        return None
+    if capability_match > 0.24:
+        return None
+    return {
+        "skipped": False,
+        "relevance_factor": 0.22,
+        "off_topic": True,
+        "student_fulfills_assignment": False,
+        "confidence": 0.72,
+        "explanation": (
+            "Deterministik görev uyumu kontrolü, kodun ödevde açıkça istenen temel "
+            "kabiliyetleri taşımadığını gösterdi."
+        ),
+        "submission_domain_guess": _task_domain_guess_from_text(code_sample),
+        "task_domain_guess": _task_domain_guess_from_text(combined_task_text),
+        "capability_match": round(max(0.0, min(1.0, capability_match)), 3),
+        "reason": "deterministic_capability_mismatch",
+    }
+
+
 def _unwrap_task_relevance_payload(raw: dict[str, Any]) -> dict[str, Any]:
     """Best-effort unwrap for models that nest JSON under result/report/data."""
     required = {"relevance_factor", "off_topic", "student_fulfills_assignment"}
@@ -134,7 +257,16 @@ async def assess_task_relevance_llm(
     if len(combined) < BRIEF_MIN_LEN:
         return {"skipped": True, "relevance_factor": 1.0, "reason": "insufficient_task_context"}
 
+    code_sample = source_clean or (source_code or "")
+    fallback = _deterministic_capability_fallback(
+        combined_task_text=combined,
+        code_sample=code_sample,
+        capability_match=capability_match,
+    )
+
     if not settings.ollama_enabled:
+        if fallback:
+            return fallback
         return {"skipped": True, "relevance_factor": 1.0, "reason": "ollama_disabled"}
 
     rubric_json = []
@@ -148,7 +280,6 @@ async def assess_task_relevance_llm(
                 "description": str(row.get("description", "") or ""),
             })
 
-    code_sample = source_clean or (source_code or "")
     max_chars = 12000
     if len(code_sample) > max_chars:
         code_sample = (
@@ -188,9 +319,13 @@ async def assess_task_relevance_llm(
         )
     except Exception as exc:
         logger.warning("[task_relevance] LLM cagrisi basarisiz: %s", exc)
+        if fallback:
+            return fallback
         return {"skipped": True, "relevance_factor": 1.0, "reason": "llm_error"}
 
     if not isinstance(raw, dict):
+        if fallback:
+            return fallback
         return {"skipped": True, "relevance_factor": 1.0, "reason": "invalid_response"}
     raw = _unwrap_task_relevance_payload(raw)
     if not str(raw.get("task_domain_guess", "")).strip():
@@ -301,7 +436,7 @@ def _capability_match_signal(
         x for x in ((assignment_description or "").strip(), _rubric_criteria_text(rubric_criteria)) if x
     ).lower()
     code_text = _source_without_comments_and_docstrings(source_code or "").lower()
-    if len(task_text) < BRIEF_MIN_LEN:
+    if len(task_text) < BRIEF_MIN_LEN and not _has_recognized_capability_requirement(task_text):
         return 1.0
 
     groups: list[tuple[set[str], set[str]]] = [
@@ -310,12 +445,106 @@ def _capability_match_signal(
             {"httpserver", "basehttprequesthandler", "do_post", "do_put", "do_get", "fastapi", "flask", "route"},
         ),
         (
+            {
+                "api istemcisi",
+                "istemci",
+                "client",
+                "api_url",
+                "ortam degisken",
+                "konfigurasyon",
+                "config",
+                "url",
+                "durum kodu",
+                "status code",
+                "http istek",
+            },
+            {
+                "os.environ",
+                "getenv(",
+                "urllib.request",
+                "urlopen(",
+                "requests.get",
+                "status_code",
+                ".status",
+                "timeout=",
+            },
+        ),
+        (
+            {"react", "frontend", "ui", "arayuz", "bilesen", "component", "form", "state", "gorev", "todo"},
+            {
+                "react",
+                "usestate",
+                "useeffect",
+                "export function",
+                "function ",
+                "return <",
+                "jsx",
+                "onclick",
+                "onchange",
+                "setitems",
+                "setstate",
+                "filter(",
+            },
+        ),
+        (
+            {"html", "css", "responsive", "medya sorgusu", "portfolio", "portfolyo", "sayfa"},
+            {
+                "<!doctype",
+                "<html",
+                "<head",
+                "<body",
+                "<style",
+                "@media",
+                "display: flex",
+                "display:flex",
+                "display: grid",
+                "display:grid",
+                "grid-template",
+                "<header",
+                "<section",
+                "<article",
+                "class=",
+            },
+        ),
+        (
+            {"javascript", "typescript", "node", "npm"},
+            {"const ", "let ", "function ", "=>", "import ", "export ", "require(", "module.exports"},
+        ),
+        (
+            {"c++", "cpp", "vektor", "vector", "sirala", "siralayan", "sort", "min", "max"},
+            {
+                "#include <vector>",
+                "#include<vector>",
+                "std::vector",
+                "vector<",
+                "std::sort",
+                "sort(",
+                "min_element",
+                "max_element",
+                "begin()",
+                "end()",
+            },
+        ),
+        (
             {"sqlite", "sql", "database", "db", "tablo"},
             {"sqlite3", "connect(", "cursor", "select ", "insert ", "update ", "create table"},
         ),
         (
-            {"log", "dosya", "file", "cli", "arguman", "komut", "satir"},
-            {"argparse", "sys.argv", "path(", "read_text", "open(", "splitlines", "line"},
+            {"log", "dosya", "file", "cli", "arguman", "komut", "satir", "rapor", "export", "cikti dosyasi"},
+            {
+                "argparse",
+                "sys.argv",
+                "path(",
+                "read_text",
+                "open(",
+                "readlines",
+                "splitlines",
+                "write(",
+                "writerow",
+                "dictwriter",
+                "os.system",
+                "export_report",
+            },
         ),
         (
             {"sinif", "class", "oop", "nesne", "kalitim", "encapsulation"},
@@ -327,7 +556,19 @@ def _capability_match_signal(
         ),
         (
             {"liste", "list", "veri", "data", "istatistik", "ortalama", "average", "flatten", "donustur", "dönüştür"},
-            {"list[", "list(", "append(", "extend(", "sum(", "len(", "flatten", "average", "ortalama"},
+            {
+                "list[",
+                "list(",
+                "append(",
+                "extend(",
+                "sum(",
+                "len(",
+                "flatten",
+                "average",
+                "ortalama",
+                "filter(",
+                "map(",
+            },
         ),
         (
             {"pytest", "unittest", "unit test", "otomatik test"},
@@ -337,8 +578,14 @@ def _capability_match_signal(
 
     required = 0
     matched = 0
+    client_context = any(
+        _contains_marker(task_text, marker)
+        for marker in ("api istemcisi", "istemci", "client", "api_url", "ortam degisken", "konfigurasyon")
+    )
     for task_markers, code_markers in groups:
-        if any(marker in task_text for marker in task_markers):
+        if client_context and task_markers == {"api", "endpoint", "http", "server", "post", "put", "get", "route"}:
+            continue
+        if any(_contains_marker(task_text, marker) for marker in task_markers):
             required += 1
             if any(marker in code_text for marker in code_markers):
                 matched += 1

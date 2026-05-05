@@ -5,12 +5,15 @@ import asyncio
 import importlib.util
 import json
 import os
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 
 ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 MAIN_PATH = ROOT / "frontend" / "backend" / "main.py"
 REPORT_PATH = ROOT / "artifacts" / "agent_calibration" / "latest_report.json"
 DEFAULT_TIMEOUT_SECONDS = 900
@@ -98,6 +101,40 @@ SCENARIOS: list[AssignmentScenario] = [
             SubmissionCase("alakasiz", "samples/log_ozetleme_alakasiz.py", False, max_score=35, max_alignment=0.30),
         ],
     ),
+    AssignmentScenario(
+        key="api_config_client",
+        title="API Konfigurasyon Istemcisi",
+        description=(
+            "Ortam degiskeninden API_URL okuyan, verilen path icin HTTP durum kodu alan "
+            "ve gecersiz konfigurasyonu anlasilir hatayla reddeden kucuk bir API istemcisi yazin."
+        ),
+        criterion_count=10,
+        submissions=[
+            SubmissionCase("uygun", "samples/api_config_client_uygun.py", True, min_score=60, min_alignment=0.50),
+            SubmissionCase("alakasiz", "samples/api_config_client_alakasiz.py", False, max_score=35, max_alignment=0.30),
+        ],
+    ),
+    AssignmentScenario(
+        key="report_export",
+        title="CSV Rapor Export Araci",
+        description=(
+            "Ogrenci skorlarini alip gecme durumunu hesaplayan ve sonucu CSV rapor dosyasina "
+            "yazan bir CLI araci gelistirin. Cikti dosyasi UTF-8 olmali ve klasor yoksa olusturulmalidir."
+        ),
+        criterion_count=10,
+        submissions=[
+            SubmissionCase("uygun", "samples/rapor_export_uygun.py", True, min_score=60, min_alignment=0.50),
+            SubmissionCase(
+                "guvensiz_ama_alakali",
+                "samples/rapor_export_guvensiz.py",
+                True,
+                True,
+                max_score=55,
+                min_alignment=0.50,
+            ),
+            SubmissionCase("alakasiz", "samples/api_config_client_alakasiz.py", False, max_score=35, max_alignment=0.30),
+        ],
+    ),
 ]
 
 
@@ -127,6 +164,87 @@ def _extract_security_agent(report: dict[str, Any]) -> dict[str, Any]:
         if isinstance(agent, dict) and agent.get("id") == "security":
             return agent
     return {}
+
+
+def _language_for_path(path: str) -> str:
+    lower = path.lower()
+    if lower.endswith((".c", ".cpp", ".h", ".hpp")):
+        return "c++"
+    if lower.endswith(".java"):
+        return "java"
+    if lower.endswith((".js", ".jsx", ".ts", ".tsx")):
+        return "javascript"
+    return "python"
+
+
+def _programmatic_pipeline_report(brief: str, file_path: str, code: str) -> dict[str, Any]:
+    from backend.agents.code_quality import CodeQualityAgent
+    from backend.agents.security import SecurityAgent
+    from backend.agents.task_relevance import _capability_match_signal
+    from backend.agents.test_agent import TestAgent
+    from backend.sandbox.executor import _simulate_sandbox
+
+    language = _language_for_path(file_path)
+    capability = _capability_match_signal(brief, None, code)
+    off_topic = capability <= 0.24
+
+    security = SecurityAgent()._programmatic_analysis(
+        code,
+        language,
+        assignment_description=brief,
+    )
+    if language == "python":
+        sandbox = _simulate_sandbox(code)
+    else:
+        sandbox = {
+            "compilation_success": True,
+            "exit_code": 0,
+            "stdout": "",
+            "stderr": "",
+        }
+    testing = TestAgent()._programmatic_analysis(
+        sandbox,
+        None,
+        code,
+        language,
+        brief,
+        task_alignment={"factor": max(0.05, capability), "reasons": [] if not off_topic else ["capability_mismatch"]},
+    )
+    quality = CodeQualityAgent()._programmatic_analysis(code, language)
+
+    if off_topic:
+        total_score = min(35.0, round(100.0 * max(0.05, capability), 1))
+    else:
+        total_score = round(
+            (100.0 * max(0.05, capability) * 0.35)
+            + (float(testing.get("score", 0) or 0) * 0.25)
+            + (float(security.get("score", 0) or 0) * 0.25)
+            + (float(quality.get("score", 0) or 0) * 0.15),
+            1,
+        )
+        if not security.get("safe", True):
+            total_score = min(total_score, 55.0 if security.get("risk_level") == "critical" else 70.0)
+
+    return {
+        "totalScore": total_score,
+        "taskAlignment": {
+            "factor": max(0.05, min(1.0, capability)),
+            "llm_off_topic": off_topic,
+        },
+        "relevanceScoreWarning": "Programmatic capability mismatch." if off_topic else "",
+        "agents": [
+            {
+                "id": "security",
+                "score": security.get("score", 0),
+                "summary": (
+                    f"Risk: {str(security.get('risk_level', 'safe')).upper()}, "
+                    f"{security.get('total_threats', 0)} tehdit, Skor: {security.get('score', 0)}/100"
+                ),
+            },
+            {"id": "testing", "score": testing.get("score", 0)},
+            {"id": "code_quality", "score": quality.get("score", 0)},
+        ],
+    }
 
 
 def _evaluate_case(case: SubmissionCase, report: dict[str, Any]) -> dict[str, Any]:
@@ -179,6 +297,79 @@ def _evaluate_case(case: SubmissionCase, report: dict[str, Any]) -> dict[str, An
             and align_max_ok
         ),
     }
+
+
+async def run_programmatic_suite(
+    *,
+    scenario_keys: list[str] | None = None,
+    max_scenarios: int | None = None,
+    max_cases_per_scenario: int | None = None,
+    checkpoint_path: Path | None = None,
+) -> dict[str, Any]:
+    selected = list(SCENARIOS)
+    if scenario_keys:
+        wanted = {k.strip() for k in scenario_keys if str(k).strip()}
+        selected = [s for s in selected if s.key in wanted]
+    if max_scenarios and max_scenarios > 0:
+        selected = selected[:max_scenarios]
+
+    results: list[dict[str, Any]] = []
+    total_cases = 0
+    passed_cases = 0
+
+    for scenario in selected:
+        brief = _build_brief(scenario.title, scenario.description)
+        scenario_rows: list[dict[str, Any]] = []
+        submissions = list(scenario.submissions)
+        if max_cases_per_scenario and max_cases_per_scenario > 0:
+            submissions = submissions[:max_cases_per_scenario]
+
+        for case in submissions:
+            code = _read_text(case.file_path)
+            report = _programmatic_pipeline_report(brief, case.file_path, code)
+            check = _evaluate_case(case, report)
+            total_cases += 1
+            if check["case_passed"]:
+                passed_cases += 1
+            scenario_rows.append(
+                {
+                    "label": case.label,
+                    "file_path": case.file_path,
+                    "expected_relevant": case.expected_relevant,
+                    "expected_security_risky": case.expected_security_risky,
+                    "expected_min_score": case.min_score,
+                    "expected_max_score": case.max_score,
+                    "expected_min_alignment": case.min_alignment,
+                    "expected_max_alignment": case.max_alignment,
+                    "result": check,
+                }
+            )
+
+        results.append(
+            {
+                "scenario_key": scenario.key,
+                "assignment_title": scenario.title,
+                "criterion_count": scenario.criterion_count,
+                "rubric_source": "programmatic",
+                "rubric": [],
+                "created_assignment": None,
+                "cases": scenario_rows,
+            }
+        )
+
+    pass_rate = round((passed_cases / total_cases) * 100, 1) if total_cases else 0.0
+    report = {
+        "summary": {
+            "total_scenarios": len(selected),
+            "total_cases": total_cases,
+            "passed_cases": passed_cases,
+            "pass_rate": pass_rate,
+        },
+        "scenarios": results,
+    }
+    if checkpoint_path is not None:
+        _write_checkpoint(report, checkpoint_path)
+    return report
 
 
 async def _suggest_rubric(module: Any, scenario: AssignmentScenario) -> list[dict[str, Any]]:
@@ -413,14 +604,22 @@ def _print_console_report(data: dict[str, Any]) -> None:
 
 
 async def _amain(args: argparse.Namespace) -> int:
-    report = await run_suite(
-        persist_demo_assignments=args.persist_demo_assignments,
-        scenario_keys=list(args.scenario or []),
-        max_scenarios=args.max_scenarios,
-        max_cases_per_scenario=args.max_cases_per_scenario,
-        checkpoint_path=REPORT_PATH,
-        timeout_seconds=max(30, int(args.timeout_seconds)),
-    )
+    if args.programmatic_only:
+        report = await run_programmatic_suite(
+            scenario_keys=list(args.scenario or []),
+            max_scenarios=args.max_scenarios,
+            max_cases_per_scenario=args.max_cases_per_scenario,
+            checkpoint_path=REPORT_PATH,
+        )
+    else:
+        report = await run_suite(
+            persist_demo_assignments=args.persist_demo_assignments,
+            scenario_keys=list(args.scenario or []),
+            max_scenarios=args.max_scenarios,
+            max_cases_per_scenario=args.max_cases_per_scenario,
+            checkpoint_path=REPORT_PATH,
+            timeout_seconds=max(30, int(args.timeout_seconds)),
+        )
     _write_checkpoint(report, REPORT_PATH)
     _print_console_report(report)
     print(f"\nRapor dosyasi: {REPORT_PATH}")
@@ -456,6 +655,11 @@ def main() -> int:
         type=int,
         default=DEFAULT_TIMEOUT_SECONDS,
         help="Tek pipeline case'i icin maksimum bekleme suresi.",
+    )
+    parser.add_argument(
+        "--programmatic-only",
+        action="store_true",
+        help="LLM pipeline yerine hizli deterministik ajan sinyalleriyle matrisi kos.",
     )
     args = parser.parse_args()
     return asyncio.run(_amain(args))

@@ -174,7 +174,11 @@ class SecurityAgent(BaseAgent):
         language = input_data.get("language", "python")
         report_language = input_data.get("report_language") or "tr"
 
-        programmatic = self._programmatic_analysis(source_code, language)
+        programmatic = self._programmatic_analysis(
+            source_code,
+            language,
+            assignment_description=str(input_data.get("assignment_description") or ""),
+        )
 
         truncated = self._truncate_code(source_code)
         summary = {
@@ -257,6 +261,75 @@ class SecurityAgent(BaseAgent):
             or "uvicorn.run(" in src_l
         )
         api_context = service_assignment or service_code
+        http_client_assignment = any(
+            token in brief_l
+            for token in (
+                "istemci",
+                "client",
+                "api istemcisi",
+                "http istek",
+                "url",
+                "durum kodu",
+                "status code",
+                "fetch",
+            )
+        )
+        file_assignment = any(
+            token in brief_l
+            for token in (
+                "dosya",
+                "file",
+                "log",
+                "csv",
+                "json",
+                "path",
+                "yol",
+                "oku",
+                "okuyup",
+                "read",
+                "cli",
+                "arguman",
+            )
+        )
+        config_assignment = any(
+            token in brief_l
+            for token in (
+                "ortam degisken",
+                "environment",
+                "env",
+                "konfigurasyon",
+                "config",
+                "api_url",
+            )
+        )
+        file_output_assignment = file_assignment and any(
+            token in brief_l
+            for token in (
+                "yaz",
+                "yazan",
+                "yazdir",
+                "kaydet",
+                "export",
+                "disa aktar",
+                "rapor dosyasi",
+                "cikti dosyasi",
+                "csv",
+            )
+        )
+        destructive_or_execution = any(
+            token in src_l
+            for token in (
+                "os.system",
+                "os.popen",
+                "subprocess",
+                "eval(",
+                "exec(",
+                "os.remove",
+                "os.unlink",
+                "os.rmdir",
+                "shutil.rmtree",
+            )
+        )
 
         for raw in threats:
             if not isinstance(raw, dict):
@@ -276,6 +349,34 @@ class SecurityAgent(BaseAgent):
                         t["severity"] = "high"
                     t["description"] = str(t.get("description", "")) + " (odev baglaminda beklenen ag kullanimi olabilir)"
 
+            if http_client_assignment and t_type == "network_access":
+                if "requests" in detail or "urllib" in detail:
+                    t["severity"] = "low"
+                    t["description"] = str(t.get("description", "")) + " (odev baglaminda beklenen HTTP istemci kullanimi)"
+
+            if file_assignment and not destructive_or_execution:
+                if file_output_assignment and t_type == "file_access" and "open(..., 'w')" in detail:
+                    t["severity"] = "low"
+                    t["description"] = str(t.get("description", "")) + " (odev baglaminda beklenen dosya yazma/cikti uretimi)"
+                if t_type == "file_access" and (
+                    "open() -- dosya okuma" in desc
+                    or "pathlib" in desc
+                    or "read_text" in detail
+                    or "open() cagrilmis" in detail
+                ):
+                    t["severity"] = "low"
+                    t["description"] = str(t.get("description", "")) + " (odev baglaminda beklenen salt-okuma dosya islemi)"
+                if t_type == "system_access" and "import os" in detail:
+                    t["type"] = "file_path_access"
+                    t["severity"] = "low"
+                    t["description"] = str(t.get("description", "")) + " (odev baglaminda yol/dosya yardimcisi olabilir)"
+
+            if config_assignment and not destructive_or_execution:
+                if t_type in {"system_access", "info_leak"} and ("import os" in detail or "os.environ" in detail):
+                    t["type"] = "configuration_access"
+                    t["severity"] = "low"
+                    t["description"] = str(t.get("description", "")) + " (odev baglaminda beklenen konfigurasyon/env okuma)"
+
             # Regex control-char cleanup is not code obfuscation.
             if t_type == "obfuscation":
                 line_no = t.get("line")
@@ -293,7 +394,12 @@ class SecurityAgent(BaseAgent):
             out.append(t)
         return out
 
-    def _programmatic_analysis(self, source_code: str, language: str) -> dict:
+    def _programmatic_analysis(
+        self,
+        source_code: str,
+        language: str,
+        assignment_description: str = "",
+    ) -> dict:
         """AST/regex ozeti -- yalnizca LLM prompt ipucu."""
         threats: list[dict] = []
         blocked_imports: list[str] = []
@@ -306,35 +412,21 @@ class SecurityAgent(BaseAgent):
         else:
             threats.extend(_check_generic_patterns(source_code, language))
 
-        critical = sum(1 for t in threats if t["severity"] == "critical")
-        high = sum(1 for t in threats if t["severity"] == "high")
-        medium = sum(1 for t in threats if t["severity"] == "medium")
-
-        if critical > 0:
-            risk_level = "critical"
-        elif high > 0:
-            risk_level = "high"
-        elif medium > 0:
-            risk_level = "medium"
-        elif threats:
-            risk_level = "low"
-        else:
-            risk_level = "safe"
-
-        score = 100
-        score -= critical * 35
-        score -= high * 22
-        score -= medium * 8
-        score -= sum(1 for t in threats if t.get("severity") == "low") * 3
-        score = max(0, min(100, score))
+        threats = self._calibrate_coursework_threats(
+            threats,
+            source_code=source_code,
+            assignment_description=assignment_description,
+        )
+        rsum = _risk_summary_from_threats(threats)
+        score = _score_from_threats(threats)
 
         return {
             "threats": threats,
-            "risk_level": risk_level,
-            "safe": risk_level in ("safe", "low"),
-            "total_threats": len(threats),
-            "critical_count": critical,
-            "high_count": high,
+            "risk_level": rsum["risk_level"],
+            "safe": rsum["safe"],
+            "total_threats": rsum["total_threats"],
+            "critical_count": rsum["critical_count"],
+            "high_count": rsum["high_count"],
             "blocked_imports": blocked_imports,
             "score": score,
         }
@@ -363,6 +455,10 @@ def _check_python_ast(source_code: str) -> list[dict]:
 
             if fname in _DANGEROUS_FUNCTIONS:
                 cat, sev, desc = _DANGEROUS_FUNCTIONS[fname]
+                if fname == "getattr" and _is_constant_safe_getattr(node):
+                    sev = "low"
+                    desc = "getattr() sabit ve guvenli alan adi ile kullanilmis"
+                    cat = "dynamic_attribute_access"
                 threats.append({
                     "type": cat,
                     "severity": sev,
@@ -456,6 +552,21 @@ def _check_python_ast(source_code: str) -> list[dict]:
             })
 
     return threats
+
+
+def _is_constant_safe_getattr(node: ast.Call) -> bool:
+    """Benign model/DTO alan okuma ile sandbox kacak girisimini ayir."""
+    if len(node.args) < 2:
+        return False
+    attr_arg = node.args[1]
+    if not isinstance(attr_arg, ast.Constant) or not isinstance(attr_arg.value, str):
+        return False
+    attr_name = attr_arg.value.strip()
+    if not attr_name:
+        return False
+    if attr_name.startswith("__") or attr_name.endswith("__"):
+        return False
+    return bool(re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", attr_name))
 
 
 def _check_sql_patterns(source_code: str) -> list[dict]:

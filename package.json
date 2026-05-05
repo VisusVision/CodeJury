@@ -4,7 +4,7 @@
   "scripts": {
     "dev:full": "npm --prefix frontend run dev",
     "dev:frontend": "npm --prefix frontend run dev:vite",
-    "dev:api": "npm --prefix frontend exec node scripts/dev-api.mjs",
+    "dev:api": "node frontend/scripts/dev-api.mjs",
     "check:prereqs": "node scripts/check-prereqs.mjs",
     "setup": "node scripts/run-installer.mjs",
     "setup:demo": "node scripts/run-installer.mjs --demo",
