@@ -287,9 +287,8 @@ docker build -t agentgrade-sandbox sandbox-images/agentgrade/
 # 4. Pull the default LLM
 ollama pull qwen2.5:7b
 
-# 5. Start the app and analysis worker
+# 5. Start the app, API, worker, and local services
 npm run dev:full
-python backend/workers/analysis_worker.py
 ```
 
 > **Demo Mode:** set `DEMO_MODE=1` in `.env` to run the entire stack
