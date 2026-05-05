@@ -207,6 +207,7 @@ For every analysis request:
 | LLM | Ollama (default model: `qwen2.5:7b`) |
 | Sandboxing | Docker container pool (per-submission isolation) |
 | Database | PostgreSQL 16 (optional — `DEMO_MODE=1` runs without it) |
+| Message Queue | Redis Streams for asynchronous analysis jobs |
 | Orchestration | docker compose (dev), Kubernetes-ready (prod) |
 | Storage | Object storage for submissions and reports |
 
@@ -261,7 +262,7 @@ npm run dev:full
 2. Create a Python `.venv`, install `requirements.txt`.
 3. Run `npm install` in `frontend/`.
 4. Build the `agentgrade-sandbox` Docker image.
-5. Bring up PostgreSQL via `docker compose up -d postgres`.
+5. Bring up PostgreSQL and Redis via `docker compose up -d postgres redis`.
 6. Pull the default Ollama model.
 7. Print a coloured summary of warnings and errors.
 
@@ -277,8 +278,8 @@ python -m venv .venv
 # Windows: .\.venv\Scripts\activate    Linux/macOS: source .venv/bin/activate
 pip install -r requirements.txt
 
-# 2. PostgreSQL (Docker recommended)
-docker compose up -d postgres
+# 2. PostgreSQL + Redis (Docker recommended)
+docker compose up -d postgres redis
 
 # 3. Sandbox image (one-time, requires Docker)
 docker build -t agentgrade-sandbox sandbox-images/agentgrade/
@@ -286,8 +287,9 @@ docker build -t agentgrade-sandbox sandbox-images/agentgrade/
 # 4. Pull the default LLM
 ollama pull qwen2.5:7b
 
-# 5. Start the app
+# 5. Start the app and analysis worker
 npm run dev:full
+python backend/workers/analysis_worker.py
 ```
 
 > **Demo Mode:** set `DEMO_MODE=1` in `.env` to run the entire stack
@@ -307,6 +309,11 @@ SANDBOX_POOL_TIMEOUT=30.0
 # Database (PostgreSQL — optional under DEMO_MODE)
 DATABASE_URL=postgresql://semas:12345@localhost:5432/agent_db
 
+# Redis Streams analysis queue
+REDIS_URL=redis://localhost:6379/0
+ANALYSIS_QUEUE_NAME=stream:analysis_jobs
+ANALYSIS_CONSUMER_GROUP=group:analysis_workers
+
 # Ollama LLM
 OLLAMA_BASE_URL=http://localhost:11434
 OLLAMA_MODEL=qwen2.5:7b
@@ -323,7 +330,7 @@ DEMO_MODE=1
 CodeJury/
 ├── package.json                  # Root workspace + setup scripts
 ├── requirements.txt              # Python dependencies
-├── docker-compose.yml            # Dev-time PostgreSQL service
+├── docker-compose.yml            # Dev-time PostgreSQL and Redis services
 ├── INSTALL.md                    # Full setup & troubleshooting guide
 ├── scripts/
 │   ├── install.ps1               # Windows installer (auto-detects prerequisites)

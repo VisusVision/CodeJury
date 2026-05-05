@@ -42,7 +42,15 @@ from backend.agents.test_agent import TestAgent
 from backend.agents.evidence import EvidenceAgent
 from backend.agents.master_evaluator import MasterEvaluatorAgent
 from backend.agents.assignment_safety import AssignmentSafetyAgent
+from backend.core.config import settings
 from backend.llm.ollama_client import chat_json
+from backend.queue.analysis_jobs import (
+    AnalysisJobNotFound,
+    AnalysisJobStore,
+    create_analysis_job,
+    create_redis_client,
+    get_analysis_job,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -61,6 +69,8 @@ _TEMP_EVALUATIONS_LOCK = asyncio.Lock()
 def _evaluation_key(student_no: str, assignment_id: str | None) -> str:
     return f"{student_no.strip()}::{(assignment_id or '').strip()}"
 
+_REDIS_CLIENT: Any | None = None
+_ANALYSIS_JOB_STORE: AnalysisJobStore | None = None
 
 _DEMO_STORE: dict[str, Any] = {
     "teachers": [
@@ -477,6 +487,29 @@ async def _shutdown_db() -> None:
     if _DB_POOL is not None:
         await _DB_POOL.close()
         _DB_POOL = None
+
+
+async def _get_analysis_job_store() -> AnalysisJobStore:
+    global _REDIS_CLIENT, _ANALYSIS_JOB_STORE
+    if _ANALYSIS_JOB_STORE is not None:
+        return _ANALYSIS_JOB_STORE
+    _REDIS_CLIENT = create_redis_client(settings.redis_url)
+    await _REDIS_CLIENT.ping()
+    _ANALYSIS_JOB_STORE = AnalysisJobStore(
+        _REDIS_CLIENT,
+        stream_name=settings.analysis_queue_name,
+        job_ttl_seconds=settings.analysis_job_ttl_seconds,
+    )
+    return _ANALYSIS_JOB_STORE
+
+
+@app.on_event("shutdown")
+async def _shutdown_redis() -> None:
+    global _REDIS_CLIENT, _ANALYSIS_JOB_STORE
+    if _REDIS_CLIENT is not None:
+        await _REDIS_CLIENT.aclose()
+        _REDIS_CLIENT = None
+        _ANALYSIS_JOB_STORE = None
 
 
 app.add_middleware(
@@ -2786,19 +2819,43 @@ async def analyze_code(req: AnalysisRequest):
                       raise HTTPException(status_code=409, detail="Önce açık değerlendirmeyi tamamlayın")
         brief = await _fetch_assignment_brief_for_pipeline(req.assignment_id)
         faculty = await _fetch_faculty_rubric_criteria_for_pipeline(req.assignment_id)
-        result = await run_analysis_pipeline(
-            req.file_name,
-            req.file_content,
-            assignment_brief=brief,
-            faculty_rubric_criteria=faculty,
-            report_language=req.report_language or "tr",
+        store = await _get_analysis_job_store()
+        return await create_analysis_job(
+            store,
+            {
+                "file_name": req.file_name,
+                "file_content": req.file_content,
+                "assignment_id": req.assignment_id,
+                "assignment_brief": brief,
+                "faculty_rubric_criteria": faculty,
+                "report_language": req.report_language or "tr",
+            },
         )
-        return result
     except HTTPException:
         raise
     except Exception as e:
         traceback.print_exc()
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(
+            status_code=503,
+            detail="Analiz kuyruğuna ulaşılamadı. Redis ve analysis worker çalışıyor mu?",
+        ) from e
+
+
+@app.get("/api/analyze/jobs/{job_id}")
+async def get_analysis_job_status(job_id: str):
+    try:
+        store = await _get_analysis_job_store()
+        job = await get_analysis_job(store, job_id)
+    except AnalysisJobNotFound as exc:
+        raise HTTPException(status_code=404, detail="Analiz işi bulunamadı") from exc
+    except Exception as exc:
+        traceback.print_exc()
+        raise HTTPException(
+            status_code=503,
+            detail="Analiz kuyruğuna ulaşılamadı. Redis çalışıyor mu?",
+        ) from exc
+
+    return {key: value for key, value in job.items() if key != "request"}
 
 
 @app.post("/api/student/login")

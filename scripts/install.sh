@@ -263,13 +263,13 @@ build_sandbox() {
 }
 
 start_postgres() {
-    step "PostgreSQL servisi baslatiliyor (docker compose up -d postgres)"
+    step "PostgreSQL ve Redis servisleri baslatiliyor (docker compose up -d postgres redis)"
     if ! has_cmd docker; then
-        warn "Docker olmadigindan PostgreSQL baslatilamadi. DEMO_MODE=1 kullanmayi deneyin."
+        warn "Docker olmadigindan PostgreSQL/Redis baslatilamadi. DEMO_MODE=1 kullanmayi deneyin."
         return
     fi
-    if docker compose up -d postgres; then
-        ok "PostgreSQL ayakta (port 5432)."
+    if docker compose up -d postgres redis; then
+        ok "PostgreSQL (5432) ve Redis (6379) ayakta."
     else
         err "docker compose up basarisiz."
     fi

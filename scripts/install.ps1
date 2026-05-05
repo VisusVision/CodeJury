@@ -262,13 +262,13 @@ function Build-SandboxImage {
 }
 
 function Start-Postgres {
-    Write-Step "PostgreSQL servisi baslatiliyor (docker compose up -d postgres)"
+    Write-Step "PostgreSQL ve Redis servisleri baslatiliyor (docker compose up -d postgres redis)"
     if (-not (Test-Command "docker")) {
-        Write-Warn2 "Docker olmadigindan PostgreSQL baslatilamadi. DEMO_MODE=1 kullanmayi deneyin."
+        Write-Warn2 "Docker olmadigindan PostgreSQL/Redis baslatilamadi. DEMO_MODE=1 kullanmayi deneyin."
         return
     }
-    & docker compose up -d postgres
-    if ($LASTEXITCODE -eq 0) { Write-Ok "PostgreSQL ayakta (port 5432)." }
+    & docker compose up -d postgres redis
+    if ($LASTEXITCODE -eq 0) { Write-Ok "PostgreSQL (5432) ve Redis (6379) ayakta." }
     else                     { Write-Err2 "docker compose up basarisiz." }
 }
 
