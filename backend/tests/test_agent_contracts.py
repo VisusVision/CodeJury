@@ -1,0 +1,499 @@
+import unittest
+import tempfile
+from unittest.mock import patch
+
+from backend.agents.assignment_alignment import compute_brief_code_alignment
+from backend.agents.code_quality import CodeQualityAgent
+from backend.agents.guideline import GuidelineAgent
+from backend.agents.master_evaluator import MasterEvaluatorAgent
+from backend.agents.security import SecurityAgent
+from backend.agents.seniority import SeniorityAgent
+from backend.agents.task_relevance import (
+    _capability_match_signal,
+    _has_recognized_capability_requirement,
+    assess_task_relevance_llm,
+    merge_task_alignment,
+)
+from backend.core.config import settings
+from backend.agents.test_agent import (
+    TestAgent,
+    _looks_like_cli_usage_error,
+    _looks_like_service_program,
+)
+from backend.sandbox.executor import _simulate_sandbox
+
+
+class TaskRelevanceContractTests(unittest.TestCase):
+    def test_capability_match_detects_cli_file_assignment(self):
+        brief = "Python ile log dosyasi okuyup komut satiri argumaniyla seviye bazli ozet ureten CLI yazin."
+        code = "import sys\nwith open(sys.argv[1]) as f:\n    print(f.read().splitlines())\n"
+
+        self.assertGreaterEqual(_capability_match_signal(brief, None, code), 0.8)
+
+    def test_capability_match_rejects_superficial_line_variable(self):
+        brief = "Python ile log dosyasi okuyup komut satiri argumaniyla seviye bazli ozet ureten CLI yazin."
+        code = 'api_key = "abcdefghijklmnopqrstuvwxyz123456"\ndef summarize(lines):\n    return {"INFO": len(lines)}\n'
+
+        self.assertLess(_capability_match_signal(brief, None, code), 0.25)
+
+    def test_capability_match_detects_react_frontend_assignment(self):
+        brief = (
+            "React ile gorev listesi uygulamasi gelistirin; useState ile form durumunu yonetin, "
+            "gorev ekleme/silme ve tamamlandi filtresi olsun."
+        )
+        code = """
+import React, { useState } from 'react';
+
+export function TodoApp() {
+  const [items, setItems] = useState([]);
+  const [text, setText] = useState('');
+  const addTask = () => setItems([...items, { text, done: false }]);
+  const removeTask = (index) => setItems(items.filter((_, i) => i !== index));
+  return <form onSubmit={addTask}><input value={text} onChange={e => setText(e.target.value)} /></form>;
+}
+"""
+
+        self.assertGreaterEqual(_capability_match_signal(brief, None, code), 0.8)
+
+    def test_capability_match_detects_plain_html_css_assignment(self):
+        brief = (
+            "HTML ve CSS ile responsive kisisel portfolyo sayfasi hazirlayin; "
+            "header, proje kartlari ve mobil medya sorgusu bulunmali."
+        )
+        code = """
+<!doctype html>
+<html>
+  <head>
+    <style>
+      header { display: flex; }
+      .projects { display: grid; gap: 1rem; }
+      @media (max-width: 640px) { .projects { grid-template-columns: 1fr; } }
+    </style>
+  </head>
+  <body><header>Ayse</header><section class="projects"><article>Proje</article></section></body>
+</html>
+"""
+
+        self.assertGreaterEqual(_capability_match_signal(brief, None, code), 0.75)
+
+    def test_capability_match_detects_cpp_vector_algorithm_assignment(self):
+        brief = (
+            "C++ ile vektor icindeki sayilari siralayan, en kucuk ve en buyuk degeri bulan "
+            "fonksiyonlari yazin."
+        )
+        code = """
+#include <algorithm>
+#include <vector>
+
+std::vector<int> sorted_values(std::vector<int> values) {
+    std::sort(values.begin(), values.end());
+    return values;
+}
+
+int min_value(const std::vector<int>& values) { return *std::min_element(values.begin(), values.end()); }
+int max_value(const std::vector<int>& values) { return *std::max_element(values.begin(), values.end()); }
+"""
+
+        self.assertGreaterEqual(_capability_match_signal(brief, None, code), 0.75)
+
+    def test_merge_downgrades_high_llm_score_when_capability_missing(self):
+        merged = merge_task_alignment(
+            1.0,
+            [],
+            {
+                "relevance_factor": 0.9,
+                "off_topic": False,
+                "student_fulfills_assignment": True,
+                "capability_match": 0.0,
+                "explanation": "Model yanlis iyimser.",
+            },
+        )
+
+        self.assertLessEqual(merged["factor"], 0.22)
+        self.assertTrue(merged["llm_off_topic"])
+        self.assertIn("llm_task_relevance_off_topic", merged["reasons"])
+
+    def test_merge_softens_false_off_topic_when_capability_matches(self):
+        merged = merge_task_alignment(
+            1.0,
+            [],
+            {
+                "relevance_factor": 0.15,
+                "off_topic": True,
+                "student_fulfills_assignment": False,
+                "capability_match": 0.86,
+                "explanation": "Model yanlis alakasiz dedi.",
+            },
+        )
+
+        self.assertFalse(merged["llm_off_topic"])
+        self.assertGreaterEqual(merged["factor"], 0.75)
+        self.assertNotIn("llm_task_relevance_off_topic", merged["reasons"])
+
+    def test_merge_flags_deterministic_fallback_mismatch_without_llm(self):
+        merged = merge_task_alignment(
+            1.0,
+            [],
+            {
+                "skipped": False,
+                "relevance_factor": 0.22,
+                "off_topic": True,
+                "student_fulfills_assignment": False,
+                "capability_match": 0.0,
+                "explanation": "Deterministik kontrol kodun istenen CLI/dosya kabiliyetlerini tasimadigini buldu.",
+                "reason": "deterministic_capability_mismatch",
+            },
+        )
+
+        self.assertLessEqual(merged["factor"], 0.22)
+        self.assertTrue(merged["llm_off_topic"])
+        self.assertIn("llm_task_relevance_off_topic", merged["reasons"])
+
+    def test_capability_requirement_markers_do_not_match_word_fragments(self):
+        false_positive_briefs = [
+            "Tarih posteri tasarlayin ve kaynaklari listeleyin.",
+            "Istatistik verisi uzerine kisa makale yazin.",
+            "Minimum gereksinimleri aciklayan rapor hazirlayin.",
+        ]
+
+        for brief in false_positive_briefs:
+            with self.subTest(brief=brief):
+                self.assertFalse(_has_recognized_capability_requirement(brief))
+
+    def test_capability_match_handles_short_explicit_api_brief(self):
+        brief = "SQLite ogrenci kayit API yazin."
+        unrelated = "def fibonacci(n):\n    return n if n < 2 else fibonacci(n - 1) + fibonacci(n - 2)\n"
+        matching = """
+import sqlite3
+from fastapi import FastAPI
+
+app = FastAPI()
+
+@app.post("/students")
+def create_student(name: str):
+    conn = sqlite3.connect("students.db")
+    conn.execute("CREATE TABLE IF NOT EXISTS students (name TEXT)")
+    conn.execute("INSERT INTO students VALUES (?)", (name,))
+    conn.commit()
+    return {"name": name}
+"""
+
+        self.assertLess(_capability_match_signal(brief, None, unrelated), 0.25)
+        self.assertGreaterEqual(_capability_match_signal(brief, None, matching), 0.75)
+
+    def test_capability_match_detects_api_client_config_assignment(self):
+        brief = (
+            "Ortam degiskeninden API_URL okuyan, verilen path icin HTTP durum kodu alan "
+            "ve gecersiz konfigurasyonu anlasilir hatayla reddeden API istemcisi yazin."
+        )
+        code = """
+import os
+import urllib.request
+
+def base_url_from_env():
+    return os.environ.get("API_URL", "https://example.com")
+
+def fetch_status(path="/health"):
+    with urllib.request.urlopen(base_url_from_env() + path, timeout=5) as response:
+        return response.status
+"""
+
+        self.assertGreaterEqual(_capability_match_signal(brief, None, code), 0.75)
+
+    def test_capability_match_keeps_unsafe_file_export_relevant(self):
+        brief = "Ogrenci skorlarini CSV rapor dosyasina yazan CLI export araci gelistirin."
+        code = """
+import os
+
+def export_report(path, text):
+    os.system("echo " + text + " > " + path)
+"""
+
+        self.assertGreaterEqual(_capability_match_signal(brief, None, code), 0.50)
+
+    def test_capability_match_does_not_match_marker_fragments(self):
+        brief = "Minimum gereksinimleri aciklayan rapor hazirlayin."
+        code = "print('rapor')\n"
+
+        self.assertLess(_capability_match_signal(brief, None, code), 0.25)
+
+
+class TaskRelevanceFallbackTests(unittest.IsolatedAsyncioTestCase):
+    async def test_llm_disabled_uses_deterministic_capability_mismatch(self):
+        brief = "Python ile log dosyasi okuyup komut satiri argumaniyla seviye bazli ozet ureten CLI yazin."
+        code = "def fibonacci(n):\n    return n if n < 2 else fibonacci(n - 1) + fibonacci(n - 2)\n"
+
+        with patch.object(settings, "ollama_enabled", False):
+            result = await assess_task_relevance_llm(
+                assignment_description=brief,
+                source_code=code,
+                rubric_criteria=None,
+                report_language="tr",
+            )
+
+        self.assertFalse(result["skipped"])
+        self.assertTrue(result["off_topic"])
+        self.assertLessEqual(result["relevance_factor"], 0.24)
+        self.assertEqual(result["reason"], "deterministic_capability_mismatch")
+
+
+class AlignmentContractTests(unittest.TestCase):
+    def test_empty_or_placeholder_submission_is_penalized(self):
+        factor, reasons = compute_brief_code_alignment(
+            "Binary search tree ekleme, arama ve inorder dolasim fonksiyonlarini yazin.",
+            "print('hello')\n",
+        )
+
+        self.assertLess(factor, 0.7)
+        self.assertTrue(reasons)
+
+
+class TestAgentContractTests(unittest.TestCase):
+    def test_cli_usage_error_is_not_runtime_failure(self):
+        code = "import sys\nif len(sys.argv) < 2:\n    raise SystemExit('usage: app FILE')\nprint(sys.argv[1])\n"
+        result = TestAgent()._programmatic_analysis(
+            {
+                "compilation_success": True,
+                "exit_code": 2,
+                "stderr": "usage: app FILE",
+                "stdout": "",
+            },
+            expected=None,
+            source_code=code,
+            language="python",
+            assignment_description="Komut satiri argumani alan CLI uygulamasi yazin.",
+        )
+
+        self.assertTrue(_looks_like_cli_usage_error("usage: app FILE"))
+        self.assertTrue(result["runs_successfully"])
+        self.assertEqual(result["failed_tests"], 0)
+        self.assertGreaterEqual(result["score"], 70)
+
+    def test_service_timeout_is_not_failure_for_server_assignment(self):
+        code = "from http.server import HTTPServer, BaseHTTPRequestHandler\nHTTPServer(('127.0.0.1', 8000), BaseHTTPRequestHandler).serve_forever()\n"
+        result = TestAgent()._programmatic_analysis(
+            {
+                "compilation_success": True,
+                "exit_code": 124,
+                "timed_out": True,
+                "execution_time_ms": 30000,
+            },
+            expected=None,
+            source_code=code,
+            language="python",
+            assignment_description="HTTP API server endpointleri gelistirin.",
+        )
+
+        self.assertTrue(_looks_like_service_program(code, "python"))
+        self.assertTrue(result["runs_successfully"])
+        self.assertGreaterEqual(result["score"], 60)
+
+    def test_sandbox_fallback_uses_system_tempdir(self):
+        real_tempdir = tempfile.TemporaryDirectory
+        calls = []
+
+        def tracking_tempdir(*args, **kwargs):
+            calls.append((args, kwargs))
+            return real_tempdir(*args, **kwargs)
+
+        with patch("tempfile.TemporaryDirectory", side_effect=tracking_tempdir):
+            result = _simulate_sandbox("print(1)\n")
+
+        self.assertEqual(result["exit_code"], 0)
+        self.assertEqual(result["stdout"].strip(), "1")
+        self.assertTrue(calls)
+
+
+class SecurityAgentContractTests(unittest.TestCase):
+    def test_hardcoded_secret_is_critical(self):
+        result = SecurityAgent()._programmatic_analysis('api_key = "abcdefghijklmnopqrstuvwxyz"\n', "python")
+
+        self.assertEqual(result["risk_level"], "critical")
+        self.assertGreaterEqual(result["critical_count"], 1)
+        self.assertLessEqual(result["score"], 70)
+
+    def test_expected_http_server_network_use_is_calibrated(self):
+        threats = [
+            {
+                "type": "network_access",
+                "severity": "high",
+                "description": "http server",
+                "detail": "httpserver",
+            }
+        ]
+        calibrated = SecurityAgent._calibrate_coursework_threats(
+            threats,
+            source_code="from http.server import HTTPServer\n",
+            assignment_description="HTTP API server endpointleri gelistirin.",
+        )
+
+        self.assertEqual(calibrated[0]["severity"], "medium")
+        self.assertIn("odev baglaminda", calibrated[0]["description"])
+
+    def test_constant_getattr_for_coursework_model_is_low_risk(self):
+        code = """
+class User:
+    def __init__(self):
+        self.name = "Ada"
+
+def display(user):
+    return getattr(user, "name", "unknown")
+"""
+        result = SecurityAgent()._programmatic_analysis(code, "python")
+
+        self.assertTrue(result["safe"])
+        self.assertLessEqual(result["risk_level"], "low")
+        self.assertGreaterEqual(result["score"], 95)
+
+    def test_read_only_file_io_is_safe_for_file_processing_assignment(self):
+        code = """
+from pathlib import Path
+
+def summarize(path):
+    lines = Path(path).read_text(encoding="utf-8").splitlines()
+    return {"lines": len(lines)}
+"""
+        result = SecurityAgent()._programmatic_analysis(
+            code,
+            "python",
+            assignment_description="Log dosyasini okuyup satir sayisi ve ozet istatistik ureten CLI yazin.",
+        )
+
+        self.assertTrue(result["safe"])
+        self.assertLessEqual(result["risk_level"], "low")
+        self.assertGreaterEqual(result["score"], 90)
+
+    def test_command_execution_stays_critical_even_in_cli_assignment(self):
+        code = """
+import os
+
+def run(path):
+    os.system("cat " + path)
+"""
+        result = SecurityAgent()._programmatic_analysis(
+            code,
+            "python",
+            assignment_description="Dosya yolu alan CLI araci yazin.",
+        )
+
+        self.assertEqual(result["risk_level"], "critical")
+        self.assertFalse(result["safe"])
+
+    def test_expected_http_client_use_is_calibrated(self):
+        code = """
+import requests
+
+def fetch_status(url):
+    response = requests.get(url, timeout=5)
+    return response.status_code
+"""
+        result = SecurityAgent()._programmatic_analysis(
+            code,
+            "python",
+            assignment_description="HTTP API istemcisi yazin; verilen URL icin durum kodu dondursun.",
+        )
+
+        self.assertTrue(result["safe"])
+        self.assertLessEqual(result["risk_level"], "low")
+        self.assertGreaterEqual(result["score"], 90)
+
+
+class QualityGuidelineSeniorityContractTests(unittest.TestCase):
+    def test_code_quality_flags_unexpected_quadratic_nested_loops(self):
+        code = "def has_pair(xs):\n    for a in xs:\n        for b in xs:\n            if a + b == 10:\n                return True\n    return False\n"
+        result = CodeQualityAgent()._programmatic_analysis(code, "python")
+
+        self.assertTrue(any(issue["type"] == "high_complexity" for issue in result["issues"]))
+        self.assertLess(result["score"], 90)
+
+    def test_guideline_flags_bad_naming_and_flat_script(self):
+        code = "\n".join([f"X{i}=i" for i in range(12)]) + "\n"
+        result = GuidelineAgent()._programmatic_analysis(code, "python")
+
+        self.assertTrue(any("Kod organizasyonu" in v["rule"] for v in result["style_violations"]))
+        self.assertLess(result["score"], 80)
+
+    def test_seniority_rewards_typed_documented_oop_code(self):
+        code = '''
+class Counter:
+    """Counts values."""
+    def __init__(self) -> None:
+        self.total = 0
+
+    def add(self, value: int) -> int:
+        """Add a value and return total."""
+        self.total += value
+        return self.total
+
+if __name__ == "__main__":
+    print(Counter().add(3))
+'''
+        result = SeniorityAgent()._programmatic_analysis(code, "python")
+
+        self.assertIn(result["estimated_level"], {"mid", "senior"})
+        self.assertGreaterEqual(result["score"], 60)
+        self.assertTrue(result["design_patterns"])
+
+
+class MasterEvaluatorGuardTests(unittest.TestCase):
+    def test_runtime_guard_caps_compile_failure(self):
+        result = {
+            "final_score": 95,
+            "rubric_breakdown": [
+                {"criterion": "functionality", "label": "Calisabilirlik", "weight": 40, "score": 95},
+                {"criterion": "security", "label": "Guvenlik", "weight": 20, "score": 95},
+            ],
+            "weaknesses": [],
+        }
+
+        MasterEvaluatorAgent._apply_runtime_guard(
+            result,
+            {"compilation_success": False, "stderr": "SyntaxError"},
+            faculty_mode=False,
+        )
+
+        self.assertLessEqual(result["final_score"], 20)
+        self.assertIn("Derleme basarisiz", result["weaknesses"][0])
+
+    def test_security_guard_caps_critical_risk(self):
+        result = {
+            "final_score": 96,
+            "rubric_breakdown": [
+                {"criterion": "security", "label": "Guvenlik", "weight": 20, "score": 96},
+                {"criterion": "functionality", "label": "Fonksiyonellik", "weight": 80, "score": 96},
+            ],
+            "weaknesses": [],
+        }
+
+        MasterEvaluatorAgent._apply_security_guard(
+            result,
+            {"risk_level": "critical", "critical_count": 1, "high_count": 0, "score": 45},
+            faculty_mode=False,
+        )
+
+        self.assertLessEqual(result["final_score"], 65)
+        self.assertIn("Kritik guvenlik", result["weaknesses"][0])
+
+    def test_faculty_rubric_output_keeps_order_and_recomputes_score(self):
+        faculty = [
+            {"name": "Fonksiyonellik", "description": "Calisir", "max_score": 40},
+            {"name": "Guvenlik", "description": "Risk yok", "max_score": 20},
+        ]
+        result = {
+            "rubric_breakdown": [
+                {"criterion": "wrong", "score": 50, "justification": "iyi"},
+                {"criterion": "wrong2", "score": 100, "justification": "tam"},
+            ]
+        }
+
+        MasterEvaluatorAgent._finalize_faculty_rubric_output(result, faculty)
+
+        self.assertEqual([r["label"] for r in result["rubric_breakdown"]], ["Fonksiyonellik", "Guvenlik"])
+        self.assertEqual([r["criterion"] for r in result["rubric_breakdown"]], ["criterion_0", "criterion_1"])
+        self.assertEqual(result["rubric_breakdown"][0]["score"], 20)
+        self.assertEqual(result["rubric_breakdown"][1]["score"], 20)
+        self.assertEqual(result["final_score"], 66.7)
+
+
+if __name__ == "__main__":
+    unittest.main()

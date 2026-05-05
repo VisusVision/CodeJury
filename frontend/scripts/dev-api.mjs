@@ -4,9 +4,11 @@
  */
 import { execFileSync, spawn } from "node:child_process";
 import { existsSync, readFileSync, watch } from "node:fs";
+import net from "node:net";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { getLocalPostgresTarget, isDemoModeEnabled } from "./dev-api-helpers.mjs";
 import { freePort8000 } from "./free-port-8000.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -146,7 +148,63 @@ console.error(
   "[dev-api] Health kontrol: http://127.0.0.1:" + apiPort + "/api/health — SKIP_FREE_PORT=1 otomatik port temizligini kapatir.",
 );
 
+function canConnect(host, port, timeoutMs = 700) {
+  return new Promise((resolve) => {
+    const socket = net.createConnection({ host, port });
+    const done = (ok) => {
+      socket.removeAllListeners();
+      socket.destroy();
+      resolve(ok);
+    };
+    socket.setTimeout(timeoutMs);
+    socket.once("connect", () => done(true));
+    socket.once("timeout", () => done(false));
+    socket.once("error", () => done(false));
+  });
+}
+
+async function waitForConnection(host, port) {
+  for (let attempt = 0; attempt < 20; attempt++) {
+    if (await canConnect(host, port, 700)) return true;
+    await new Promise((r) => setTimeout(r, 500));
+  }
+  return false;
+}
+
+async function ensureLocalPostgres() {
+  if (isDemoModeEnabled(process.env.DEMO_MODE)) return;
+  const target = getLocalPostgresTarget(
+    process.env.DATABASE_URL || "postgresql://semas:12345@localhost:5432/agent_db",
+  );
+  if (!target) return;
+  if (await canConnect(target.host, target.port)) return;
+  if (!existsSync(path.join(repoRootAbs, "docker-compose.yml"))) return;
+
+  console.error("[dev-api] PostgreSQL kapali gorunuyor; docker compose ile baslatiliyor...");
+  try {
+    execFileSync("docker", ["compose", "up", "-d", "postgres"], {
+      cwd: repoRootAbs,
+      encoding: "utf-8",
+      windowsHide: true,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+  } catch {
+    console.error(
+      "[dev-api] PostgreSQL otomatik baslatilamadi. Docker Desktop acik degilse `npm run setup:demo` veya `DEMO_MODE=1` kullanin.",
+    );
+    return;
+  }
+
+  if (await waitForConnection(target.host, target.port)) {
+    console.error("[dev-api] PostgreSQL hazir.");
+  } else {
+    console.error("[dev-api] PostgreSQL baslatildi ama port henuz cevap vermiyor; API startup retry deneyecek.");
+  }
+}
+
 async function start() {
+  await ensureLocalPostgres();
+
   if (process.env.SKIP_FREE_PORT !== "1") {
     const killed = freePort8000(apiPort);
     if (killed.length) {

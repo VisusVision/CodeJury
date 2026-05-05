@@ -154,6 +154,7 @@ _PROGRAMMING_STRONG_PATTERNS: tuple[str, ...] = (
     r"\bunit test\b",
     r"\bkomut satiri\b",
     r"\bkonsol\b",
+    r"\bsiniflandir(ici|ma)?\b",
 )
 
 _PROGRAMMING_SOFT_PATTERNS: tuple[str, ...] = (
@@ -198,7 +199,7 @@ _NON_PROGRAMMING_PATTERNS: tuple[str, ...] = (
 
 _UNSAFE_CATEGORY_PATTERNS: dict[str, tuple[str, ...]] = {
     "crime": (
-        r"\bhirsizlik\b",
+        r"\bhirsiz(lik|ligi|la|lama)?\b",
         r"\bdolandiricilik\b",
         r"\bsahtecilik\b",
         r"\bsahte (belge|kimlik|fatura)",
@@ -214,7 +215,8 @@ _UNSAFE_CATEGORY_PATTERNS: dict[str, tuple[str, ...]] = {
         r"\bkeylogger\b",
         r"\bddos\b",
         r"\bcredential\b",
-        r"\bsifre (topla|cal|kir|kirma)",
+        r"\bsifre\w*\b.*\b(topla\w*|cal\w*|kir\w*|kirma)\b",
+        r"\b(topla\w*|cal\w*|kopyala\w*)\b.*\b(sifre|kimlik|kredi karti|credential)\w*\b",
         r"\bbrute force\b",
         r"\bbypass\b.*\b(sifre|guvenlik|login)",
         r"\bhack(le|lemek|leme)?\b",
@@ -278,7 +280,7 @@ _SAFETY_OR_EDUCATIONAL_CONTEXT_PATTERNS: tuple[str, ...] = (
     r"\bguvenli\b",
     r"\boyuncak veri\b",
     r"\bsentetik veri\b",
-    r"\bkimlik bilgisi toplama(yacak|dan)?\b",
+    r"\bkimlik bilgisi topla(nma|ma)(yacak|dan)?\b",
     r"\bgercek (kimlik|sifre|kullanici) bilgisi (toplama|kullanma)",
     r"\bbildirim sistemi\b",
     r"\bdestek sistemi\b",
@@ -286,8 +288,8 @@ _SAFETY_OR_EDUCATIONAL_CONTEXT_PATTERNS: tuple[str, ...] = (
 )
 
 _CLEAR_ENABLEMENT_PATTERNS: tuple[str, ...] = (
-    r"\b(cal|calma|hirsizla|topla|kopyala)\b.*\b(sifre|kimlik|kredi karti|credential)",
-    r"\b(sifre|kimlik|kredi karti|credential)\b.*\b(cal|topla|kopyala)",
+    r"\b(cal\w*|hirsizla\w*|topla\w*|kopyala\w*)\b.*\b(sifre|kimlik|kredi karti|credential)\w*\b",
+    r"\b(sifre|kimlik|kredi karti|credential)\w*\b.*\b(cal\w*|topla\w*|kopyala\w*)\b",
     r"\b(phishing|oltalama)\b.*\b(mail|eposta|sayfa|site)\b.*\b(gonder|yay|kur|olustur)",
     r"\b(malware|zararli yazilim|ransomware|keylogger|trojan)\b.*\b(yaz|gelistir|uret|kur|calistir)",
     r"\bddos\b.*\b(yap|duzenle|baslat|araci|bot)",
@@ -308,6 +310,20 @@ _CATEGORY_LABELS = {
 }
 
 
+def _llm_text_has_safe_educational_guardrail(text: str) -> bool:
+    normalized = _normalize_text(text)
+    if not normalized:
+        return False
+    has_safety_context = bool(_find_patterns(normalized, _SAFETY_OR_EDUCATIONAL_CONTEXT_PATTERNS))
+    has_negative_guardrail = bool(
+        re.search(r"\b(gercek )?(kimlik|sifre|kullanici) bilgisi topla(nma|ma)(yacak|dan)?\b", normalized)
+        or re.search(r"\b(credential|sifre|kimlik) topla(nma|ma)(yacak|dan)?\b", normalized)
+        or re.search(r"\boperasyonel (saldiri|zarar) adimi verme(yecek|den)?\b", normalized)
+        or re.search(r"\bsaldiri adimi verme(yecek|den)?\b", normalized)
+    )
+    return has_safety_context and has_negative_guardrail
+
+
 class AssignmentSafetyAgent:
     """Single creation-time agent for faculty assignment policy checks."""
 
@@ -319,8 +335,8 @@ class AssignmentSafetyAgent:
             return False
         clear_enablement = _find_patterns(text, _CLEAR_ENABLEMENT_PATTERNS)
         has_clear_negative_guardrail = bool(
-            re.search(r"\b(gercek )?(kimlik|sifre|kullanici) bilgisi toplama(yacak|dan)?\b", text)
-            or re.search(r"\b(credential|sifre|kimlik) toplama(yacak|dan)?\b", text)
+            re.search(r"\b(gercek )?(kimlik|sifre|kullanici) bilgisi topla(nma|ma)(yacak|dan)?\b", text)
+            or re.search(r"\b(credential|sifre|kimlik) topla(nma|ma)(yacak|dan)?\b", text)
         )
         if clear_enablement and not has_clear_negative_guardrail:
             return False
@@ -507,6 +523,18 @@ Rules:
             if category in {"crime", "sexual", "drugs", "terrorism", "violence"}
         ]
 
+        if allowed and unsafe_categories and deterministic.allowed and _llm_text_has_safe_educational_guardrail(
+            f"{reason or ''}\n{suggested_fix}"
+        ):
+            return AssignmentSafetyResult(
+                allowed=True,
+                is_programming_assignment=is_programming,
+                issues=(),
+                llm_used=True,
+                llm_reason=reason,
+                review_source="hybrid_llm_safe_educational",
+            )
+
         if not unsafe_categories:
             return AssignmentSafetyResult(
                 allowed=True,
@@ -515,6 +543,18 @@ Rules:
                 llm_used=True,
                 llm_reason=reason,
                 review_source="hybrid_llm",
+            )
+
+        if deterministic.allowed and _llm_text_has_safe_educational_guardrail(
+            f"{reason or ''}\n{suggested_fix}"
+        ):
+            return AssignmentSafetyResult(
+                allowed=True,
+                is_programming_assignment=is_programming,
+                issues=(),
+                llm_used=True,
+                llm_reason=reason,
+                review_source="hybrid_llm_safe_educational",
             )
 
         issues: list[AssignmentSafetyIssue] = []
