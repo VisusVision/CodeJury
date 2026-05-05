@@ -171,18 +171,36 @@ async function waitForConnection(host, port) {
   return false;
 }
 
-async function ensureLocalPostgres() {
-  if (isDemoModeEnabled(process.env.DEMO_MODE)) return;
+function getRedisTarget(redisUrl = process.env.REDIS_URL || "redis://localhost:6379/0") {
+  try {
+    const parsed = new URL(redisUrl);
+    if (!["redis:", "rediss:"].includes(parsed.protocol)) return null;
+    return {
+      host: parsed.hostname || "localhost",
+      port: Number(parsed.port || 6379),
+    };
+  } catch {
+    return null;
+  }
+}
+
+async function ensureLocalServices() {
+  const redisTarget = getRedisTarget();
   const target = getLocalPostgresTarget(
     process.env.DATABASE_URL || "postgresql://semas:12345@localhost:5432/agent_db",
   );
-  if (!target) return;
-  if (await canConnect(target.host, target.port)) return;
   if (!existsSync(path.join(repoRootAbs, "docker-compose.yml"))) return;
 
-  console.error("[dev-api] PostgreSQL kapali gorunuyor; docker compose ile baslatiliyor...");
+  const postgresReady =
+    isDemoModeEnabled(process.env.DEMO_MODE) ||
+    !target ||
+    (await canConnect(target.host, target.port));
+  const redisReady = !redisTarget || (await canConnect(redisTarget.host, redisTarget.port));
+  if (postgresReady && redisReady) return;
+
+  console.error("[dev-api] PostgreSQL/Redis kapali gorunuyor; docker compose ile baslatiliyor...");
   try {
-    execFileSync("docker", ["compose", "up", "-d", "postgres"], {
+    execFileSync("docker", ["compose", "up", "-d", "postgres", "redis"], {
       cwd: repoRootAbs,
       encoding: "utf-8",
       windowsHide: true,
@@ -190,20 +208,25 @@ async function ensureLocalPostgres() {
     });
   } catch {
     console.error(
-      "[dev-api] PostgreSQL otomatik baslatilamadi. Docker Desktop acik degilse `npm run setup:demo` veya `DEMO_MODE=1` kullanin.",
+      "[dev-api] PostgreSQL/Redis otomatik baslatilamadi. Docker Desktop acik degilse acin veya `DEMO_MODE=1` kullanin.",
     );
     return;
   }
 
-  if (await waitForConnection(target.host, target.port)) {
+  if (target && !isDemoModeEnabled(process.env.DEMO_MODE) && await waitForConnection(target.host, target.port)) {
     console.error("[dev-api] PostgreSQL hazir.");
   } else {
     console.error("[dev-api] PostgreSQL baslatildi ama port henuz cevap vermiyor; API startup retry deneyecek.");
   }
+  if (redisTarget && await waitForConnection(redisTarget.host, redisTarget.port)) {
+    console.error("[dev-api] Redis hazir.");
+  } else {
+    console.error("[dev-api] Redis baslatildi ama port henuz cevap vermiyor; worker retry deneyecek.");
+  }
 }
 
 async function start() {
-  await ensureLocalPostgres();
+  await ensureLocalServices();
 
   if (process.env.SKIP_FREE_PORT !== "1") {
     const killed = freePort8000(apiPort);

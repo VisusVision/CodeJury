@@ -199,7 +199,6 @@ ollama serve   # Servis arka planda çalışmıyorsa
 
 ```bash
 npm run dev:full
-python backend/workers/analysis_worker.py
 ```
 
 Ardından <http://localhost:8080> adresini açın.
@@ -214,7 +213,7 @@ Kurulum sonrası kontrol listesi:
 - [ ] `docker ps` çıktısında `agentgrade-postgres` (veya benzeri) çalışıyor.
 - [ ] `docker images` çıktısında `agentgrade-sandbox` görünüyor.
 - [ ] `curl http://localhost:11434/api/tags` 200 dönüyor.
-- [ ] `npm run dev:full` ile başlatıldığında hem Vite (`8080`) hem FastAPI (`8001`) açıldı.
+- [ ] `npm run dev:full` ile başlatıldığında Vite (`8080`), FastAPI (`8001`) ve analysis worker açıldı.
 - [ ] Tarayıcıda <http://localhost:8080> ana sayfası geliyor.
 
 ---

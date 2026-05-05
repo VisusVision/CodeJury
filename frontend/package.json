@@ -4,7 +4,7 @@
   "version": "0.0.0",
   "type": "module",
   "scripts": {
-    "dev": "concurrently -k -n \"vite,api\" -c \"cyan,magenta\" \"vite\" \"node scripts/dev-api.mjs\"",
+    "dev": "concurrently -k -n \"vite,api,worker\" -c \"cyan,magenta,yellow\" \"vite\" \"node scripts/dev-api.mjs\" \"node scripts/dev-worker.mjs\"",
     "verify:health": "node scripts/verify-health.mjs",
     "free:api": "node scripts/free-port-8000.mjs",
     "free:8000": "node scripts/free-port-8000.mjs 8000",
