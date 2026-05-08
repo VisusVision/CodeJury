@@ -1,6 +1,6 @@
 import { useState, useCallback, useRef, useEffect, useMemo } from "react";
 import { Play, StopCircle, ArrowLeft, LogOut, BookOpen } from "lucide-react";
-import { motion } from "framer-motion";
+import { AnimatePresence, motion } from "framer-motion";
 import html2canvas from "html2canvas-pro";
 import jsPDF from "jspdf";
 import {
@@ -14,13 +14,17 @@ import {
   FileCode,
   FolderOpen,
   X,
+  Star,
+  Sparkles,
+  CheckCircle2,
 } from "lucide-react";
+import { toast } from "sonner";
 import FileUploadZone from "@/components/dashboard/FileUploadZone";
 import { type AgentStatus } from "@/components/dashboard/AgentCard";
 import LogPanel, { type LogEntry } from "@/components/dashboard/LogPanel";
 import CodeEditor, { type CodeAnnotation } from "@/components/dashboard/CodeEditor";
 import { type ReportData } from "@/components/dashboard/AnalysisReport";
-import { analyzeCode, createUploadHistoryRecord, getUploadHistoryRecords, getAssignmentQuestions, type ApiAnalysisResult, type QuestionItem } from "@/services/api";
+import { analyzeCode, createUploadHistoryRecord, getUploadHistoryRecords, getAssignmentQuestions, getCurrentEvaluation, submitEvaluation, type ApiAnalysisResult, type QuestionItem, type EvaluationRecord } from "@/services/api";
 import UploadHistory, { type UploadRecord } from "@/components/dashboard/UploadHistory";
 import ExecutionStats from "@/components/dashboard/ExecutionStats";
 import RightPanel from "@/components/dashboard/RightPanel";
@@ -71,6 +75,209 @@ interface WorkspacePageProps {
   assignmentDueDate?: string | null;
   onBack: () => void;
 }
+
+interface RatingRowProps {
+  value: number;
+  onChange: (value: number) => void;
+  label: string;
+  scale: string[];
+}
+
+const RatingRow = ({ value, onChange, label, scale }: RatingRowProps) => {
+  const [hover, setHover] = useState(0);
+  const display = hover || value;
+
+  return (
+    <div className="space-y-2">
+      <p className="text-sm font-medium text-foreground">{label}</p>
+      <div className="flex items-center gap-1.5">
+        {[1, 2, 3, 4, 5].map((n) => (
+          <button
+            key={n}
+            type="button"
+            onMouseEnter={() => setHover(n)}
+            onMouseLeave={() => setHover(0)}
+            onClick={() => onChange(n)}
+            className="rounded-md p-1 hover:bg-muted transition-colors"
+            aria-label={`${n} ${scale[n - 1]}`}
+          >
+            <Star
+              className={cn(
+                "h-7 w-7 transition-all",
+                n <= display
+                  ? "fill-yellow-400 text-yellow-400 drop-shadow-[0_0_6px_rgba(250,204,21,0.4)]"
+                  : "text-muted-foreground/40"
+              )}
+            />
+          </button>
+        ))}
+        <span className="ml-2 min-w-[88px] text-xs text-muted-foreground tabular-nums">{display ? scale[display - 1] : ""}</span>
+      </div>
+    </div>
+  );
+};
+
+interface EvaluationModalProps {
+  open: boolean;
+  blocking?: boolean;
+  language: string;
+  contextLabel: string;
+  onClose: () => void;
+  onSubmit: (data: { usefulness: number; accuracy: number; clarity: number; comment: string }) => Promise<void>;
+}
+
+const EvaluationModal = ({ open, blocking, language, contextLabel, onClose, onSubmit }: EvaluationModalProps) => {
+  const labelsTr = {
+    title: "Raporu Değerlendir",
+    context: "Değerlendirilecek Rapor",
+    usefulness: "Bu rapor sizin için ne kadar faydalıydı?",
+    accuracy: "Değerlendirme ne kadar doğruydu?",
+    clarity: "Açıklamalar ne kadar anlaşılırdı?",
+    comment: "Eklemek istediğiniz bir şey var mı? (isteğe bağlı)",
+    commentPh: "Düşüncelerinizi paylaşın...",
+    submit: "Değerlendirmeyi Gönder",
+    sending: "Gönderiliyor...",
+    required: "Lütfen üç kriteri de puanlayın.",
+    blockedHint: "Yeni bir analiz başlatmak için önce bu raporu değerlendirin.",
+    scale: ["Çok kötü", "Kötü", "Orta", "İyi", "Mükemmel"],
+  };
+  const labelsEn = {
+    title: "Rate this report",
+    context: "Report to review",
+    usefulness: "How useful was this report for you?",
+    accuracy: "How accurate was the evaluation?",
+    clarity: "How clear were the explanations?",
+    comment: "Anything to add? (optional)",
+    commentPh: "Share your thoughts...",
+    submit: "Submit feedback",
+    sending: "Sending...",
+    required: "Please rate all three criteria.",
+    blockedHint: "Rate this report before starting a new analysis.",
+    scale: ["Very poor", "Poor", "Average", "Good", "Excellent"],
+  };
+
+  const L = language === "en" ? labelsEn : labelsTr;
+  const [usefulness, setUsefulness] = useState(0);
+  const [accuracy, setAccuracy] = useState(0);
+  const [clarity, setClarity] = useState(0);
+  const [comment, setComment] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!open) {
+      setUsefulness(0);
+      setAccuracy(0);
+      setClarity(0);
+      setComment("");
+      setError(null);
+      setSubmitting(false);
+    }
+  }, [open]);
+
+  const handleSubmit = async () => {
+    if (!usefulness || !accuracy || !clarity) {
+      setError(L.required);
+      return;
+    }
+    setError(null);
+    setSubmitting(true);
+    try {
+      await onSubmit({ usefulness, accuracy, clarity, comment: comment.trim() });
+      onClose();
+    } catch (submissionError) {
+      setError(submissionError instanceof Error ? submissionError.message : "Error");
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <AnimatePresence>
+      {open && (
+        <motion.div
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          exit={{ opacity: 0 }}
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4"
+          onClick={() => { if (!blocking && !submitting) onClose(); }}
+        >
+          <motion.div
+            initial={{ scale: 0.94, opacity: 0, y: 18 }}
+            animate={{ scale: 1, opacity: 1, y: 0 }}
+            exit={{ scale: 0.96, opacity: 0 }}
+            transition={{ type: "spring", stiffness: 280, damping: 24 }}
+            onClick={(e) => e.stopPropagation()}
+            className="relative w-full max-w-lg overflow-hidden rounded-2xl border border-border bg-card shadow-2xl"
+          >
+            <div className="relative bg-gradient-to-br from-primary/15 via-primary/5 to-transparent px-4 pb-3 pt-4">
+              {!blocking && (
+                <button
+                  type="button"
+                  onClick={onClose}
+                  disabled={submitting}
+                  className="absolute right-3 top-3 rounded-lg p-1.5 text-muted-foreground transition-colors hover:bg-muted/60 hover:text-foreground"
+                >
+                  <X className="h-4 w-4" />
+                </button>
+              )}
+              <div className="flex items-center gap-2">
+                <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-primary/15">
+                  <Sparkles className="h-5 w-5 text-primary" />
+                </div>
+                <div>
+                  <h2 className="text-lg font-bold text-foreground">{L.title}</h2>
+                </div>
+              </div>
+              <div className="mt-2 text-xs text-muted-foreground">
+                <span className="font-semibold">{L.context}:</span> {contextLabel}
+              </div>
+              {blocking && (
+                <div className="mt-2 rounded-lg border border-warning/30 bg-warning/10 px-2 py-1 text-xs text-warning">
+                  {L.blockedHint}
+                </div>
+              )}
+            </div>
+
+            <div className="space-y-4 px-4 py-4">
+              <RatingRow value={usefulness} onChange={setUsefulness} label={L.usefulness} scale={L.scale} />
+              <RatingRow value={accuracy} onChange={setAccuracy} label={L.accuracy} scale={L.scale} />
+              <RatingRow value={clarity} onChange={setClarity} label={L.clarity} scale={L.scale} />
+
+              <div className="space-y-1.5">
+                <p className="text-sm font-medium text-foreground">{L.comment}</p>
+                <textarea
+                  value={comment}
+                  onChange={(e) => setComment(e.target.value)}
+                  placeholder={L.commentPh}
+                  rows={3}
+                  className="w-full resize-none rounded-lg border border-input bg-background px-3 py-2 text-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                />
+              </div>
+
+              {error && (
+                <p className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">
+                  {error}
+                </p>
+              )}
+            </div>
+
+            <div className="px-6 pb-6">
+              <button
+                type="button"
+                onClick={handleSubmit}
+                disabled={submitting}
+                className="flex w-full items-center justify-center gap-2 rounded-lg bg-primary px-4 py-2.5 text-sm font-semibold text-primary-foreground shadow-button-primary transition-all hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {submitting ? L.sending : L.submit}
+              </button>
+            </div>
+          </motion.div>
+        </motion.div>
+      )}
+    </AnimatePresence>
+  );
+};
 
 const WORKSPACE_CACHE_VERSION = 5;
 const getStorageKey = (assignmentId: string, studentNo: string) =>
@@ -141,6 +348,8 @@ const WorkspacePage = ({ sidebarTitle, sidebarSubtitle, headerTitle, assignmentI
   const [loadingQuestions, setLoadingQuestions] = useState<Record<string, boolean>>({});
   const [hoveredAssignmentId, setHoveredAssignmentId] = useState<string | null>(null);
   const hoverTimeoutRef = useRef<Record<string, number | null>>({});
+  const [currentEvaluation, setCurrentEvaluation] = useState<EvaluationRecord | null>(null);
+  const [evaluationOpen, setEvaluationOpen] = useState(false);
 
   useEffect(() => {
     const loadUploadHistory = async () => {
@@ -162,6 +371,24 @@ const WorkspacePage = ({ sidebarTitle, sidebarSubtitle, headerTitle, assignmentI
       }
     };
     void loadUploadHistory();
+  }, [assignmentId]);
+
+  useEffect(() => {
+    const loadEvaluation = async () => {
+      try {
+        const rawStudent = sessionStorage.getItem("student");
+        if (!rawStudent) return;
+        const student = JSON.parse(rawStudent) as { student_no: string };
+        const record = await getCurrentEvaluation(student.student_no, assignmentId);
+        setCurrentEvaluation(record);
+        if (record?.status === "pending") {
+          setEvaluationOpen(true);
+        }
+      } catch (error) {
+        console.error("Değerlendirme durumu alınamadı:", error);
+      }
+    };
+    void loadEvaluation();
   }, [assignmentId]);
 
   // Persist state on changes
@@ -240,6 +467,11 @@ const WorkspacePage = ({ sidebarTitle, sidebarSubtitle, headerTitle, assignmentI
   };
 
   const runAnalysis = useCallback(async () => {
+    if (currentEvaluation?.status === "pending") {
+      toast.error(language === "tr" ? "Önce açık değerlendirmeyi tamamlayın." : "Complete the active evaluation first.");
+      setEvaluationOpen(true);
+      return;
+    }
     if (isPastDue) {
       addLog("System", t("workspace.analysisError"), "error");
       return;
@@ -275,7 +507,7 @@ const WorkspacePage = ({ sidebarTitle, sidebarSubtitle, headerTitle, assignmentI
 
     try {
       // Call the FastAPI backend
-      const result: ApiAnalysisResult = await analyzeCode(firstFile.name, firstFile.content, assignmentId, language);
+      const result: ApiAnalysisResult = await analyzeCode(firstFile.name, firstFile.content, assignmentId, language, studentNo);
 
       // Update agent statuses from the result
       result.agents.forEach((agent) => {
@@ -350,6 +582,11 @@ const WorkspacePage = ({ sidebarTitle, sidebarSubtitle, headerTitle, assignmentI
             score: totalPct,
             has_error: false,
           });
+          const record = await getCurrentEvaluation(student.student_no, assignmentId);
+          setCurrentEvaluation(record);
+          if (record?.status === "pending") {
+            toast.info(language === "tr" ? "Rapor oluştu. Lütfen önce değerlendirin." : "Report is ready. Please rate it first.");
+          }
         }
       } catch (error) {
         console.error("Yükleme geçmişi kaydedilemedi:", error);
@@ -396,7 +633,38 @@ const WorkspacePage = ({ sidebarTitle, sidebarSubtitle, headerTitle, assignmentI
     } finally {
       setIsRunning(false);
     }
-  }, [files, addLog, assignmentId, isPastDue, language, t]);
+  }, [currentEvaluation?.status, files, addLog, assignmentId, isPastDue, language, studentNo, t]);
+
+  const handleEvaluationSubmit = useCallback(async (data: { usefulness: number; accuracy: number; clarity: number; comment: string }) => {
+    const rawStudent = sessionStorage.getItem("student");
+    if (!rawStudent) {
+      throw new Error(language === "tr" ? "Öğrenci oturumu bulunamadı." : "Student session not found.");
+    }
+    const student = JSON.parse(rawStudent) as { student_no: string };
+    if (!currentEvaluation?.assignment_id) {
+      throw new Error(language === "tr" ? "Değerlendirilecek aktif rapor bulunamadı." : "No active report found.");
+    }
+    const record = await submitEvaluation({
+      student_no: student.student_no,
+      assignment_id: currentEvaluation.assignment_id,
+      usefulness: data.usefulness,
+      accuracy: data.accuracy,
+      clarity: data.clarity,
+      comment: data.comment,
+    });
+    setCurrentEvaluation(record);
+    toast.success(language === "tr" ? "Değerlendirme gönderildi." : "Feedback submitted.");
+    setEvaluationOpen(false);
+  }, [currentEvaluation?.assignment_id, language]);
+
+  const handleRunAgentsClick = useCallback(() => {
+    if (currentEvaluation?.status === "pending") {
+      toast.error(language === "tr" ? "Önce mevcut raporu değerlendirin." : "Please rate the current report first.");
+      setEvaluationOpen(true);
+      return;
+    }
+    void runAnalysis();
+  }, [currentEvaluation?.status, language, runAnalysis]);
 
   const handleFindingClick = useCallback((line: number) => {
     setHighlightedLine(line);
@@ -567,6 +835,28 @@ const WorkspacePage = ({ sidebarTitle, sidebarSubtitle, headerTitle, assignmentI
 
   const activeFileData = files.find((f) => f.name === activeFile);
   const hasFiles = files.length > 0;
+  const hasScoredUploadForCurrentAssignment = uploadRecords.some((record) => typeof record.score === "number" && !record.hasError);
+  const hasEvaluationForCurrentAssignment = Boolean(currentEvaluation?.assignment_id && currentEvaluation.assignment_id === assignmentId);
+  const evaluationButtonVisible = hasScoredUploadForCurrentAssignment || hasEvaluationForCurrentAssignment;
+  const evaluationButtonLabel = currentEvaluation?.status === "submitted"
+    ? (language === "tr" ? "Değerlendirildi" : "Rated")
+    : (language === "tr" ? "Değerlendir" : "Rate");
+  const evaluationContextLabel = useMemo(() => {
+    const fileName = currentEvaluation?.uploaded_file_name || report?.fileName || headerTitle;
+    if (!fileName) return "";
+    if (!currentEvaluation?.uploaded_at) return fileName;
+
+    const uploadedAt = new Date(currentEvaluation.uploaded_at);
+    const formattedAt = new Intl.DateTimeFormat(language === "tr" ? "tr-TR" : "en-US", {
+      year: "numeric",
+      month: "short",
+      day: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+    }).format(uploadedAt);
+
+    return `${fileName} • ${formattedAt}`;
+  }, [currentEvaluation?.uploaded_at, currentEvaluation?.uploaded_file_name, headerTitle, language, report?.fileName]);
 
   return (
     <div className="grid grid-cols-[260px_1fr] h-screen bg-background overflow-hidden">
@@ -716,6 +1006,34 @@ const WorkspacePage = ({ sidebarTitle, sidebarSubtitle, headerTitle, assignmentI
             </div>
           </div>
           <div className="flex items-center gap-2">
+              {evaluationButtonVisible && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (currentEvaluation?.status === "submitted") {
+                      toast.success(language === "tr" ? "Bu rapor değerlendirildi." : "This report has already been rated.");
+                      return;
+                    }
+                    setEvaluationOpen(true);
+                  }}
+                  className={cn(
+                    "relative flex items-center gap-2 rounded-lg px-4 py-2 text-sm font-semibold text-white shadow-md transition-all hover:brightness-110",
+                    currentEvaluation?.status === "submitted"
+                      ? "cursor-default border border-border bg-muted/50 text-muted-foreground shadow-none hover:brightness-100"
+                      : "bg-gradient-to-r from-yellow-400 to-amber-500"
+                  )}
+                >
+                  {currentEvaluation?.status === "submitted" ? (
+                    <CheckCircle2 className="h-4 w-4" />
+                  ) : (
+                    <Star className="h-4 w-4 fill-white" />
+                  )}
+                  {evaluationButtonLabel}
+                  {currentEvaluation?.status !== "submitted" && (
+                    <span className="absolute -top-1 -right-1 h-2.5 w-2.5 rounded-full bg-destructive ring-2 ring-background animate-pulse" />
+                  )}
+                </button>
+              )}
             {isRunning ? (
               <button
                 onClick={() => setIsRunning(false)}
@@ -733,7 +1051,7 @@ const WorkspacePage = ({ sidebarTitle, sidebarSubtitle, headerTitle, assignmentI
             ) : (
               <motion.button
                 whileTap={{ scale: hasFiles ? 0.95 : 1 }}
-                onClick={runAnalysis}
+                onClick={handleRunAgentsClick}
                 disabled={!hasFiles}
                 className="flex items-center gap-2 px-4 py-2 rounded-lg bg-primary text-primary-foreground text-sm font-medium shadow-button-primary transition-all hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:brightness-100"
               >
@@ -790,15 +1108,6 @@ const WorkspacePage = ({ sidebarTitle, sidebarSubtitle, headerTitle, assignmentI
                 </div>
               </div>
 
-              <div className="shrink-0 border-t border-border">
-                <FileUploadZone
-                  onFilesUploaded={handleFilesUploaded}
-                  uploadedFiles={[]}
-                  onRemoveFile={handleRemoveFile}
-                  compact
-                  disableRemove={isPastDue}
-                />
-              </div>
             </div>
           )}
 
@@ -814,6 +1123,18 @@ const WorkspacePage = ({ sidebarTitle, sidebarSubtitle, headerTitle, assignmentI
             onFindingClick={handleFindingClick}
           />
         </div>
+        <EvaluationModal
+          open={evaluationOpen}
+          blocking={currentEvaluation?.status === "pending"}
+          language={language}
+          contextLabel={evaluationContextLabel}
+          onClose={() => {
+            if (currentEvaluation?.status !== "pending") {
+              setEvaluationOpen(false);
+            }
+          }}
+          onSubmit={handleEvaluationSubmit}
+        />
       </main>
     </div>
   );

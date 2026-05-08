@@ -46,7 +46,7 @@ const UploadHistory = ({ records }: UploadHistoryProps) => {
   return (
     <div className="rounded-xl bg-card shadow-card overflow-hidden">
       {/* Header */}
-      <div className="flex items-center gap-2 px-4 py-3 border-b border-border">
+      <div className="flex items-center gap-2 px-4 py-2 border-b border-border">
         <History className="h-4 w-4 text-muted-foreground" />
         <span className="text-sm font-semibold text-foreground">{t("uploadHistory.title")}</span>
         <span className="ml-auto text-xs text-muted-foreground tabular-nums">{totalUploads} {t("uploadHistory.uploads")}</span>
@@ -54,23 +54,23 @@ const UploadHistory = ({ records }: UploadHistoryProps) => {
 
       {/* Summary stats */}
       <div className="grid grid-cols-3 gap-px bg-border/50">
-        <div className="bg-card px-4 py-3 text-center">
-          <p className="text-lg font-bold text-foreground tabular-nums">{totalUploads}</p>
+        <div className="bg-card px-4 py-1.5 text-center">
+          <p className="text-base font-bold text-foreground tabular-nums leading-none">{totalUploads}</p>
           <p className="text-[11px] text-muted-foreground">{t("uploadHistory.total")}</p>
         </div>
-        <div className="bg-card px-4 py-3 text-center">
-          <p className="text-lg font-bold text-success tabular-nums">{successCount}</p>
+        <div className="bg-card px-4 py-1.5 text-center">
+          <p className="text-base font-bold text-success tabular-nums leading-none">{successCount}</p>
           <p className="text-[11px] text-muted-foreground">{t("uploadHistory.successful")}</p>
         </div>
-        <div className="bg-card px-4 py-3 text-center">
-          <p className={`text-lg font-bold tabular-nums ${errorCount > 0 ? "text-destructive" : "text-foreground"}`}>{errorCount}</p>
+        <div className="bg-card px-4 py-1.5 text-center">
+          <p className={`text-base font-bold tabular-nums leading-none ${errorCount > 0 ? "text-destructive" : "text-foreground"}`}>{errorCount}</p>
           <p className="text-[11px] text-muted-foreground">{t("uploadHistory.failed")}</p>
         </div>
       </div>
 
       {/* Progress indicator */}
       {trend !== "none" && (
-        <div className={`flex items-center gap-2 px-4 py-2.5 ${trend === "up" ? "bg-success/5" : trend === "down" ? "bg-warning/5" : "bg-muted/40"} border-b border-border`}>
+        <div className={`flex items-center gap-2 px-4 py-1.5 ${trend === "up" ? "bg-success/5" : trend === "down" ? "bg-warning/5" : "bg-muted/40"} border-b border-border`}>
           {trend === "up" ? (
             <TrendingUp className="h-3.5 w-3.5 text-success" />
           ) : trend === "down" ? (
@@ -88,9 +88,9 @@ const UploadHistory = ({ records }: UploadHistoryProps) => {
       )}
 
       {/* Upload list */}
-      <div className="max-h-[280px] overflow-auto divide-y divide-border/50">
+      <div className="max-h-[220px] overflow-auto divide-y divide-border/50">
         {records.length === 0 ? (
-          <div className="px-4 py-8 text-center">
+          <div className="px-4 py-4 text-center">
             <Upload className="h-5 w-5 text-muted-foreground/40 mx-auto mb-2" />
             <p className="text-xs text-muted-foreground/60">{t("uploadHistory.noUploads")}</p>
           </div>
@@ -102,7 +102,7 @@ const UploadHistory = ({ records }: UploadHistoryProps) => {
                 initial={{ opacity: 0, x: -8 }}
                 animate={{ opacity: 1, x: 0 }}
                 transition={{ duration: 0.15, delay: i * 0.03 }}
-                className="flex items-center gap-3 px-4 py-2.5 hover:bg-muted/30 transition-colors"
+                className="flex items-center gap-2 px-4 py-1.5 hover:bg-muted/30 transition-colors"
               >
                 {record.hasError ? (
                   <AlertCircle className="h-3.5 w-3.5 text-destructive shrink-0" />
@@ -119,7 +119,7 @@ const UploadHistory = ({ records }: UploadHistoryProps) => {
                 <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium ${
                   record.hasError ? "bg-destructive/10 text-destructive" : "bg-success/10 text-success"
                 }`}>
-                  {record.hasError ? t("common.error") : t("common.ok")}
+                  {record.hasError ? t("common.error") : t("common.success")}
                 </span>
               </motion.div>
             ))}

@@ -117,7 +117,7 @@ const FileUploadZone = ({ onFilesUploaded, uploadedFiles, onRemoveFile, compact,
         onDragOver={handleDrag}
         onDrop={handleDrop}
         whileHover={{ scale: 1.005 }}
-        className={`relative flex flex-col items-center justify-center rounded-xl border-2 border-dashed p-10 cursor-pointer transition-colors duration-150 ease-smooth ${
+        className={`relative flex flex-col items-center justify-center rounded-xl border-2 border-dashed px-6 py-[clamp(1.25rem,4vh,2.5rem)] min-h-[clamp(220px,34vh,360px)] cursor-pointer transition-colors duration-150 ease-smooth ${
           isDragging
             ? "border-primary bg-primary/5"
             : "border-border bg-muted/30 hover:border-primary/50 hover:bg-muted/50"
