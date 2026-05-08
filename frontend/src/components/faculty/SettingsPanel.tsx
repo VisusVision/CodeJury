@@ -44,34 +44,41 @@ const SettingsPanel = ({ teacher, onTeacherUpdate }: SettingsPanelProps) => {
       toast.success("E-posta başarıyla güncellendi.");
       setNewEmail("");
     } catch (err: unknown) {
-      toast.error(getErrorMessage(err, "E-posta güncellenemedi"));
+      toast.error(getErrorMessage(err, "E-posta güncellenemedi. Lütfen tekrar deneyin."));
     } finally {
       setSavingEmail(false);
     }
   };
 
   const handlePasswordChange = async () => {
-    if (!newPassword || !confirmPassword) return;
+    if (!currentPassword.trim()) {
+      toast.error("Devam etmek için mevcut şifrenizi girin.");
+      return;
+    }
+    if (!newPassword.trim() || !confirmPassword.trim()) {
+      toast.error("Lütfen yeni şifre alanlarını doldurun.");
+      return;
+    }
     if (newPassword !== confirmPassword) {
-      toast.error("Şifreler eşleşmiyor");
+      toast.error("Yeni şifreler eşleşmiyor.");
       return;
     }
     if (newPassword.length < 6) {
-      toast.error("Şifre en az 6 karakter olmalı");
+      toast.error("Yeni şifre en az 6 karakter olmalı.");
       return;
     }
     try {
       setSavingPassword(true);
       await updateTeacherPassword(teacher.id, {
-        current_password: currentPassword || undefined,
+        current_password: currentPassword.trim(),
         new_password: newPassword,
       });
-      toast.success("Şifre başarıyla güncellendi");
+      toast.success("Şifre başarıyla güncellendi.");
       setCurrentPassword("");
       setNewPassword("");
       setConfirmPassword("");
     } catch (err: unknown) {
-      toast.error(getErrorMessage(err, "Şifre güncellenemedi"));
+      toast.error(getErrorMessage(err, "Şifre güncellenemedi. Lütfen mevcut şifrenizi kontrol edin."));
     } finally {
       setSavingPassword(false);
     }
@@ -119,7 +126,7 @@ const SettingsPanel = ({ teacher, onTeacherUpdate }: SettingsPanelProps) => {
             type="password"
             value={currentPassword}
             onChange={(e) => setCurrentPassword(e.target.value)}
-            placeholder="Mevcut şifre (opsiyonel)"
+            placeholder="Mevcut şifrenizi girin"
             className="w-full px-3 py-1.5 rounded-lg border border-input bg-background text-foreground text-sm focus:outline-none focus:ring-2 focus:ring-ring"
           />
           <input
@@ -138,7 +145,7 @@ const SettingsPanel = ({ teacher, onTeacherUpdate }: SettingsPanelProps) => {
           />
           <button
             onClick={handlePasswordChange}
-            disabled={savingPassword || !newPassword || !confirmPassword}
+            disabled={savingPassword || !currentPassword.trim() || !newPassword || !confirmPassword}
             className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg bg-primary text-primary-foreground text-sm font-medium hover:brightness-110 transition-all disabled:opacity-50"
           >
             <Save className="h-3.5 w-3.5" />

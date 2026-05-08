@@ -54,6 +54,13 @@ _MAIN_FILE = Path(__file__).resolve()
 _DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://semas:12345@localhost:5432/agent_db")
 _DEMO_MODE = os.getenv("DEMO_MODE", "0").strip().lower() in {"1", "true", "yes", "on"}
 _DB_POOL: asyncpg.Pool | None = None
+_TEMP_EVALUATIONS: dict[str, dict[str, Any]] = {}
+_TEMP_EVALUATIONS_LOCK = asyncio.Lock()
+
+
+def _evaluation_key(student_no: str, assignment_id: str | None) -> str:
+    return f"{student_no.strip()}::{(assignment_id or '').strip()}"
+
 
 _DEMO_STORE: dict[str, Any] = {
     "teachers": [
@@ -149,6 +156,7 @@ _DEMO_STORE: dict[str, Any] = {
     ],
     "assignment_questions": {},
     "upload_history": [],
+    "evaluations": [],
 }
 
 _DEMO_ASSIGNMENT_CATALOG: list[dict[str, str]] = [
@@ -485,6 +493,7 @@ class AnalysisRequest(BaseModel):
     file_content: str
     assignment_id: Optional[str] = None
     report_language: Optional[str] = None
+    student_no: Optional[str] = None
 
 
 class StudentLoginRequest(BaseModel):
@@ -500,6 +509,15 @@ class UploadHistoryRequest(BaseModel):
     assignment_id: str | None = None
     score: int | None = None
     has_error: bool = False
+
+
+class EvaluationSubmitRequest(BaseModel):
+    student_no: str
+    assignment_id: str
+    usefulness: int
+    accuracy: int
+    clarity: int
+    comment: str = ""
 
 
 class TeacherRegisterRequest(BaseModel):
@@ -1560,7 +1578,7 @@ class TeacherEmailUpdateRequest(BaseModel):
 
 
 class TeacherPasswordUpdateRequest(BaseModel):
-    current_password: str | None = None
+    current_password: str
     new_password: str
 
 
@@ -2748,6 +2766,24 @@ async def health(response: Response):
 @app.post("/api/analyze")
 async def analyze_code(req: AnalysisRequest):
     try:
+        student_no = (req.student_no or "").strip()
+        if student_no:
+          if _DEMO_MODE:
+              pending = next((item for item in _DEMO_STORE["evaluations"] if item["student_no"] == student_no and item.get("status") == "pending"), None)
+              if pending is not None:
+                  raise HTTPException(status_code=409, detail="Önce açık değerlendirmeyi tamamlayın")
+          else:
+              async with _TEMP_EVALUATIONS_LOCK:
+                  pending = next(
+                      (
+                          item
+                          for item in _TEMP_EVALUATIONS.values()
+                          if item.get("student_no") == student_no and item.get("status") == "pending"
+                      ),
+                      None,
+                  )
+                  if pending is not None:
+                      raise HTTPException(status_code=409, detail="Önce açık değerlendirmeyi tamamlayın")
         brief = await _fetch_assignment_brief_for_pipeline(req.assignment_id)
         faculty = await _fetch_faculty_rubric_criteria_for_pipeline(req.assignment_id)
         result = await run_analysis_pipeline(
@@ -2758,6 +2794,8 @@ async def analyze_code(req: AnalysisRequest):
             report_language=req.report_language or "tr",
         )
         return result
+    except HTTPException:
+        raise
     except Exception as e:
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
@@ -2916,8 +2954,10 @@ async def list_departments():
 async def create_department(req: DepartmentCreateRequest):
     name = _normalize_department_title(req.name)
     if not name:
-        raise HTTPException(status_code=400, detail="Bolum adi zorunludur")
+        raise HTTPException(status_code=400, detail="Bölüm adı zorunludur")
     if _DEMO_MODE:
+        if any(d["name"].lower() == name.lower() for d in _DEMO_STORE["departments"]):
+            raise HTTPException(status_code=409, detail="Bu bölüm adı zaten kayıtlı")
         department = {
             "id": _demo_uuid(),
             "name": name,
@@ -2929,6 +2969,16 @@ async def create_department(req: DepartmentCreateRequest):
         return department
 
     pool = await _get_db_pool()
+    existing = await pool.fetchrow(
+        """
+        SELECT id FROM public.departments
+        WHERE LOWER(name) = LOWER($1)
+        LIMIT 1
+        """,
+        name,
+    )
+    if existing:
+        raise HTTPException(status_code=409, detail="Bu bölüm adı zaten kayıtlı")
     row = await pool.fetchrow(
         """
         INSERT INTO public.departments (name, created_by)
@@ -2949,7 +2999,7 @@ async def delete_department(department_id: str):
             d for d in _DEMO_STORE["departments"] if d["id"] != department_id
         ]
         if len(_DEMO_STORE["departments"]) == before:
-            raise HTTPException(status_code=404, detail="Bolum bulunamadi")
+            raise HTTPException(status_code=404, detail="Bölüm bulunamadı")
         _save_demo_store_to_disk()
         return {"status": "ok"}
 
@@ -2985,15 +3035,22 @@ async def list_courses():
 @app.post("/api/courses")
 async def create_course(req: CourseCreateRequest):
     name = req.name.strip()
+    name = " ".join(word.capitalize() for word in name.split())
     code = req.code.strip()
     if not name or not code:
-        raise HTTPException(status_code=400, detail="Ders adi ve kodu zorunludur")
+        raise HTTPException(status_code=400, detail="Ders adı ve kodu zorunludur")
     class_year = _parse_class_year(req.class_year)
     if _DEMO_MODE:
-        if any(c["code"].lower() == code.lower() for c in _DEMO_STORE["courses"]):
-            raise HTTPException(status_code=409, detail="Bu ders kodu zaten mevcut")
+        if any(
+            c["name"].lower() == name.lower()
+            and c["code"].lower() == code.lower()
+            and c.get("class_year") == class_year
+            and c.get("department_id") == req.department_id
+            for c in _DEMO_STORE["courses"]
+        ):
+            raise HTTPException(status_code=409, detail="Bu ders kombinasyonu zaten kayıtlı")
         if req.department_id and not any(d["id"] == req.department_id for d in _DEMO_STORE["departments"]):
-            raise HTTPException(status_code=400, detail="Gecersiz bolum secimi")
+            raise HTTPException(status_code=400, detail="Seçilen bölüm geçersiz")
         course = {
             "id": _demo_uuid(),
             "name": name,
@@ -3008,6 +3065,19 @@ async def create_course(req: CourseCreateRequest):
 
     pool = await _get_db_pool()
     try:
+        existing = await pool.fetchrow(
+            """
+            SELECT id FROM public.courses
+            WHERE LOWER(name) = LOWER($1) AND LOWER(code) = LOWER($2) AND class_year = $3 AND department_id IS NOT DISTINCT FROM $4
+            LIMIT 1
+            """,
+            name,
+            code,
+            class_year,
+            req.department_id,
+        )
+        if existing:
+            raise HTTPException(status_code=409, detail="Bu ders kombinasyonu zaten kayıtlı")
         row = await pool.fetchrow(
             """
             INSERT INTO public.courses (name, code, class_year, department_id)
@@ -3021,12 +3091,10 @@ async def create_course(req: CourseCreateRequest):
         )
         await _sync_course_to_all_students(pool, str(row["id"]))
         return dict(row)
-    except asyncpg.UniqueViolationError as exc:
-        raise HTTPException(status_code=409, detail="Bu ders kodu zaten mevcut") from exc
     except asyncpg.ForeignKeyViolationError as exc:
-        raise HTTPException(status_code=400, detail="Gecersiz bolum secimi") from exc
+        raise HTTPException(status_code=400, detail="Geçersiz bölüm seçimi") from exc
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Ders olusturma hatasi: {exc}") from exc
+        raise HTTPException(status_code=500, detail=f"Ders oluşturma hatası: {exc}") from exc
 
 
 @app.delete("/api/courses/{course_id}")
@@ -3035,7 +3103,7 @@ async def delete_course(course_id: str):
         before = len(_DEMO_STORE["courses"])
         _DEMO_STORE["courses"] = [c for c in _DEMO_STORE["courses"] if c["id"] != course_id]
         if len(_DEMO_STORE["courses"]) == before:
-            raise HTTPException(status_code=404, detail="Ders bulunamadi")
+            raise HTTPException(status_code=404, detail="Ders bulunamadı")
         _DEMO_STORE["assignments"] = [a for a in _DEMO_STORE["assignments"] if a["course_id"] != course_id]
         _DEMO_STORE["rubrics"] = [
             r for r in _DEMO_STORE["rubrics"]
@@ -3053,7 +3121,7 @@ async def delete_course(course_id: str):
         course_id,
     )
     if result.endswith("0"):
-        raise HTTPException(status_code=404, detail="Ders bulunamadi")
+        raise HTTPException(status_code=404, detail="Ders bulunamadı")
     return {"status": "ok"}
 
 
@@ -3101,13 +3169,14 @@ async def _ensure_assignment_safety(name: str, description: str | None, course_c
 @app.post("/api/assignments")
 async def create_assignment(req: AssignmentCreateRequest):
     name = req.name.strip()
+    name = " ".join(word.capitalize() for word in name.split())
     if not name or not req.course_id:
-        raise HTTPException(status_code=400, detail="Odev adi ve ders zorunludur")
+        raise HTTPException(status_code=400, detail="Ödev adı ve ders zorunludur")
     description = req.description.strip() if req.description else None
     if _DEMO_MODE:
         course = next((c for c in _DEMO_STORE["courses"] if c["id"] == req.course_id), None)
         if course is None:
-            raise HTTPException(status_code=400, detail="Gecersiz ders secimi")
+            raise HTTPException(status_code=400, detail="Geçersiz ders seçimi")
         await _ensure_assignment_safety(name, description, _course_context_for_assignment_safety(course))
         assignment = {
             "id": _demo_uuid(),
@@ -3149,11 +3218,11 @@ async def create_assignment(req: AssignmentCreateRequest):
         )
         return dict(row)
     except asyncpg.ForeignKeyViolationError as exc:
-        raise HTTPException(status_code=400, detail="Gecersiz ders secimi") from exc
+        raise HTTPException(status_code=400, detail="Geçersiz ders seçimi") from exc
     except HTTPException:
         raise
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Odev olusturma hatasi: {exc}") from exc
+        raise HTTPException(status_code=500, detail=f"Ödev oluşturma hatası: {exc}") from exc
 
 
 @app.delete("/api/assignments/{assignment_id}")
@@ -3163,7 +3232,7 @@ async def delete_assignment(assignment_id: str):
         before = len(_DEMO_STORE["assignments"])
         _DEMO_STORE["assignments"] = [a for a in _DEMO_STORE["assignments"] if str(a["id"]) != aid]
         if len(_DEMO_STORE["assignments"]) == before:
-            raise HTTPException(status_code=404, detail="Odev bulunamadi")
+            raise HTTPException(status_code=404, detail="Ödev bulunamadı")
         _DEMO_STORE["rubrics"] = [r for r in _DEMO_STORE["rubrics"] if str(r["assignment_id"]) != aid]
         _save_demo_store_to_disk()
         return {"status": "ok"}
@@ -3178,7 +3247,7 @@ async def delete_assignment(assignment_id: str):
         uid,
     )
     if result.endswith("0"):
-        raise HTTPException(status_code=404, detail="Odev bulunamadi")
+        raise HTTPException(status_code=404, detail="Ödev bulunamadı")
     return {"status": "ok"}
 
 
@@ -3225,7 +3294,7 @@ async def get_rubric_by_assignment(assignment_id: str):
 @app.post("/api/rubrics/upsert")
 async def upsert_rubric(req: RubricUpsertRequest):
     if req.status not in {"draft", "approved"}:
-        raise HTTPException(status_code=400, detail="Gecersiz rubrik statusu")
+        raise HTTPException(status_code=400, detail="Geçersiz rubrik statusu")
     if not req.criteria:
         raise HTTPException(status_code=400, detail="En az bir kriter gerekli")
     criteria = _ensure_rubric_constraints(req.criteria)
@@ -3233,7 +3302,7 @@ async def upsert_rubric(req: RubricUpsertRequest):
     if _DEMO_MODE:
         aid = (req.assignment_id or "").strip()
         if not any(str(a["id"]) == aid for a in _DEMO_STORE["assignments"]):
-            raise HTTPException(status_code=400, detail="Gecersiz odev veya ogretmen bilgisi")
+            raise HTTPException(status_code=400, detail="Geçersiz ödev veya öğretmen bilgisi")
 
         existing = next(
             (r for r in _DEMO_STORE["rubrics"] if str(r["assignment_id"]) == aid),
@@ -3268,7 +3337,7 @@ async def upsert_rubric(req: RubricUpsertRequest):
         auid,
     )
     if a_ok is None:
-        raise HTTPException(status_code=400, detail="Gecersiz odev veya ogretmen bilgisi")
+        raise HTTPException(status_code=400, detail="Geçersiz ödev veya öğretmen bilgisi")
 
     existing = await pool.fetchrow(
         """
@@ -3309,21 +3378,21 @@ async def upsert_rubric(req: RubricUpsertRequest):
                 req.created_by,
             )
         except asyncpg.ForeignKeyViolationError as exc:
-            raise HTTPException(status_code=400, detail="Gecersiz odev veya ogretmen bilgisi") from exc
+            raise HTTPException(status_code=400, detail="Geçersiz ödev veya öğretmen bilgisi") from exc
         except Exception as exc:
-            raise HTTPException(status_code=500, detail=f"Rubrik olusturma hatasi: {exc}") from exc
+            raise HTTPException(status_code=500, detail=f"Rubrik oluşturma hatası: {exc}") from exc
     return dict(row)
 
 
 @app.patch("/api/rubrics/by-assignment/{assignment_id}")
 async def update_rubric_status(assignment_id: str, req: RubricUpdateStatusRequest):
     if req.status not in {"draft", "approved"}:
-        raise HTTPException(status_code=400, detail="Gecersiz rubrik statusu")
+        raise HTTPException(status_code=400, detail="Geçersiz rubrik statusu")
     aid = assignment_id.strip()
     if _DEMO_MODE:
         row = next((r for r in _DEMO_STORE["rubrics"] if str(r["assignment_id"]) == aid), None)
         if row is None:
-            raise HTTPException(status_code=404, detail="Rubrik bulunamadi")
+            raise HTTPException(status_code=404, detail="Rubrik bulunamadı")
         row["status"] = req.status
         row["updated_at"] = _demo_now()
         _save_demo_store_to_disk()
@@ -3342,7 +3411,7 @@ async def update_rubric_status(assignment_id: str, req: RubricUpdateStatusReques
         uid,
     )
     if row is None:
-        raise HTTPException(status_code=404, detail="Rubrik bulunamadi")
+        raise HTTPException(status_code=404, detail="Rubrik bulunamadı")
     return dict(row)
 
 
@@ -3356,7 +3425,7 @@ async def suggest_rubric(req: RubricSuggestionRequest):
             detail="LLM su an kapali (ollama_enabled=false). Rubrik onerisi icin Ollama acilmali.",
         )
 
-    title = (req.assignment_title or "").strip() or "Odev"
+    title = (req.assignment_title or "").strip() or "Ödev"
     desc = (req.assignment_description or "").strip()
     criterion_count = _clamp_rubric_count(req.criterion_count)
 
@@ -3378,7 +3447,7 @@ async def suggest_rubric(req: RubricSuggestionRequest):
     if not result:
         raise HTTPException(
             status_code=502,
-            detail="LLM rubrik JSON ureteemedi. Ollama ve modeli kontrol edin.",
+            detail="LLM rubrik JSON üretilemedi. Ollama ve modeli kontrol edin.",
         )
     try:
         criteria = _criteria_from_llm_payload(result, criterion_count)
@@ -3390,14 +3459,14 @@ async def suggest_rubric(req: RubricSuggestionRequest):
     except ValueError as exc:
         raise HTTPException(
             status_code=502,
-            detail=f"LLM rubrik ciktisi gecersiz: {exc}",
+            detail=f"LLM rubrik çıktısi geçersiz: {exc}",
         ) from exc
     return {"criteria": criteria}
 
 
 @app.post("/api/faculty/assignment-assistant/suggestions")
 async def assignment_assistant_suggestions(req: AssignmentAssistantSuggestionsRequest):
-    """Ollama ile yapilandirilmis odev konusu onerileri (markdown yok)."""
+    """Ollama ile yapılandırılmış ödev konusu önerileri (markdown yok)."""
     from backend.core.config import settings as _llm_cfg
 
     n = max(3, min(8, int(req.count or 5)))
@@ -3744,16 +3813,19 @@ async def update_teacher_email(teacher_id: str, req: TeacherEmailUpdateRequest):
 
 @app.patch("/api/teacher/{teacher_id}/password")
 async def update_teacher_password(teacher_id: str, req: TeacherPasswordUpdateRequest):
+    current_password = req.current_password.strip()
     new_password = req.new_password.strip()
+    if not current_password:
+        raise HTTPException(status_code=400, detail="Mevcut şifre gerekli")
     if len(new_password) < 6:
-        raise HTTPException(status_code=400, detail="Sifre en az 6 karakter olmali")
+        raise HTTPException(status_code=400, detail="Şifre en az 6 karakter olmalı")
 
     if _DEMO_MODE:
         teacher = next((t for t in _DEMO_STORE["teachers"] if t["id"] == teacher_id), None)
         if teacher is None:
             raise HTTPException(status_code=404, detail="Ogretmen bulunamadi")
-        if req.current_password and not _verify_password(req.current_password, teacher["password_hash"]):
-            raise HTTPException(status_code=401, detail="Mevcut sifre hatali")
+        if not _verify_password(current_password, teacher["password_hash"]):
+            raise HTTPException(status_code=401, detail="Mevcut şifre hatalı")
         teacher["password_hash"] = _hash_password(new_password)
         return {"status": "ok"}
 
@@ -3770,8 +3842,8 @@ async def update_teacher_password(teacher_id: str, req: TeacherPasswordUpdateReq
     if row is None:
         raise HTTPException(status_code=404, detail="Ogretmen bulunamadi")
 
-    if req.current_password and not _verify_password(req.current_password, row["password_hash"]):
-        raise HTTPException(status_code=401, detail="Mevcut sifre hatali")
+    if not _verify_password(current_password, row["password_hash"]):
+        raise HTTPException(status_code=401, detail="Mevcut şifre hatalı")
 
     await pool.execute(
         """
@@ -4338,6 +4410,47 @@ async def create_upload_history(req: UploadHistoryRequest):
                 "uploaded_at": _demo_now(),
             }
         )
+        if not req.has_error and req.score is not None:
+            now = _demo_now()
+            aid = (req.assignment_id or "").strip()
+            record = next(
+                (
+                    item
+                    for item in _DEMO_STORE["evaluations"]
+                    if item.get("student_no") == req.student_no.strip()
+                    and str(item.get("assignment_id") or "") == aid
+                ),
+                None,
+            )
+            if record is None:
+                record = {
+                    "id": _demo_uuid(),
+                    "student_first_name": req.student_first_name.strip(),
+                    "student_last_name": req.student_last_name.strip(),
+                    "student_no": req.student_no.strip(),
+                    "assignment_id": req.assignment_id,
+                    "uploaded_file_name": req.uploaded_file_name.strip(),
+                    "score": req.score,
+                    "usefulness": None,
+                    "accuracy": None,
+                    "clarity": None,
+                    "comment": "",
+                    "status": "pending",
+                    "created_at": now,
+                    "submitted_at": None,
+                }
+                _DEMO_STORE["evaluations"].append(record)
+            else:
+                record.update({
+                    "student_first_name": req.student_first_name.strip(),
+                    "student_last_name": req.student_last_name.strip(),
+                    "assignment_id": req.assignment_id,
+                    "uploaded_file_name": req.uploaded_file_name.strip(),
+                    "score": req.score,
+                    "status": "pending",
+                    "created_at": now,
+                    "submitted_at": None,
+                })
         return {"status": "ok"}
 
     pool = await _get_db_pool()
@@ -4355,7 +4468,257 @@ async def create_upload_history(req: UploadHistoryRequest):
         req.score,
         req.has_error,
     )
+    if not req.has_error and req.score is not None:
+        now = datetime.utcnow().isoformat()
+        eval_key = _evaluation_key(req.student_no.strip(), req.assignment_id)
+        async with _TEMP_EVALUATIONS_LOCK:
+            record = _TEMP_EVALUATIONS.get(eval_key)
+            if record is None:
+                record = {
+                    "id": _demo_uuid(),
+                    "student_first_name": req.student_first_name.strip(),
+                    "student_last_name": req.student_last_name.strip(),
+                    "student_no": req.student_no.strip(),
+                    "assignment_id": req.assignment_id,
+                    "uploaded_file_name": req.uploaded_file_name.strip(),
+                    "score": req.score,
+                    "usefulness": None,
+                    "accuracy": None,
+                    "clarity": None,
+                    "comment": "",
+                    "status": "pending",
+                    "created_at": now,
+                    "submitted_at": None,
+                }
+            else:
+                record = {
+                    **record,
+                    "student_first_name": req.student_first_name.strip(),
+                    "student_last_name": req.student_last_name.strip(),
+                    "assignment_id": req.assignment_id,
+                    "uploaded_file_name": req.uploaded_file_name.strip(),
+                    "score": req.score,
+                    "status": "pending",
+                    "created_at": now,
+                    "submitted_at": None,
+                }
+            _TEMP_EVALUATIONS[eval_key] = record
     return {"status": "ok"}
+
+
+async def _bootstrap_pending_evaluation(student_no: str, assignment_id: str | None = None) -> dict[str, Any] | None:
+    key = student_no.strip()
+    aid = (assignment_id or "").strip() or None
+    if not key:
+        return None
+
+    if _DEMO_MODE:
+        candidates = [
+            item for item in _DEMO_STORE["upload_history"]
+            if item.get("student_no") == key
+            and not bool(item.get("has_error"))
+            and item.get("assignment_id") is not None
+        ]
+        if aid is not None:
+            candidates = [item for item in candidates if str(item.get("assignment_id")) == aid]
+        if not candidates:
+            return None
+        latest = sorted(candidates, key=lambda item: str(item.get("uploaded_at") or ""), reverse=True)[0]
+        now = _demo_now()
+        record = {
+            "id": _demo_uuid(),
+            "student_first_name": latest.get("student_first_name", ""),
+            "student_last_name": latest.get("student_last_name", ""),
+            "student_no": key,
+            "assignment_id": latest.get("assignment_id"),
+            "uploaded_file_name": latest.get("uploaded_file_name", ""),
+            "score": latest.get("score"),
+            "usefulness": None,
+            "accuracy": None,
+            "clarity": None,
+            "comment": "",
+            "status": "pending",
+            "created_at": now,
+            "submitted_at": None,
+        }
+        existing = next(
+            (
+                item
+                for item in _DEMO_STORE["evaluations"]
+                if item.get("student_no") == key
+                and str(item.get("assignment_id") or "") == str(record.get("assignment_id") or "")
+            ),
+            None,
+        )
+        if existing is None:
+            _DEMO_STORE["evaluations"].append(record)
+        else:
+            existing.update(record)
+            record = existing
+        return record
+
+    pool = await _get_db_pool()
+    if aid is not None:
+        row = await pool.fetchrow(
+            """
+            SELECT student_first_name, student_last_name, student_no, assignment_id, uploaded_file_name, score, uploaded_at
+            FROM public.student_upload_history
+            WHERE student_no = $1 AND assignment_id = $2::uuid AND has_error = false
+            ORDER BY uploaded_at DESC
+            LIMIT 1
+            """,
+            key,
+            aid,
+        )
+    else:
+        row = await pool.fetchrow(
+            """
+            SELECT student_first_name, student_last_name, student_no, assignment_id, uploaded_file_name, score, uploaded_at
+            FROM public.student_upload_history
+            WHERE student_no = $1 AND has_error = false AND assignment_id IS NOT NULL
+            ORDER BY uploaded_at DESC
+            LIMIT 1
+            """,
+            key,
+        )
+
+    if row is None:
+        return None
+
+    now = datetime.utcnow().isoformat()
+    record = {
+        "id": _demo_uuid(),
+        "student_first_name": row["student_first_name"],
+        "student_last_name": row["student_last_name"],
+        "student_no": row["student_no"],
+        "assignment_id": str(row["assignment_id"]),
+        "uploaded_file_name": row["uploaded_file_name"],
+        "score": row["score"],
+        "usefulness": None,
+        "accuracy": None,
+        "clarity": None,
+        "comment": "",
+        "status": "pending",
+        "created_at": now,
+        "submitted_at": None,
+        "uploaded_at": row["uploaded_at"],
+    }
+
+    eval_key = _evaluation_key(key, str(record.get("assignment_id") or ""))
+    async with _TEMP_EVALUATIONS_LOCK:
+        existing = _TEMP_EVALUATIONS.get(eval_key)
+        if existing is None:
+            _TEMP_EVALUATIONS[eval_key] = record
+            return record
+        existing.update(record)
+        _TEMP_EVALUATIONS[eval_key] = existing
+        return existing
+
+
+@app.get("/api/evaluations/current")
+async def get_current_evaluation(student_no: str, assignment_id: str | None = None):
+    key = student_no.strip()
+    aid = (assignment_id or "").strip() or None
+    if not key:
+        raise HTTPException(status_code=400, detail="Ogrenci numarasi zorunludur")
+
+    if _DEMO_MODE:
+        student_records = [item for item in _DEMO_STORE["evaluations"] if item.get("student_no") == key]
+        pending = next((item for item in student_records if item.get("status") == "pending"), None)
+        if pending is not None:
+            return pending
+        if aid is not None:
+            scoped = next((item for item in student_records if str(item.get("assignment_id") or "") == aid), None)
+            if scoped is not None:
+                return scoped
+            return await _bootstrap_pending_evaluation(key, aid)
+        if student_records:
+            return sorted(student_records, key=lambda item: str(item.get("created_at") or ""), reverse=True)[0]
+        return await _bootstrap_pending_evaluation(key, aid)
+
+    async with _TEMP_EVALUATIONS_LOCK:
+        student_records = [item for item in _TEMP_EVALUATIONS.values() if item.get("student_no") == key]
+
+    pending = next((item for item in student_records if item.get("status") == "pending"), None)
+    if pending is not None:
+        return pending
+
+    if aid is not None:
+        scoped = next((item for item in student_records if str(item.get("assignment_id") or "") == aid), None)
+        if scoped is not None:
+            return scoped
+        return await _bootstrap_pending_evaluation(key, aid)
+
+    if student_records:
+        return sorted(student_records, key=lambda item: str(item.get("created_at") or ""), reverse=True)[0]
+    return await _bootstrap_pending_evaluation(key, aid)
+
+
+@app.get("/api/evaluations")
+async def list_evaluations():
+    if _DEMO_MODE:
+        return list(_DEMO_STORE["evaluations"])
+    async with _TEMP_EVALUATIONS_LOCK:
+        return list(_TEMP_EVALUATIONS.values())
+
+
+@app.post("/api/evaluations")
+async def submit_evaluation(req: EvaluationSubmitRequest):
+    key = req.student_no.strip()
+    if not key:
+        raise HTTPException(status_code=400, detail="Ogrenci numarasi zorunludur")
+    if not (1 <= req.usefulness <= 5 and 1 <= req.accuracy <= 5 and 1 <= req.clarity <= 5):
+        raise HTTPException(status_code=400, detail="Puanlar 1 ile 5 arasinda olmali")
+
+    if _DEMO_MODE:
+        aid = req.assignment_id.strip()
+        record = next(
+            (
+                item
+                for item in _DEMO_STORE["evaluations"]
+                if item.get("student_no") == key and str(item.get("assignment_id") or "") == aid
+            ),
+            None,
+        )
+        if record is None:
+            record = await _bootstrap_pending_evaluation(key, req.assignment_id)
+        if record is None or record.get("status") != "pending":
+            raise HTTPException(status_code=409, detail="Bekleyen bir degerlendirme bulunamadi")
+        if str(record.get("assignment_id")) != aid:
+            raise HTTPException(status_code=409, detail="Bu degerlendirme aktif degil")
+        record.update({
+            "usefulness": req.usefulness,
+            "accuracy": req.accuracy,
+            "clarity": req.clarity,
+            "comment": req.comment.strip(),
+            "status": "submitted",
+            "submitted_at": _demo_now(),
+        })
+        return record
+
+    eval_key = _evaluation_key(key, req.assignment_id)
+    async with _TEMP_EVALUATIONS_LOCK:
+        record = _TEMP_EVALUATIONS.get(eval_key)
+    if record is None:
+        record = await _bootstrap_pending_evaluation(key, req.assignment_id)
+
+    async with _TEMP_EVALUATIONS_LOCK:
+        record = _TEMP_EVALUATIONS.get(eval_key)
+        if record is None or record.get("status") != "pending":
+            raise HTTPException(status_code=409, detail="Bekleyen bir degerlendirme bulunamadi")
+        if str(record.get("assignment_id")) != req.assignment_id.strip():
+            raise HTTPException(status_code=409, detail="Bu degerlendirme aktif degil")
+        updated_record = {
+            **record,
+            "usefulness": req.usefulness,
+            "accuracy": req.accuracy,
+            "clarity": req.clarity,
+            "comment": req.comment.strip(),
+            "status": "submitted",
+            "submitted_at": datetime.utcnow().isoformat(),
+        }
+        _TEMP_EVALUATIONS[eval_key] = updated_record
+        return updated_record
 
 
 @app.get("/api/upload-history")

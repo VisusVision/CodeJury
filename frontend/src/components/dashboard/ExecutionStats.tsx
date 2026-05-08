@@ -44,22 +44,22 @@ const ExecutionStats = ({ executionTimeMs, memoryUsageMb, peakMemoryMb }: Execut
   ];
 
   return (
-    <div className="grid grid-cols-3 gap-3">
+    <div className="grid grid-cols-3 overflow-hidden rounded-xl border border-border bg-card/40">
       {stats.map((stat, i) => (
         <motion.div
           key={stat.label}
           initial={{ opacity: 0, y: 8 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: 0.3, delay: i * 0.1 }}
-          className="rounded-xl bg-card shadow-card p-4 flex flex-col gap-2"
+          className={`flex flex-col items-center gap-2 p-4 text-center ${i > 0 ? "border-l border-border" : ""}`}
         >
-          <div className="flex items-center gap-2">
+          <div className="flex items-center justify-center gap-2">
             <div className={`rounded-md p-1.5 ${stat.bgColor}`}>
               <stat.icon className={`h-3.5 w-3.5 ${stat.color}`} />
             </div>
             <span className="text-xs text-muted-foreground">{stat.label}</span>
           </div>
-          <div>
+          <div className="space-y-0.5">
             <p className="text-lg font-bold text-foreground tabular-nums">{stat.value}</p>
             <p className={`text-[11px] font-medium ${stat.color}`}>{stat.sub}</p>
           </div>

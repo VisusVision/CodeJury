@@ -3,6 +3,27 @@ const API_BASE_URL =
   import.meta.env.VITE_API_BASE_URL ??
   (import.meta.env.DEV ? "" : "http://127.0.0.1:8001");
 
+const parseApiErrorMessage = async (response: Response, fallback: string) => {
+  const rawText = await response.text();
+  const normalizedText = rawText.trim();
+
+  if (!normalizedText) {
+    return `${fallback} (${response.status})`;
+  }
+
+  try {
+    const parsed = JSON.parse(normalizedText) as { detail?: unknown; message?: unknown; error?: unknown };
+    const detail = parsed.detail ?? parsed.message ?? parsed.error;
+    if (typeof detail === "string" && detail.trim()) {
+      return detail.trim();
+    }
+  } catch {
+    // Non-JSON error bodies fall through to the raw text below.
+  }
+
+  return normalizedText;
+};
+
 export interface ApiFinding {
   severity: "error" | "warning" | "info" | "success";
   message: string;
@@ -207,7 +228,13 @@ function apiErrorMessage(errorText: string, fallback: string): string {
   return errorText || fallback;
 }
 
-export async function analyzeCode(fileName: string, fileContent: string, assignmentId?: string, reportLanguage?: string): Promise<ApiAnalysisResult> {
+export async function analyzeCode(
+  fileName: string,
+  fileContent: string,
+  assignmentId?: string,
+  reportLanguage?: string,
+  studentNo?: string,
+): Promise<ApiAnalysisResult> {
   let response: Response;
   try {
     response = await fetch(`${API_BASE_URL}/api/analyze`, {
@@ -217,6 +244,7 @@ export async function analyzeCode(fileName: string, fileContent: string, assignm
         file_name: fileName,
         file_content: fileContent,
         assignment_id: assignmentId,
+        student_no: studentNo,
         report_language: reportLanguage || "tr",
       }),
     });
@@ -416,6 +444,70 @@ export async function getUploadHistoryRecords(studentNo: string, assignmentId?: 
   }
   const data = await response.json();
   return Array.isArray(data) ? data as UploadHistoryApiRecord[] : [];
+}
+
+export interface EvaluationRecord {
+  id: string;
+  student_first_name: string;
+  student_last_name: string;
+  student_no: string;
+  assignment_id: string;
+  uploaded_file_name: string;
+  score?: number | null;
+  usefulness?: number | null;
+  accuracy?: number | null;
+  clarity?: number | null;
+  comment?: string;
+  status: "pending" | "submitted";
+  created_at: string;
+  submitted_at?: string | null;
+  uploaded_at?: string | null;
+}
+
+export async function getCurrentEvaluation(studentNo: string, assignmentId?: string): Promise<EvaluationRecord | null> {
+  const url = new URL(`${API_BASE_URL || window.location.origin}/api/evaluations/current`, window.location.origin);
+  url.searchParams.set("student_no", studentNo);
+  if (assignmentId) {
+    url.searchParams.set("assignment_id", assignmentId);
+  }
+  const response = await fetch(url.toString());
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new Error(`Değerlendirme durumu hatası (${response.status}): ${errorText}`);
+  }
+  return response.json();
+}
+
+export async function getEvaluations(): Promise<EvaluationRecord[]> {
+  const response = await fetch(`${API_BASE_URL}/api/evaluations`);
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new Error(`Değerlendirme listesi hatası (${response.status}): ${errorText}`);
+  }
+  const data = await response.json();
+  return Array.isArray(data) ? data as EvaluationRecord[] : [];
+}
+
+export async function submitEvaluation(payload: {
+  student_no: string;
+  assignment_id: string;
+  usefulness: number;
+  accuracy: number;
+  clarity: number;
+  comment: string;
+}): Promise<EvaluationRecord> {
+  const response = await fetch(`${API_BASE_URL}/api/evaluations`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new Error(`Değerlendirme gönderimi hatası (${response.status}): ${errorText}`);
+  }
+
+  return response.json();
 }
 
 export async function registerTeacher(payload: {
@@ -719,8 +811,7 @@ export async function updateTeacherEmail(teacherId: string, email: string): Prom
     body: JSON.stringify({ email }),
   });
   if (!response.ok) {
-    const errorText = await response.text();
-    throw new Error(`Öğretmen e-posta güncelleme hatası (${response.status}): ${errorText}`);
+    throw new Error(await parseApiErrorMessage(response, "E-posta güncellenemedi"));
   }
   return response.json();
 }
@@ -735,7 +826,6 @@ export async function updateTeacherPassword(
     body: JSON.stringify(payload),
   });
   if (!response.ok) {
-    const errorText = await response.text();
-    throw new Error(`Öğretmen şifre güncelleme hatası (${response.status}): ${errorText}`);
+    throw new Error(await parseApiErrorMessage(response, "Şifre güncellenemedi"));
   }
 }

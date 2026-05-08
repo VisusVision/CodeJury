@@ -25,8 +25,10 @@ import {
   getAssignments,
   getCourses,
   getDepartments,
+  getEvaluations,
   getRubrics,
   updateRubricStatusByAssignment,
+  type EvaluationRecord,
 } from "@/services/api";
 
 interface Teacher {
@@ -57,7 +59,7 @@ interface Assignment {
   due_date: string | null;
 }
 
-type Tab = "departments" | "courses" | "assignments" | "students" | "settings";
+type Tab = "departments" | "courses" | "assignments" | "students" | "evaluations" | "settings";
 
 interface RubricModalState {
   open: boolean;
@@ -77,6 +79,7 @@ const FacultyDashboard = () => {
   const [courses, setCourses] = useState<Course[]>([]);
   const [assignments, setAssignments] = useState<Assignment[]>([]);
   const [rubricStatuses, setRubricStatuses] = useState<Record<string, string>>({});
+  const [evaluations, setEvaluations] = useState<EvaluationRecord[]>([]);
   const [loading, setLoading] = useState(true);
   const [rubricModal, setRubricModal] = useState<RubricModalState>({ open: false, assignment: null });
   const [chatbotOpen, setChatbotOpen] = useState(false);
@@ -110,11 +113,12 @@ const FacultyDashboard = () => {
   }, [navigate]);
 
   const fetchAll = async () => {
-    const [departmentsData, coursesData, assignmentsData, rubricsData] = await Promise.all([
+    const [departmentsData, coursesData, assignmentsData, rubricsData, evaluationsData] = await Promise.all([
       getDepartments(),
       getCourses(),
       getAssignments(),
       getRubrics(),
+      getEvaluations(),
     ]);
     setDepartments(departmentsData);
     setCourses(coursesData);
@@ -122,6 +126,7 @@ const FacultyDashboard = () => {
     const statusMap: Record<string, string> = {};
     rubricsData.forEach((r) => { statusMap[r.assignment_id] = r.status; });
     setRubricStatuses(statusMap);
+    setEvaluations(evaluationsData);
   };
 
   const handleLogout = async () => {
@@ -157,9 +162,10 @@ const FacultyDashboard = () => {
 
   const addCourse = async () => {
     if (!newCourseName.trim() || !newCourseCode.trim() || !selectedClassYear.trim()) return;
+    const normalizedName = newCourseName.trim().replace(/\b\w+/g, (word) => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase());
     try {
       await createCourse({
-        name: newCourseName.trim(),
+        name: normalizedName,
         code: newCourseCode.trim(),
         department_id: selectedDeptId || null,
         class_year: Number(selectedClassYear),
@@ -194,10 +200,11 @@ const FacultyDashboard = () => {
       d.setHours(h, m, 0, 0);
       dueDateISO = d.toISOString();
     }
+    const normalizedName = newAssignmentName.trim().replace(/\b\w+/g, (word) => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase());
     setAssignmentSubmitting(true);
     try {
       const created = await createAssignment({
-        name: newAssignmentName.trim(),
+        name: normalizedName,
         description: newAssignmentDesc.trim() || null,
         course_id: selectedCourseId,
         due_date: dueDateISO,
@@ -255,6 +262,7 @@ const FacultyDashboard = () => {
     { key: "courses", label: t("faculty.tabs.courses"), icon: <BookOpen className="h-4 w-4" /> },
     { key: "assignments", label: t("faculty.tabs.assignments"), icon: <FileText className="h-4 w-4" /> },
     { key: "students", label: t("faculty.tabs.students"), icon: <Users className="h-4 w-4" /> },
+    { key: "evaluations", label: language === "tr" ? "Değerlendirmeler" : "Evaluations", icon: <FileText className="h-4 w-4" /> },
     { key: "settings", label: t("faculty.tabs.settings"), icon: <Settings className="h-4 w-4" /> },
   ];
 
@@ -303,7 +311,7 @@ const FacultyDashboard = () => {
       </aside>
 
       {/* Main */}
-      <main className={cn("flex flex-col p-6 lg:p-8", (activeTab === "settings" || activeTab === "students") ? "overflow-hidden" : "overflow-y-auto")}>
+      <main className={cn("flex flex-col p-6 lg:p-8", (activeTab === "settings" || activeTab === "students" || activeTab === "evaluations") ? "overflow-hidden" : "overflow-y-auto")}>
         {activeTab === "departments" && (
           <>
             <div className="flex items-center justify-between mb-1">
@@ -432,9 +440,9 @@ const FacultyDashboard = () => {
                         <ShieldCheck className="h-3.5 w-3.5" />
                       </div>
                       <div className="pointer-events-none absolute left-0 top-8 z-20 w-72 rounded-lg border border-border bg-card p-3 text-xs shadow-lg opacity-0 transition-opacity duration-150 group-hover:opacity-100">
-                        <p className="font-semibold text-emerald-700 dark:text-emerald-300">Ödev Güvenlik Ajanı Aktif</p>
+                        <p className="font-semibold text-emerald-700 dark:text-emerald-300">Güvenlik Ajanı Aktif</p>
                         <p className="mt-1 text-muted-foreground">
-                          Kayıt öncesi suç, cinsellik, madde kullanımı, terör gibi riskli içerikler kontrol edilir.
+                          Kayıt öncesi suç, madde kullanımı, terör gibi riskli içerikler kontrol edilir. Paylaşılan içeriklerin hukuki sorumluluğu eğitmene aittir.
                         </p>
                       </div>
                     </div>
@@ -646,6 +654,85 @@ const FacultyDashboard = () => {
         {activeTab === "settings" && teacher && <SettingsPanel teacher={teacher} onTeacherUpdate={setTeacher} />}
 
         {activeTab === "students" && <StudentsPanel departments={departments} />}
+
+        {activeTab === "evaluations" && (
+          <div className="flex h-full flex-col overflow-hidden">
+            <h1 className="mb-1 text-2xl font-bold tracking-tight text-foreground">{language === "tr" ? "Değerlendirmeler" : "Evaluations"}</h1>
+            <p className="mb-6 text-sm text-muted-foreground">
+              {language === "tr" ? "Öğrenci değerlendirme listesi." : "Student evaluation list."}
+            </p>
+
+            <div className="overflow-x-auto rounded-xl border border-border bg-card">
+              <table className="w-full text-sm">
+                <thead className="sticky top-0 bg-muted/60 backdrop-blur">
+                  <tr className="text-left text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+                    <th className="whitespace-nowrap px-4 py-3">Öğrenci No</th>
+                    <th className="whitespace-nowrap px-4 py-3">Ad</th>
+                    <th className="whitespace-nowrap px-4 py-3">Soyad</th>
+                    <th className="whitespace-nowrap px-4 py-3">Fayda</th>
+                    <th className="whitespace-nowrap px-4 py-3">Doğruluk</th>
+                    <th className="whitespace-nowrap px-4 py-3">Açıklık</th>
+                    <th className="whitespace-nowrap px-4 py-3">Yorum</th>
+                    <th className="whitespace-nowrap px-4 py-3">Durum</th>
+                    <th className="whitespace-nowrap px-4 py-3">Ödev</th>
+                    <th className="whitespace-nowrap px-4 py-3">Teslim Tarihi</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {evaluations.length === 0 ? (
+                    <tr>
+                      <td className="px-4 py-8 text-center text-muted-foreground" colSpan={10}>
+                        {language === "tr" ? "Henüz değerlendirme yok." : "No evaluations yet."}
+                      </td>
+                    </tr>
+                  ) : (
+                    evaluations.map((evaluation) => (
+                      <tr key={evaluation.id} className="border-t border-border/50">
+                        <td className="whitespace-nowrap px-4 py-3 font-medium text-foreground">{evaluation.student_no}</td>
+                        <td className="whitespace-nowrap px-4 py-3 text-muted-foreground">{evaluation.student_first_name}</td>
+                        <td className="whitespace-nowrap px-4 py-3 text-muted-foreground">{evaluation.student_last_name}</td>
+                        <td className="whitespace-nowrap px-4 py-3 text-center">
+                          {evaluation.usefulness ? `${evaluation.usefulness}/5` : '-'}
+                        </td>
+                        <td className="whitespace-nowrap px-4 py-3 text-center">
+                          {evaluation.accuracy ? `${evaluation.accuracy}/5` : '-'}
+                        </td>
+                        <td className="whitespace-nowrap px-4 py-3 text-center">
+                          {evaluation.clarity ? `${evaluation.clarity}/5` : '-'}
+                        </td>
+                        <td className="max-w-xs px-4 py-3 text-xs text-muted-foreground truncate" title={evaluation.comment || ''}>
+                          {evaluation.comment ? evaluation.comment : '-'}
+                        </td>
+                        <td className="whitespace-nowrap px-4 py-3">
+                          <span className={cn(
+                            "inline-flex rounded-full px-2.5 py-1 text-[11px] font-semibold uppercase tracking-wider",
+                            evaluation.status === "pending"
+                              ? "bg-amber-500/15 text-amber-700"
+                              : "bg-emerald-500/15 text-emerald-700"
+                          )}>
+                            {evaluation.status === "pending"
+                              ? (language === "tr" ? "Bekliyor" : "Pending")
+                              : (language === "tr" ? "Gönderildi" : "Submitted")}
+                          </span>
+                        </td>
+                        <td className="whitespace-nowrap px-4 py-3 text-muted-foreground">{evaluation.uploaded_file_name}</td>
+                        <td className="whitespace-nowrap px-4 py-3 text-xs text-muted-foreground">
+                          {evaluation.uploaded_at ? new Date(evaluation.uploaded_at).toLocaleDateString('tr-TR', {
+                            year: 'numeric',
+                            month: 'short',
+                            day: 'numeric',
+                            hour: '2-digit',
+                            minute: '2-digit'
+                          }) : '-'}
+                        </td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
       </main>
     </div>
   );

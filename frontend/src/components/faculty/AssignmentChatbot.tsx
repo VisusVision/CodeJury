@@ -122,7 +122,7 @@ const titleFromLongBrief = (raw: string) => {
     .map((line) => line.trim())
     .find(Boolean) ?? raw;
   const cleaned = firstLine
-    .replace(/^(başlık|baslik|ödev|odev)\s*[:\-]\s*/i, "")
+    .replace(/^(başlık|baslik|ödev|odev)\s*[:-]\s*/i, "")
     .replace(/^(öğrenciler|ogrenciler|öğrenci|ogrenci)\s+/i, "")
     .split(/[.!?]\s+/)[0]
     .trim();
@@ -362,8 +362,9 @@ const AssignmentChatbot = ({ open, onClose, courses, teacherId, onCreated }: Pro
       const [h, m] = time.split(":").map(Number);
       const d = new Date(date);
       d.setHours(h, m, 0, 0);
+      const normalizedTitle = (title || "Yeni Ödev").replace(/\b\w+/g, (word) => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase());
       await createAssignment({
-        name: title || "Yeni Ödev",
+        name: normalizedTitle,
         description,
         course_id: course.id,
         due_date: d.toISOString(),
