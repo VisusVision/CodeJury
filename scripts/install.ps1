@@ -179,7 +179,7 @@ function Initialize-EnvFile {
     } elseif (Test-Path $exampleFile) {
         Copy-Item $exampleFile $envPath
         Write-Ok ".env, .env.example dosyasindan olusturuldu."
-        Write-Info "Gerekirse DATABASE_URL ve OLLAMA_MODEL degerlerini guncelleyin."
+        Write-Info "Gerekirse DATABASE_URL, OLLAMA_GENERAL_MODEL ve OLLAMA_CODER_MODEL degerlerini guncelleyin."
     } else {
         Write-Warn2 ".env.example bulunamadi, .env olusturulamadi."
     }
@@ -273,14 +273,17 @@ function Start-Postgres {
 }
 
 function Pull-OllamaModel {
-    Write-Step "Ollama modeli indiriliyor (qwen2.5:7b)"
+    Write-Step "Ollama modelleri indiriliyor (qwen2.5:7b + qwen2.5-coder:7b)"
     if (-not (Test-Command "ollama")) {
         Write-Warn2 "Ollama yok, model cekilemedi."
         return
     }
-    & ollama pull qwen2.5:7b
-    if ($LASTEXITCODE -eq 0) { Write-Ok "Ollama modeli hazir." }
-    else                     { Write-Warn2 "ollama pull basarisiz, internet baglantisini kontrol edin." }
+    $models = @("qwen2.5:7b", "qwen2.5-coder:7b")
+    foreach ($model in $models) {
+        & ollama pull $model
+        if ($LASTEXITCODE -eq 0) { Write-Ok "Ollama modeli hazir: $model" }
+        else                     { Write-Warn2 "ollama pull basarisiz ($model), internet baglantisini kontrol edin." }
+    }
 }
 
 # ---------------------------------------------------------------------------

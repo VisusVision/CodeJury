@@ -1,6 +1,6 @@
 import unittest
 import tempfile
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 from backend.agents.assignment_alignment import compute_brief_code_alignment
 from backend.agents.code_quality import CodeQualityAgent
@@ -287,6 +287,82 @@ class TestAgentContractTests(unittest.TestCase):
         self.assertTrue(_looks_like_service_program(code, "python"))
         self.assertTrue(result["runs_successfully"])
         self.assertGreaterEqual(result["score"], 60)
+
+
+class TestAgentLLMContractTests(unittest.IsolatedAsyncioTestCase):
+    async def test_service_timeout_keeps_programmatic_success_when_llm_is_pessimistic(self):
+        code = "from http.server import HTTPServer, BaseHTTPRequestHandler\nHTTPServer(('127.0.0.1', 8000), BaseHTTPRequestHandler).serve_forever()\n"
+        agent = TestAgent()
+
+        with patch.object(
+            agent,
+            "_call_llm",
+            new=AsyncMock(
+                return_value={
+                    "compilation_success": True,
+                    "runs_successfully": False,
+                    "passed_tests": 0,
+                    "failed_tests": 1,
+                    "test_failures": [{"test_name": "timeout", "reason": "timeout"}],
+                    "runtime_errors": ["Timeout"],
+                    "edge_case_handling": "poor",
+                    "edge_cases_observed": [],
+                    "performance_notes": "timeout",
+                    "score": 25,
+                }
+            ),
+        ):
+            result = await agent.analyze(
+                {
+                    "sandbox_result": {
+                        "compilation_success": True,
+                        "exit_code": 124,
+                        "timed_out": True,
+                        "execution_time_ms": 30000,
+                    },
+                    "expected_output": None,
+                    "source_code": code,
+                    "language": "python",
+                    "assignment_description": "HTTP API server endpointleri gelistirin.",
+                }
+            )
+
+        self.assertTrue(result["runs_successfully"])
+        self.assertEqual(result["failed_tests"], 0)
+        self.assertGreaterEqual(result["score"], 60)
+
+
+class MasterEvaluatorContractTests(unittest.TestCase):
+    def test_service_timeout_does_not_cap_programmatic_functionality(self):
+        code = "from http.server import HTTPServer, BaseHTTPRequestHandler\nHTTPServer(('127.0.0.1', 8000), BaseHTTPRequestHandler).serve_forever()\n"
+        result = MasterEvaluatorAgent()._programmatic_analysis(
+            {
+                "source_code": code,
+                "language": "python",
+                "assignment_description": "HTTP API server endpointleri gelistirin.",
+                "sandbox_result": {
+                    "compilation_success": True,
+                    "exit_code": 124,
+                    "timed_out": True,
+                    "execution_time_ms": 30000,
+                },
+                "task_alignment": {"factor": 1.0, "reasons": []},
+                "test_agent": {"score": 68},
+                "code_quality": {"score": 80},
+                "seniority": {"score": 75},
+                "guideline": {"score": 70},
+                "security": {"score": 93},
+                "evidence": {"validated_claims": []},
+            },
+            faculty_rubric=[
+                {"name": "API", "description": "Endpoint davranisi", "max_score": 10},
+                {"name": "Kod Kalitesi", "description": "Okunabilirlik", "max_score": 10},
+            ],
+        )
+
+        functionality = next(row for row in result["rubric_breakdown"] if row["criterion"] == "functionality")
+        self.assertEqual(functionality["score"], 68)
+        self.assertGreaterEqual(result["final_score"], 65)
 
     def test_sandbox_fallback_uses_system_tempdir(self):
         real_tempdir = tempfile.TemporaryDirectory

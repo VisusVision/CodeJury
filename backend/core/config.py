@@ -12,7 +12,8 @@ class Settings(BaseSettings):
     api_secret_key: str = "change-this-to-a-random-secret"
 
     ollama_base_url: str = "http://localhost:11434"
-    ollama_model: str = "qwen2.5:7b"
+    ollama_general_model: str = "qwen2.5:7b"
+    ollama_coder_model: str = "qwen2.5-coder:7b"
     ollama_enabled: bool = True
     ollama_timeout: float = 120.0
     ollama_max_retries: int = 2

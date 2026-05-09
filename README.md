@@ -204,7 +204,7 @@ For every analysis request:
 | Backend | Python 3.11+, FastAPI, Pydantic v2 |
 | Frontend | React 18 + Vite + TypeScript + TailwindCSS + shadcn/ui |
 | Agent runtime | LLM-based multi-agent orchestration |
-| LLM | Ollama (default model: `qwen2.5:7b`) |
+| LLM | Ollama (general: `qwen2.5:7b`, code agents: `qwen2.5-coder:7b`) |
 | Sandboxing | Docker container pool (per-submission isolation) |
 | Database | PostgreSQL 16 (optional — `DEMO_MODE=1` runs without it) |
 | Message Queue | Redis Streams for asynchronous analysis jobs |
@@ -220,7 +220,7 @@ For every analysis request:
 - Python 3.11+
 - Node.js 18+
 - Docker Desktop (or Docker Engine + `docker compose v2`)
-- Ollama with the `qwen2.5:7b` model pulled
+- Ollama with `qwen2.5:7b` and `qwen2.5-coder:7b` models pulled
 
 A read-only verifier ships with the repo:
 
@@ -286,6 +286,7 @@ docker build -t agentgrade-sandbox sandbox-images/agentgrade/
 
 # 4. Pull the default LLM
 ollama pull qwen2.5:7b
+ollama pull qwen2.5-coder:7b
 
 # 5. Start the app, API, worker, and local services
 npm run dev:full
@@ -315,7 +316,8 @@ ANALYSIS_CONSUMER_GROUP=group:analysis_workers
 
 # Ollama LLM
 OLLAMA_BASE_URL=http://localhost:11434
-OLLAMA_MODEL=qwen2.5:7b
+OLLAMA_GENERAL_MODEL=qwen2.5:7b
+OLLAMA_CODER_MODEL=qwen2.5-coder:7b
 OLLAMA_ENABLED=true
 OLLAMA_TIMEOUT=900.0
 

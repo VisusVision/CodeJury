@@ -499,6 +499,7 @@ Rules:
                 user_prompt=user_prompt,
                 temperature=0.1,
                 num_predict=512,
+                model=settings.ollama_general_model,
                 use_cache=False,
             )
         except Exception:

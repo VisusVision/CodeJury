@@ -131,6 +131,7 @@ class BaseAgent(ABC):
         temperature: float = 0.3,
         num_predict: int | None = None,
         use_cache: bool = True,
+        model: str | None = None,
     ) -> dict:
         """Ollama uzerinden JSON yanit alir; basarisizda `LLMInferenceError` firlatirir."""
         if not settings.ollama_enabled:
@@ -144,6 +145,7 @@ class BaseAgent(ABC):
                 schema_hint=output_json_schema,
                 temperature=temperature,
                 num_predict=num_predict,
+                model=model or settings.ollama_coder_model,
                 use_cache=use_cache,
             )
         except Exception as exc:
@@ -185,6 +187,7 @@ class BaseAgent(ABC):
                         schema_hint=output_json_schema,
                         temperature=0.1,
                         num_predict=num_predict,
+                        model=model or settings.ollama_coder_model,
                         use_cache=False,
                     )
                 except Exception as exc:
@@ -238,6 +241,7 @@ class BaseAgent(ABC):
                         schema_hint=output_json_schema,
                         temperature=0.1,
                         num_predict=num_predict,
+                        model=model or settings.ollama_coder_model,
                         use_cache=False,
                     )
                 except Exception as exc:

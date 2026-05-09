@@ -54,12 +54,13 @@ def _cache_key(
     system_prompt: str,
     user_prompt: str,
     temperature: float,
+    model: str,
     schema_hint: dict[str, Any] | None = None,
 ) -> str:
     schema_part = ""
     if schema_hint:
         schema_part = json.dumps(schema_hint, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
-    raw = f"{settings.ollama_model}:{temperature}:{schema_part}:{system_prompt}:{user_prompt}"
+    raw = f"{model}:{temperature}:{schema_part}:{system_prompt}:{user_prompt}"
     return hashlib.sha256(raw.encode()).hexdigest()
 
 
@@ -84,20 +85,26 @@ async def warmup() -> bool:
     """Modeli bellegee yukler ve orada tutar. Uygulama baslangicinda cagirilmali."""
     if not settings.ollama_enabled:
         return False
+    models = list(dict.fromkeys([
+        settings.ollama_general_model,
+        settings.ollama_coder_model,
+    ]))
+    warmed = False
     try:
         client = _get_client()
-        resp = await client.post("/api/chat", json={
-            "model": settings.ollama_model,
-            "messages": [{"role": "user", "content": "warmup"}],
-            "stream": False,
-            "keep_alive": "30m",
-        })
-        resp.raise_for_status()
-        logger.info("[ollama] Model bellege yuklendi ve 30dk tutulacak")
-        return True
+        for model in models:
+            resp = await client.post("/api/chat", json={
+                "model": model,
+                "messages": [{"role": "user", "content": "warmup"}],
+                "stream": False,
+                "keep_alive": "30m",
+            })
+            resp.raise_for_status()
+            warmed = True
+            logger.info("[ollama] Model bellege yuklendi ve 30dk tutulacak: %s", model)
     except Exception as exc:
         logger.warning("[ollama] Warmup basarisiz: %s", exc)
-        return False
+    return warmed
 
 
 def _extract_json(text: str) -> dict | None:
@@ -173,6 +180,7 @@ async def chat_json(
     temperature: float = 0.3,
     num_predict: int | None = None,
     *,
+    model: str | None = None,
     use_cache: bool = True,
 ) -> dict | None:
     """Ollama chat endpoint'ine istek gonderir ve JSON parse eder.
@@ -184,8 +192,9 @@ async def chat_json(
     if not settings.ollama_enabled:
         return None
 
+    selected_model = model or settings.ollama_general_model
     predict = int(num_predict) if num_predict is not None else int(settings.ollama_num_predict)
-    cache_key = _cache_key(f"{system_prompt}|np={predict}", user_prompt, temperature, schema_hint)
+    cache_key = _cache_key(f"{system_prompt}|np={predict}", user_prompt, temperature, selected_model, schema_hint)
     if use_cache:
         cached = _cache_get(cache_key)
         if cached is not None:
@@ -197,7 +206,7 @@ async def chat_json(
     ]
 
     payload: dict[str, Any] = {
-        "model": settings.ollama_model,
+        "model": selected_model,
         "messages": messages,
         "stream": False,
         "options": {
@@ -219,6 +228,7 @@ async def chat_text(
     *,
     temperature: float = 0.45,
     num_predict: int | None = None,
+    model: str | None = None,
 ) -> str | None:
     """Ollama chat — düz metin (JSON formatı yok). Eğitim asistanı ve sohbet botları için.
 
@@ -230,9 +240,10 @@ async def chat_text(
         return None
 
     predict = num_predict if num_predict is not None else min(int(settings.ollama_num_predict), 2048)
+    selected_model = model or settings.ollama_general_model
 
     payload: dict[str, Any] = {
-        "model": settings.ollama_model,
+        "model": selected_model,
         "messages": messages,
         "stream": False,
         "options": {
