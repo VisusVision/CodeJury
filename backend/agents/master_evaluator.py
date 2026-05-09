@@ -225,6 +225,11 @@ class MasterEvaluatorAgent(BaseAgent):
             if not isinstance(llm_result.get("rubric_breakdown"), list):
                 raise LLMInferenceError("[master_evaluator] rubric_breakdown gecersiz (faculty mode).")
             self._finalize_faculty_rubric_output(llm_result, faculty)
+            self._apply_missing_deliverable_caps(
+                llm_result,
+                source_code=str(input_data.get("source_code") or ""),
+                faculty=faculty,
+            )
             self._apply_faculty_reasonableness_floor(llm_result, programmatic)
             self._apply_brief_alignment_guard(llm_result, programmatic, faculty_mode=True)
             self._apply_runtime_guard(
@@ -906,6 +911,77 @@ class MasterEvaluatorAgent(BaseAgent):
             round(100.0 * total_earned / total_max, 1) if total_max > 0 else 0.0
         )
         llm_result["final_score"] = max(0.0, min(100.0, float(llm_result["final_score"])))
+
+    @staticmethod
+    def _apply_missing_deliverable_caps(
+        llm_result: dict[str, Any],
+        *,
+        source_code: str,
+        faculty: list[dict[str, Any]],
+    ) -> None:
+        """Cap concrete deliverable rows when the source has no matching implementation signal."""
+        rows = llm_result.get("rubric_breakdown")
+        if not isinstance(rows, list) or not faculty:
+            return
+
+        source_l = (source_code or "").lower()
+        caps: list[tuple[set[str], tuple[str, ...], str]] = [
+            (
+                {"pdf", "pdf raporu", "pdf format"},
+                ("pdf", "fpdf", "reportlab", "canvas", "simpledocTemplate".lower(), ".pdf", "savefig("),
+                "PDF raporu kriteri kodda PDF uretim sinyali olmadigi icin sinirlandi.",
+            ),
+            (
+                {"grafik", "gorsel", "görsel", "gorsellestirme", "görselleştirme", "matplotlib", "plot"},
+                ("matplotlib", "pyplot", "plt.", "plot(", "bar(", "savefig(", "figure("),
+                "Grafik/gorsellestirme kriteri kodda grafik uretim sinyali olmadigi icin sinirlandi.",
+            ),
+        ]
+
+        changed = False
+        weaknesses = llm_result.get("weaknesses")
+        if not isinstance(weaknesses, list):
+            weaknesses = []
+
+        for index, fc in enumerate(faculty):
+            if index >= len(rows) or not isinstance(rows[index], dict):
+                continue
+            row = rows[index]
+            label_text = f"{fc.get('name', '')} {fc.get('description', '')}".lower()
+            for markers, implementation_signals, reason in caps:
+                if not any(marker in label_text for marker in markers):
+                    continue
+                if any(signal in source_l for signal in implementation_signals):
+                    continue
+                try:
+                    current = int(round(float(row.get("score", 0) or 0)))
+                    weight = int(round(float(row.get("weight", fc.get("max_score", 0)) or 0)))
+                except (TypeError, ValueError):
+                    continue
+                cap = max(0, min(weight, int(round(weight * 0.2))))
+                if current > cap:
+                    row["score"] = cap
+                    row["weighted_score"] = float(cap)
+                    just = str(row.get("justification", "") or "").strip()
+                    row["justification"] = f"{just} {reason}".strip()
+                    if reason not in weaknesses:
+                        weaknesses.append(reason)
+                    changed = True
+
+        if changed:
+            llm_result["weaknesses"] = weaknesses
+            total_max = 0
+            total_earned = 0
+            for row in rows:
+                if not isinstance(row, dict):
+                    continue
+                try:
+                    total_max += int(round(float(row.get("weight", 0) or 0)))
+                    total_earned += int(round(float(row.get("score", 0) or 0)))
+                except (TypeError, ValueError):
+                    continue
+            if total_max > 0:
+                llm_result["final_score"] = round(100.0 * total_earned / total_max, 1)
 
     def _programmatic_analysis(
         self,

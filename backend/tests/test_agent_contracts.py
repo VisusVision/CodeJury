@@ -4,6 +4,7 @@ from unittest.mock import AsyncMock, patch
 
 from backend.agents.assignment_alignment import compute_brief_code_alignment
 from backend.agents.code_quality import CodeQualityAgent
+from backend.agents.code_utils import get_code_metrics
 from backend.agents.guideline import GuidelineAgent
 from backend.agents.master_evaluator import MasterEvaluatorAgent
 from backend.agents.security import SecurityAgent
@@ -226,6 +227,63 @@ print(status)
             deterministic_task_capability_match(brief, rubric, code),
             0.75,
         )
+
+
+class CodeComplexityContractTests(unittest.TestCase):
+    def test_sequential_loops_and_sorted_are_not_quadratic(self):
+        code = """
+def print_report(category_revenue, invalid_rows):
+    for category, revenue in sorted(category_revenue.items()):
+        print(category, revenue)
+    for item in invalid_rows:
+        print(item)
+"""
+
+        metrics = get_code_metrics(code, "python")
+        by_name = {fn.name: fn for fn in metrics.functions}
+
+        self.assertEqual(by_name["print_report"].complexity, "O(n log n)")
+
+
+class GuidelineContractTests(unittest.TestCase):
+    def test_filters_contradictory_snake_case_warning(self):
+        merged = GuidelineAgent._merge_llm_with_programmatic(
+            {
+                "naming_quality": "poor",
+                "documentation_quality": "poor",
+                "clean_code_score": 50,
+                "style_guide_compliance": "PEP8",
+                "style_violations": [
+                    {
+                        "rule": "Naming",
+                        "description": "Fonksiyon isimlerinde snake_case kullanılmıştır. Örneğin, 'fibonacci' yerine 'calculate_fibonacci' kullanılması daha uygun olacaktır.",
+                        "line_hint": "",
+                        "severity": "medium",
+                    }
+                ],
+                "has_docstrings": False,
+                "has_type_hints": False,
+                "function_length_ok": True,
+                "nesting_depth_ok": True,
+                "dry_violations": [],
+                "score": 40,
+            },
+            {
+                "naming_quality": "good",
+                "documentation_quality": "poor",
+                "clean_code_score": 70,
+                "style_guide_compliance": "PEP8",
+                "style_violations": [],
+                "has_docstrings": False,
+                "has_type_hints": False,
+                "function_length_ok": True,
+                "nesting_depth_ok": True,
+                "dry_violations": [],
+                "score": 70,
+            },
+        )
+
+        self.assertEqual(merged["style_violations"], [])
 
     def test_capability_match_keeps_unsafe_file_export_relevant(self):
         brief = "Ogrenci skorlarini CSV rapor dosyasina yazan CLI export araci gelistirin."
@@ -596,6 +654,33 @@ class MasterEvaluatorGuardTests(unittest.TestCase):
         self.assertEqual(result["rubric_breakdown"][0]["score"], 20)
         self.assertEqual(result["rubric_breakdown"][1]["score"], 20)
         self.assertEqual(result["final_score"], 66.7)
+
+    def test_faculty_output_caps_missing_pdf_and_graph_deliverables(self):
+        faculty = [
+            {"name": "PDF Raporu", "description": "PDF formatinda rapor uretir.", "max_score": 10},
+            {"name": "Grafik Oluşturma", "description": "matplotlib ile grafik olusturur.", "max_score": 10},
+            {"name": "CSV Okuma", "description": "CSV okur.", "max_score": 10},
+        ]
+        result = {
+            "rubric_breakdown": [
+                {"label": "PDF Raporu", "weight": 10, "score": 8, "weighted_score": 8, "justification": "PDF iyi."},
+                {"label": "Grafik Oluşturma", "weight": 10, "score": 8, "weighted_score": 8, "justification": "Grafik iyi."},
+                {"label": "CSV Okuma", "weight": 10, "score": 8, "weighted_score": 8, "justification": "CSV var."},
+            ],
+            "weaknesses": [],
+        }
+
+        MasterEvaluatorAgent._finalize_faculty_rubric_output(result, faculty)
+        MasterEvaluatorAgent._apply_missing_deliverable_caps(
+            result,
+            source_code="import csv\nprint('Kategori bazli gelir')\n",
+            faculty=faculty,
+        )
+
+        by_label = {row["label"]: row for row in result["rubric_breakdown"]}
+        self.assertLessEqual(by_label["PDF Raporu"]["score"], 2)
+        self.assertLessEqual(by_label["Grafik Oluşturma"]["score"], 2)
+        self.assertEqual(by_label["CSV Okuma"]["score"], 8)
 
 
 if __name__ == "__main__":

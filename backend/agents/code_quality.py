@@ -208,7 +208,7 @@ class CodeQualityAgent(BaseAgent):
                 worst_non_algo = _worst_of(worst_non_algo, fn.complexity)
 
             if (
-                fn_rank > _complexity_rank("O(n)")
+                fn_rank > _complexity_rank("O(n log n)")
                 and fn.complexity not in _RECURSION_EXPECTED_COMPLEXITY
                 and not is_known
             ):
