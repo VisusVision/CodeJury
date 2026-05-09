@@ -11,7 +11,7 @@ import json
 from abc import ABC, abstractmethod
 from typing import Any
 
-from backend.agents.json_output_schema import collect_validation_messages
+from backend.agents.json_output_schema import collect_validation_messages, normalize_instance_for_schema
 from backend.core.config import settings
 from backend.llm.ollama_client import chat_json
 
@@ -209,6 +209,7 @@ class BaseAgent(ABC):
         if output_json_schema:
             max_schema_repair_attempts = 3
             for attempt in range(max_schema_repair_attempts + 1):
+                result = normalize_instance_for_schema(result, output_json_schema)
                 schema_msgs = collect_validation_messages(result, output_json_schema)
                 if not schema_msgs:
                     break

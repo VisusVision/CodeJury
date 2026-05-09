@@ -27,6 +27,10 @@ logger = logging.getLogger(__name__)
 
 _client: httpx.AsyncClient | None = None
 _semaphore: asyncio.Semaphore | None = None
+_nim_client: httpx.AsyncClient | None = None
+_nim_semaphore: asyncio.Semaphore | None = None
+_nim_rate_lock: asyncio.Lock | None = None
+_last_nim_request_at: float = 0.0
 
 _cache: OrderedDict[str, tuple[dict, float]] = OrderedDict()
 _CACHE_MAX_SIZE = 128
@@ -40,6 +44,20 @@ def _get_semaphore() -> asyncio.Semaphore:
     return _semaphore
 
 
+def _get_nim_semaphore() -> asyncio.Semaphore:
+    global _nim_semaphore
+    if _nim_semaphore is None:
+        _nim_semaphore = asyncio.Semaphore(settings.nvidia_nim_max_concurrent)
+    return _nim_semaphore
+
+
+def _get_nim_rate_lock() -> asyncio.Lock:
+    global _nim_rate_lock
+    if _nim_rate_lock is None:
+        _nim_rate_lock = asyncio.Lock()
+    return _nim_rate_lock
+
+
 def _get_client() -> httpx.AsyncClient:
     global _client
     if _client is None or _client.is_closed:
@@ -48,6 +66,47 @@ def _get_client() -> httpx.AsyncClient:
             timeout=httpx.Timeout(settings.ollama_timeout, connect=30.0),
         )
     return _client
+
+
+def _get_nim_client() -> httpx.AsyncClient:
+    global _nim_client
+    if _nim_client is None or _nim_client.is_closed:
+        _nim_client = httpx.AsyncClient(
+            base_url=settings.nvidia_nim_base_url.rstrip("/"),
+            timeout=httpx.Timeout(settings.nvidia_nim_timeout, connect=30.0),
+        )
+    return _nim_client
+
+
+def _normalize_provider(value: str | None) -> str:
+    return str(value or "").strip().lower()
+
+
+def _llm_provider() -> str:
+    return _normalize_provider(settings.llm_provider) or "ollama"
+
+
+def _provider_for_model(model: str | None) -> str:
+    default = _llm_provider()
+    general_provider = _normalize_provider(settings.llm_general_provider) or default
+    coder_provider = _normalize_provider(settings.llm_coder_provider) or default
+    if model == settings.ollama_coder_model:
+        return coder_provider
+    if model is None or model == settings.ollama_general_model:
+        return general_provider
+    return default
+
+
+def _provider_is_nvidia_nim(provider: str) -> bool:
+    return provider in {"nvidia_nim", "nim", "nvidia"}
+
+
+def _select_nim_model(model: str | None) -> str:
+    if model is None or model == settings.ollama_general_model:
+        return settings.nvidia_nim_general_model
+    if model == settings.ollama_coder_model:
+        return settings.nvidia_nim_coder_model
+    return model
 
 
 def _cache_key(
@@ -85,6 +144,8 @@ async def warmup() -> bool:
     """Modeli bellegee yukler ve orada tutar. Uygulama baslangicinda cagirilmali."""
     if not settings.ollama_enabled:
         return False
+    if _provider_is_nvidia_nim(_llm_provider()):
+        return bool(settings.nvidia_nim_api_key.strip())
     models = list(dict.fromkeys([
         settings.ollama_general_model,
         settings.ollama_coder_model,
@@ -173,6 +234,92 @@ async def _do_request(payload: dict[str, Any]) -> dict | None:
     return None
 
 
+async def _throttle_nvidia_nim() -> None:
+    global _last_nim_request_at
+    rpm = max(0, int(settings.nvidia_nim_rpm_limit))
+    if rpm <= 0:
+        return
+    min_interval = 60.0 / rpm
+    lock = _get_nim_rate_lock()
+    async with lock:
+        now = time.monotonic()
+        wait_for = min_interval - (now - _last_nim_request_at)
+        if wait_for > 0:
+            await asyncio.sleep(wait_for)
+        _last_nim_request_at = time.monotonic()
+
+
+def _nvidia_nim_headers() -> dict[str, str] | None:
+    api_key = settings.nvidia_nim_api_key.strip()
+    if not api_key:
+        logger.warning("[nvidia-nim] API key missing; set NVIDIA_NIM_API_KEY or switch LLM_PROVIDER=ollama")
+        return None
+    return {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+    }
+
+
+async def _post_nvidia_nim(payload: dict[str, Any]) -> str | None:
+    headers = _nvidia_nim_headers()
+    if headers is None:
+        return None
+
+    client = _get_nim_client()
+    sem = _get_nim_semaphore()
+
+    for attempt in range(1 + settings.nvidia_nim_max_retries):
+        async with sem:
+            await _throttle_nvidia_nim()
+            try:
+                resp = await client.post("/chat/completions", json=payload, headers=headers)
+                resp.raise_for_status()
+                data = resp.json()
+                choices = data.get("choices") or []
+                if not choices:
+                    logger.warning("[nvidia-nim] Bos choices alindi (attempt %d)", attempt + 1)
+                    return None
+                content = ((choices[0].get("message") or {}).get("content") or "").strip()
+                if content:
+                    return content
+                logger.warning("[nvidia-nim] Bos yanit alindi (attempt %d)", attempt + 1)
+                return None
+            except httpx.TimeoutException:
+                logger.warning(
+                    "[nvidia-nim] Timeout (attempt %d/%d, %ss)",
+                    attempt + 1,
+                    1 + settings.nvidia_nim_max_retries,
+                    settings.nvidia_nim_timeout,
+                )
+            except httpx.HTTPStatusError as exc:
+                status_code = exc.response.status_code
+                logger.warning("[nvidia-nim] HTTP %s (attempt %d)", status_code, attempt + 1)
+                if status_code not in {408, 409, 425, 429, 500, 502, 503, 504}:
+                    return None
+            except Exception as exc:
+                logger.warning("[nvidia-nim] Hata (attempt %d): %s", attempt + 1, exc)
+
+        if attempt < settings.nvidia_nim_max_retries:
+            await asyncio.sleep(settings.nvidia_nim_retry_delay * (attempt + 1))
+
+    return None
+
+
+async def _do_nvidia_nim_request(payload: dict[str, Any]) -> dict | None:
+    content = await _post_nvidia_nim(payload)
+    if not content:
+        return None
+
+    result = _extract_json(content)
+    if result is None:
+        logger.warning("[nvidia-nim] JSON parse edilemedi: %s", content[:200])
+    return result
+
+
+async def _do_nvidia_nim_text_request(payload: dict[str, Any]) -> str | None:
+    return await _post_nvidia_nim(payload)
+
+
 async def chat_json(
     system_prompt: str,
     user_prompt: str,
@@ -192,8 +339,12 @@ async def chat_json(
     if not settings.ollama_enabled:
         return None
 
-    selected_model = model or settings.ollama_general_model
-    predict = int(num_predict) if num_predict is not None else int(settings.ollama_num_predict)
+    provider_is_nim = _provider_is_nvidia_nim(_provider_for_model(model))
+    selected_model = _select_nim_model(model) if provider_is_nim else (model or settings.ollama_general_model)
+    if provider_is_nim:
+        predict = int(num_predict) if num_predict is not None else int(settings.nvidia_nim_num_predict)
+    else:
+        predict = int(num_predict) if num_predict is not None else int(settings.ollama_num_predict)
     cache_key = _cache_key(f"{system_prompt}|np={predict}", user_prompt, temperature, selected_model, schema_hint)
     if use_cache:
         cached = _cache_get(cache_key)
@@ -205,19 +356,32 @@ async def chat_json(
         {"role": "user", "content": user_prompt},
     ]
 
-    payload: dict[str, Any] = {
-        "model": selected_model,
-        "messages": messages,
-        "stream": False,
-        "options": {
+    if provider_is_nim:
+        if not settings.nvidia_nim_api_key.strip():
+            logger.warning("[nvidia-nim] API key missing; JSON request skipped")
+            return None
+        payload: dict[str, Any] = {
+            "model": selected_model,
+            "messages": messages,
             "temperature": temperature,
-            "num_predict": predict,
-        },
-        "format": schema_hint if schema_hint else "json",
-        "keep_alive": "30m",
-    }
+            "max_tokens": predict,
+            "response_format": {"type": "json_object"},
+        }
+        result = await _do_nvidia_nim_request(payload)
+    else:
+        payload = {
+            "model": selected_model,
+            "messages": messages,
+            "stream": False,
+            "options": {
+                "temperature": temperature,
+                "num_predict": predict,
+            },
+            "format": schema_hint if schema_hint else "json",
+            "keep_alive": "30m",
+        }
+        result = await _do_request(payload)
 
-    result = await _do_request(payload)
     if result is not None and use_cache:
         _cache_put(cache_key, result)
     return result
@@ -240,7 +404,20 @@ async def chat_text(
         return None
 
     predict = num_predict if num_predict is not None else min(int(settings.ollama_num_predict), 2048)
-    selected_model = model or settings.ollama_general_model
+    provider_is_nim = _provider_is_nvidia_nim(_provider_for_model(model))
+    selected_model = _select_nim_model(model) if provider_is_nim else (model or settings.ollama_general_model)
+
+    if provider_is_nim:
+        if not settings.nvidia_nim_api_key.strip():
+            logger.warning("[nvidia-nim] API key missing; text request skipped")
+            return None
+        payload: dict[str, Any] = {
+            "model": selected_model,
+            "messages": messages,
+            "temperature": temperature,
+            "max_tokens": predict,
+        }
+        return await _do_nvidia_nim_text_request(payload)
 
     payload: dict[str, Any] = {
         "model": selected_model,

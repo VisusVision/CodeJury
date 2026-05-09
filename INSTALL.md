@@ -158,9 +158,17 @@ Düzenlenebilir alanlar:
 | `DATABASE_URL` | `postgresql://semas:12345@localhost:5432/agent_db` | Postgres bağlantısı |
 | `REDIS_URL` | `redis://localhost:6379/0` | Analiz is kuyrugu baglantisi |
 | `ANALYSIS_QUEUE_NAME` | `stream:analysis_jobs` | Redis Streams analiz kuyrugu |
+| `LLM_PROVIDER` | `ollama` | `ollama` veya `nvidia_nim`; NIM secilirse ajanlar NVIDIA API'ye gider |
+| `LLM_GENERAL_PROVIDER` | bos | Chatbot/rubrik icin provider override; bos ise `LLM_PROVIDER` kullanilir |
+| `LLM_CODER_PROVIDER` | bos | Kod degerlendirme ajanlari icin provider override; bos ise `LLM_PROVIDER` kullanilir |
 | `OLLAMA_BASE_URL` | `http://localhost:11434` | Ollama servisi |
 | `OLLAMA_GENERAL_MODEL` | `qwen2.5:7b` | Genel sohbet/öneri LLM model adı |
 | `OLLAMA_CODER_MODEL` | `qwen2.5-coder:7b` | Kod değerlendirme ajanları için LLM model adı |
+| `NVIDIA_NIM_API_KEY` | bos | `LLM_PROVIDER=nvidia_nim` modunda kullanilan API key |
+| `NVIDIA_NIM_GENERAL_MODEL` | `qwen/qwen2.5-coder-32b-instruct` | Chatbot, rubrik ve genel LLM isleri |
+| `NVIDIA_NIM_CODER_MODEL` | `qwen/qwen2.5-coder-32b-instruct` | Kod degerlendirme ajanlari |
+| `NVIDIA_NIM_RPM_LIMIT` | `35` | Dakika basi NIM istek freni; `0` sinirsiz |
+| `NVIDIA_NIM_NUM_PREDICT` | `3072` | NIM JSON cevaplari icin varsayilan maksimum token |
 | `SANDBOX_POOL_SIZE` | `10` | Önyüklenecek konteyner sayısı |
 | `DEMO_MODE` | `0` | `1` ise PostgreSQL'siz çalışır |
 
@@ -195,6 +203,30 @@ psql -U postgres -c "CREATE DATABASE agent_db OWNER semas;"
 ollama pull qwen2.5:7b
 ollama pull qwen2.5-coder:7b
 ollama serve   # Servis arka planda çalışmıyorsa
+```
+
+### 4.5.1 NVIDIA NIM ile Calistirma
+
+Yerel Ollama yerine NVIDIA NIM kullanmak icin `.env` dosyasinda:
+
+```env
+LLM_PROVIDER=nvidia_nim
+NVIDIA_NIM_API_KEY=
+NVIDIA_NIM_GENERAL_MODEL=qwen/qwen2.5-coder-32b-instruct
+NVIDIA_NIM_CODER_MODEL=qwen/qwen2.5-coder-32b-instruct
+```
+
+Bu modda ajanlar, rubrik onerisi ve assignment chatbot ayni merkezi LLM
+istemcisi uzerinden NIM API'ye gider. Modu kapatmak icin
+`LLM_PROVIDER=ollama` yapmaniz yeterlidir.
+
+NIM chatbot/rubrik icin iyi ama tam kod degerlendirme pipeline'i yavas
+kalirsa hibrit mod kullanin:
+
+```env
+LLM_PROVIDER=nvidia_nim
+LLM_GENERAL_PROVIDER=nvidia_nim
+LLM_CODER_PROVIDER=ollama
 ```
 
 ### 4.6 Uygulamayı Başlatma
