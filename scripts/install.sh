@@ -161,7 +161,7 @@ prepare_env() {
     elif [ -f .env.example ]; then
         cp .env.example .env
         ok ".env, .env.example dosyasindan olusturuldu."
-        info "Gerekirse DATABASE_URL ve OLLAMA_MODEL degerlerini guncelleyin."
+        info "Gerekirse DATABASE_URL, OLLAMA_GENERAL_MODEL ve OLLAMA_CODER_MODEL degerlerini guncelleyin."
     else
         warn ".env.example bulunamadi, .env olusturulamadi."
     fi
@@ -276,16 +276,18 @@ start_postgres() {
 }
 
 pull_ollama_model() {
-    step "Ollama modeli indiriliyor (qwen2.5:7b)"
+    step "Ollama modelleri indiriliyor (qwen2.5:7b + qwen2.5-coder:7b)"
     if ! has_cmd ollama; then
         warn "Ollama yok, model cekilemedi."
         return
     fi
-    if ollama pull qwen2.5:7b; then
-        ok "Ollama modeli hazir."
-    else
-        warn "ollama pull basarisiz, internet baglantisini kontrol edin."
-    fi
+    for model in qwen2.5:7b qwen2.5-coder:7b; do
+        if ollama pull "$model"; then
+            ok "Ollama modeli hazir: $model"
+        else
+            warn "ollama pull basarisiz ($model), internet baglantisini kontrol edin."
+        fi
+    done
 }
 
 # ---------------------------------------------------------------------------

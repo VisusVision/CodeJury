@@ -115,7 +115,7 @@ npm run setup:demo      # Platforma göre otomatik kurulum (demo mode)
 4. **npm install**: `frontend/` klasöründe çalıştırır.
 5. **Sandbox imajı**: `docker build -t agentgrade-sandbox sandbox-images/agentgrade/`.
 6. **PostgreSQL + Redis**: `docker compose up -d postgres redis`.
-7. **Ollama modeli**: `ollama pull qwen2.5:7b`.
+7. **Ollama modelleri**: `ollama pull qwen2.5:7b` ve `ollama pull qwen2.5-coder:7b`.
 8. Sonunda renkli özet (uyarı/hata listesi) yazdırır.
 
 > **Önemli:** `--demo` / `-DemoMode` parametresi 5–7. adımları atlar
@@ -159,7 +159,8 @@ Düzenlenebilir alanlar:
 | `REDIS_URL` | `redis://localhost:6379/0` | Analiz is kuyrugu baglantisi |
 | `ANALYSIS_QUEUE_NAME` | `stream:analysis_jobs` | Redis Streams analiz kuyrugu |
 | `OLLAMA_BASE_URL` | `http://localhost:11434` | Ollama servisi |
-| `OLLAMA_MODEL` | `qwen2.5:7b` | LLM model adı |
+| `OLLAMA_GENERAL_MODEL` | `qwen2.5:7b` | Genel sohbet/öneri LLM model adı |
+| `OLLAMA_CODER_MODEL` | `qwen2.5-coder:7b` | Kod değerlendirme ajanları için LLM model adı |
 | `SANDBOX_POOL_SIZE` | `10` | Önyüklenecek konteyner sayısı |
 | `DEMO_MODE` | `0` | `1` ise PostgreSQL'siz çalışır |
 
@@ -192,6 +193,7 @@ psql -U postgres -c "CREATE DATABASE agent_db OWNER semas;"
 
 ```bash
 ollama pull qwen2.5:7b
+ollama pull qwen2.5-coder:7b
 ollama serve   # Servis arka planda çalışmıyorsa
 ```
 
@@ -250,8 +252,8 @@ Kurulum sonrası kontrol listesi:
 
 ### Ollama modeli çekilemiyor
 
-- `ollama pull qwen2.5:7b` manuel deneyin; ağ engelliyorsa daha küçük bir modele
-  geçin (`OLLAMA_MODEL=qwen2.5:3b`).
+- `ollama pull qwen2.5:7b` ve `ollama pull qwen2.5-coder:7b` komutlarını manuel deneyin; ağ engelliyorsa
+  `OLLAMA_GENERAL_MODEL` veya `OLLAMA_CODER_MODEL` değerlerini daha küçük modellere çekin.
 
 ### Port çakışması (5432, 8080, 8001, 8181-8190, 11434)
 

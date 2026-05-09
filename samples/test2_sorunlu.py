@@ -1,17 +1,35 @@
-﻿# Sorunlu Kod - Statik analiz sorunlari var
+﻿def hesap_makinesi():
+    sayi1 = float(input("Birinci sayıyı girin: "))
+    sayi2 = float(input("İkinci sayıyı girin: "))
 
-def process_data(data):  # docstring yok D001
-    result = []
-    for i in range(len(data)):
-        for j in range(len(data[i])):
-            for k in range(len(data[i][j])):  # 3 seviye ic ice C001
-                result.append(data[i][j][k])
-    return result
+    print("1 - Toplama")
+    print("2 - Çıkarma")
+    print("3 - Çarpma")
+    print("4 - Bölme")
 
-def run_user_input(code):  # docstring yok D001
-    return eval(code)  # eval kullanimi S001 guvenlik uyarisi
+    secim = input("İşlem seçin: ")
 
-if __name__ == "__main__":
-    print("eval test:", run_user_input("2+2"))
-    data = [[[1,2],[3,4]],[[5,6],[7,8]]]
-    print("flat:", process_data(data))
+    if secim == "1":
+        sonuc = sayi1 + sayi2
+        print("Sonuç:", sonuc)
+
+    elif secim == "2":
+        sonuc = sayi1 - sayi2
+        print("Sonuç:", sonuc)
+
+    elif secim == "3":
+        sonuc = sayi1 * sayi2
+        print("Sonuç:", sonuc)
+
+    elif secim == "4":
+        if sayi2 != 0:
+            sonuc = sayi1 / sayi2
+            print("Sonuç:", sonuc)
+        else:
+            print("Bir sayı sıfıra bölünemez.")
+
+    else:
+        print("Geçersiz seçim.")
+
+
+hesap_makinesi()

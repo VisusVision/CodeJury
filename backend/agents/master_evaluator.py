@@ -977,7 +977,18 @@ class MasterEvaluatorAgent(BaseAgent):
             if not sandbox_result.get("compilation_success", True):
                 criteria_map["functionality"]["score"] = min(criteria_map["functionality"]["score"], 10)
             elif sandbox_result.get("exit_code", 0) != 0:
-                criteria_map["functionality"]["score"] = min(criteria_map["functionality"]["score"], 35)
+                from backend.agents.test_agent import (
+                    _looks_like_cli_program,
+                    _looks_like_cli_usage_error,
+                    _looks_like_service_program,
+                )
+
+                stderr = str(sandbox_result.get("stderr") or "")
+                timed_out = bool(sandbox_result.get("timed_out") or sandbox_result.get("timeout"))
+                service_timeout = timed_out and _looks_like_service_program(source_txt, str(input_data.get("language") or "python"))
+                cli_usage_exit = _looks_like_cli_program(source_txt, str(input_data.get("language") or "python")) and _looks_like_cli_usage_error(stderr)
+                if not (service_timeout or cli_usage_exit):
+                    criteria_map["functionality"]["score"] = min(criteria_map["functionality"]["score"], 35)
 
         tw = sum(rubric.get(k, 0) for k in criteria_map)
         if tw <= 0:

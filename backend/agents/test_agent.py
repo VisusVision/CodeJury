@@ -143,11 +143,28 @@ class TestAgent(BaseAgent):
         prog_s = programmatic["score"]
         llm_s = self._safe_int(llm_result.get("score"), prog_s)
         af = float(programmatic.get("brief_code_alignment_factor", 1.0))
+        cli_usage_exit = (
+            _looks_like_cli_program(source_code, language)
+            and sandbox.get("exit_code", 0) != 0
+            and _looks_like_cli_usage_error(str(sandbox.get("stderr") or ""))
+        )
         if af < 0.999:
             blended = int(round(prog_s + (llm_s - prog_s) * af))
             llm_result["score"] = max(0, min(100, min(llm_s, max(prog_s, blended))))
         else:
             llm_result["score"] = llm_s
+        if (
+            programmatic["runs_successfully"]
+            and programmatic.get("failed_tests", 0) == 0
+            and (
+                (
+                    sandbox.get("timed_out", sandbox.get("timeout", False))
+                    and _looks_like_service_program(source_code, language)
+                )
+                or cli_usage_exit
+            )
+        ):
+            llm_result["score"] = max(int(llm_result["score"]), int(prog_s))
         if not programmatic["compilation_success"]:
             llm_result["score"] = 0
         elif not programmatic["runs_successfully"]:

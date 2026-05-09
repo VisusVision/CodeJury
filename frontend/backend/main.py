@@ -1606,6 +1606,55 @@ def _fallback_assignment_suggestions(course_hint: str, difficulty: str | None = 
     return out
 
 
+def _direct_assignment_variants(direct_suggestion: dict[str, str], count: int) -> list[dict[str, str]]:
+    """Deterministic variants for long instructor briefs when the LLM under-produces."""
+    title = str(direct_suggestion.get("title") or "Programlama Odevi").strip() or "Programlama Odevi"
+    summary = str(direct_suggestion.get("summary") or "").strip()
+    description = str(direct_suggestion.get("description") or "").strip()
+    base_summary = summary or "Egitimcinin uzun aciklamasindan olusturulan odev taslagi."
+    base_description = description or title
+    suffixes = [
+        (
+            "Temel Surum",
+            "Cekirdek gereksinimleri sade bir komut satiri veya fonksiyonel uygulama olarak tamamlayin.",
+        ),
+        (
+            "Dogrulama Odakli Surum",
+            "Girdi dogrulama, hatali satir veya gecersiz veri durumlarini ayrintili ve anlasilir mesajlarla ele alin.",
+        ),
+        (
+            "Raporlama Odakli Surum",
+            "Islenen verilerden ozet metrikler uretin ve sonucu dosya veya konsol raporu olarak duzenli bicimde sunun.",
+        ),
+        (
+            "Testli Surum",
+            "Cekirdek fonksiyonlari birim testlerle dogrulayin; basarili, hatali ve bos veri senaryolarini kapsayin.",
+        ),
+        (
+            "Moduler Surum",
+            "Okuma, isleme, dogrulama ve cikti uretme sorumluluklarini ayri fonksiyon veya modullere bolun.",
+        ),
+    ]
+    variants: list[dict[str, str]] = [
+        {
+            "title": title,
+            "summary": base_summary[:220],
+            "description": base_description[:1200],
+        }
+    ]
+    for suffix, extra in suffixes:
+        if len(variants) >= count:
+            break
+        variants.append(
+            {
+                "title": f"{title} - {suffix}"[:100],
+                "summary": f"{base_summary} {extra}"[:220],
+                "description": f"{base_description} {extra}"[:1200],
+            }
+        )
+    return variants[:count]
+
+
 class TeacherEmailUpdateRequest(BaseModel):
     email: str
 
@@ -2319,7 +2368,11 @@ async def run_analysis_pipeline(
     }
 
     from backend.core.config import settings as _cfg
-    print(f"[pipeline] OLLAMA_ENABLED={_cfg.ollama_enabled}, MODEL={_cfg.ollama_model}", flush=True)
+    print(
+        f"[pipeline] OLLAMA_ENABLED={_cfg.ollama_enabled}, "
+        f"GENERAL_MODEL={_cfg.ollama_general_model}, CODER_MODEL={_cfg.ollama_coder_model}",
+        flush=True,
+    )
 
     loop = asyncio.get_running_loop()
     from backend.sandbox.executor import run_in_sandbox
@@ -3500,6 +3553,7 @@ async def suggest_rubric(req: RubricSuggestionRequest):
         user_prompt=user_prompt,
         temperature=0.42,
         num_predict=3072,
+        model=_llm_cfg.ollama_general_model,
     )
     if not result:
         raise HTTPException(
@@ -3587,6 +3641,7 @@ async def assignment_assistant_suggestions(req: AssignmentAssistantSuggestionsRe
             user_prompt=user_prompt,
             temperature=0.35 if direct_suggestion else 0.55,
             num_predict=4096,
+            model=_llm_cfg.ollama_general_model,
             use_cache=not bool(req.prefer_fresh),
         )
     except Exception as exc:
@@ -3636,6 +3691,7 @@ async def assignment_assistant_suggestions(req: AssignmentAssistantSuggestionsRe
                 user_prompt=retry_prompt,
                 temperature=0.45,
                 num_predict=4096,
+                model=_llm_cfg.ollama_general_model,
                 use_cache=False,
             )
             retry_list = _suggestions_list_from_llm(retry_result) if isinstance(retry_result, dict) else None
@@ -3670,10 +3726,14 @@ async def assignment_assistant_suggestions(req: AssignmentAssistantSuggestionsRe
             merged.append(dict(it))
 
     _extend_unique(cleaned)
-    if not merged and direct_suggestion:
-        key = direct_suggestion["title"].strip().lower()
-        if key not in seen_titles:
-            merged.append(dict(direct_suggestion))
+    if direct_suggestion and len(merged) < n:
+        for row in _direct_assignment_variants(direct_suggestion, n):
+            if len(merged) >= n:
+                break
+            key = row["title"].strip().lower()
+            if key in seen_titles:
+                continue
+            merged.append(dict(row))
             seen_titles.add(key)
 
     if not merged:
