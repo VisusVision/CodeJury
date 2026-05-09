@@ -172,7 +172,7 @@ def _estimate_complexity(func_node: ast.FunctionDef | ast.AsyncFunctionDef) -> s
         return "O(1)"
     elif max_loop_depth == 1:
         if uses_nlogn:
-            return "O(n^2 log n)"
+            return "O(n log n)"
         return "O(n)"
     elif max_loop_depth == 2:
         return "O(n^2)"

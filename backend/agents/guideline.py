@@ -215,7 +215,24 @@ class GuidelineAgent(BaseAgent):
                 out[key] = bool(prog.get(key, False))
         if not isinstance(out.get("dry_violations"), list):
             out["dry_violations"] = list(prog.get("dry_violations") or [])
+        out["style_violations"] = cls._filter_style_violations(out.get("style_violations"))
         return out
+
+    @staticmethod
+    def _filter_style_violations(raw: Any) -> list[dict[str, Any]]:
+        if not isinstance(raw, list):
+            return []
+        filtered: list[dict[str, Any]] = []
+        for item in raw:
+            if not isinstance(item, dict):
+                continue
+            desc = str(item.get("description") or item.get("rule") or "").strip()
+            desc_l = desc.lower()
+            # LLMs occasionally praise snake_case while emitting it as a warning.
+            if "snake_case kullan" in desc_l and "yerine" in desc_l:
+                continue
+            filtered.append(item)
+        return filtered
 
     def _programmatic_analysis(self, source_code: str, language: str) -> dict:
         clean_code = strip_comments(source_code, language)
