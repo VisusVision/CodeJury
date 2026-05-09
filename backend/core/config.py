@@ -21,6 +21,21 @@ class Settings(BaseSettings):
     ollama_max_concurrent: int = 4
     ollama_num_predict: int = 1024
 
+    llm_provider: str = "ollama"
+    llm_general_provider: str = ""
+    llm_coder_provider: str = ""
+
+    nvidia_nim_base_url: str = "https://integrate.api.nvidia.com/v1"
+    nvidia_nim_api_key: str = ""
+    nvidia_nim_general_model: str = "qwen/qwen2.5-coder-32b-instruct"
+    nvidia_nim_coder_model: str = "qwen/qwen2.5-coder-32b-instruct"
+    nvidia_nim_timeout: float = 120.0
+    nvidia_nim_max_retries: int = 2
+    nvidia_nim_retry_delay: float = 2.0
+    nvidia_nim_max_concurrent: int = 2
+    nvidia_nim_rpm_limit: int = 35
+    nvidia_nim_num_predict: int = 3072
+
     redis_url: str = "redis://localhost:6379/0"
     analysis_queue_name: str = "stream:analysis_jobs"
     analysis_consumer_group: str = "group:analysis_workers"

@@ -20,7 +20,11 @@ from backend.agents.assignment_alignment import (
     _source_without_comments_and_docstrings,
 )
 from backend.agents.base import build_llm_user_suffix
-from backend.agents.json_output_schema import TASK_RELEVANCE_OUTPUT_SCHEMA, collect_validation_messages
+from backend.agents.json_output_schema import (
+    TASK_RELEVANCE_OUTPUT_SCHEMA,
+    collect_validation_messages,
+    normalize_instance_for_schema,
+)
 from backend.core.config import settings
 from backend.llm.ollama_client import chat_json
 
@@ -250,8 +254,7 @@ async def assess_task_relevance_llm(
 ) -> dict[str, Any]:
     brief = (assignment_description or "").strip()
     source_clean = _source_without_comments_and_docstrings(source_code or "")
-    # Use the instructor brief only for capability gating; rubric rows can be noisy/generic.
-    capability_match = _capability_match_signal(assignment_description, None, source_clean)
+    capability_match = deterministic_task_capability_match(assignment_description, rubric_criteria, source_clean)
     rub_blob = _rubric_criteria_text(rubric_criteria)
     combined = "\n".join(x for x in (brief, rub_blob) if x).strip()
     if len(combined) < BRIEF_MIN_LEN:
@@ -338,6 +341,7 @@ async def assess_task_relevance_llm(
     if "confidence" in raw and raw.get("confidence") is None:
         raw.pop("confidence", None)
 
+    raw = normalize_instance_for_schema(raw, TASK_RELEVANCE_OUTPUT_SCHEMA)
     msgs = collect_validation_messages(raw, TASK_RELEVANCE_OUTPUT_SCHEMA)
     if msgs:
         logger.warning("[task_relevance] schema ilk tur: %s", msgs[:4])
@@ -367,6 +371,7 @@ async def assess_task_relevance_llm(
                 raw["submission_domain_guess"] = _task_domain_guess_from_text(code_sample)
             if not str(raw.get("explanation", "")).strip():
                 raw["explanation"] = "Gorev uyumu kod ve odev aciklamasi karsilastirilarak degerlendirildi."
+            raw = normalize_instance_for_schema(raw, TASK_RELEVANCE_OUTPUT_SCHEMA)
             msgs = collect_validation_messages(raw, TASK_RELEVANCE_OUTPUT_SCHEMA)
         if msgs:
             logger.warning("[task_relevance] schema ikinci tur hata: %s", msgs[:4])
@@ -607,6 +612,17 @@ def _capability_match_signal(
         return overlap_signal
     capability = matched / float(required)
     return max(0.0, min(1.0, (0.85 * capability) + (0.15 * overlap_signal)))
+
+
+def deterministic_task_capability_match(
+    assignment_description: str | None,
+    rubric_criteria: list[dict[str, Any]] | None,
+    source_code: str | None,
+) -> float:
+    """Use rubric rows as supporting context without weakening brief-only matches."""
+    brief_only = _capability_match_signal(assignment_description, None, source_code)
+    with_rubric = _capability_match_signal(assignment_description, rubric_criteria, source_code)
+    return max(brief_only, with_rubric)
 
 
 def merge_task_alignment(

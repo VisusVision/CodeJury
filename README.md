@@ -204,7 +204,7 @@ For every analysis request:
 | Backend | Python 3.11+, FastAPI, Pydantic v2 |
 | Frontend | React 18 + Vite + TypeScript + TailwindCSS + shadcn/ui |
 | Agent runtime | LLM-based multi-agent orchestration |
-| LLM | Ollama (general: `qwen2.5:7b`, code agents: `qwen2.5-coder:7b`) |
+| LLM | Ollama by default, optional NVIDIA NIM via API key |
 | Sandboxing | Docker container pool (per-submission isolation) |
 | Database | PostgreSQL 16 (optional — `DEMO_MODE=1` runs without it) |
 | Message Queue | Redis Streams for asynchronous analysis jobs |
@@ -220,7 +220,7 @@ For every analysis request:
 - Python 3.11+
 - Node.js 18+
 - Docker Desktop (or Docker Engine + `docker compose v2`)
-- Ollama with `qwen2.5:7b` and `qwen2.5-coder:7b` models pulled
+- Ollama with `qwen2.5:7b` and `qwen2.5-coder:7b` models pulled, or an NVIDIA NIM API key
 
 A read-only verifier ships with the repo:
 
@@ -314,12 +314,26 @@ REDIS_URL=redis://localhost:6379/0
 ANALYSIS_QUEUE_NAME=stream:analysis_jobs
 ANALYSIS_CONSUMER_GROUP=group:analysis_workers
 
+# LLM provider: ollama or nvidia_nim
+LLM_PROVIDER=ollama
+# Optional per-role overrides. Empty values follow LLM_PROVIDER.
+LLM_GENERAL_PROVIDER=
+LLM_CODER_PROVIDER=
+
 # Ollama LLM
 OLLAMA_BASE_URL=http://localhost:11434
 OLLAMA_GENERAL_MODEL=qwen2.5:7b
 OLLAMA_CODER_MODEL=qwen2.5-coder:7b
 OLLAMA_ENABLED=true
 OLLAMA_TIMEOUT=900.0
+
+# NVIDIA NIM LLM (used when LLM_PROVIDER=nvidia_nim)
+NVIDIA_NIM_BASE_URL=https://integrate.api.nvidia.com/v1
+NVIDIA_NIM_API_KEY=
+NVIDIA_NIM_GENERAL_MODEL=qwen/qwen2.5-coder-32b-instruct
+NVIDIA_NIM_CODER_MODEL=qwen/qwen2.5-coder-32b-instruct
+NVIDIA_NIM_RPM_LIMIT=35
+NVIDIA_NIM_NUM_PREDICT=3072
 
 # Demo Mode (no PostgreSQL required)
 DEMO_MODE=1

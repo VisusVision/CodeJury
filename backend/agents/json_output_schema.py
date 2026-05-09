@@ -11,6 +11,108 @@ from typing import Any
 from jsonschema import Draft202012Validator
 
 
+def _schema_types(schema: dict[str, Any]) -> set[str]:
+    raw = schema.get("type")
+    if isinstance(raw, str):
+        return {raw}
+    if isinstance(raw, list):
+        return {item for item in raw if isinstance(item, str)}
+    return set()
+
+
+def _coerce_scalar_for_schema(value: Any, schema: dict[str, Any]) -> Any:
+    types = _schema_types(schema)
+
+    if "string" in types:
+        if isinstance(value, str):
+            return value
+        if isinstance(value, dict):
+            rule = str(value.get("rule") or value.get("type") or value.get("name") or "").strip()
+            description = str(value.get("description") or value.get("message") or value.get("detail") or "").strip()
+            line_hint = str(value.get("line_hint") or value.get("line") or "").strip()
+            if rule and description:
+                text = f"{rule}: {description}"
+            else:
+                text = description or rule
+            if line_hint and text:
+                text = f"{text} ({line_hint})"
+            if text:
+                return text
+            return str(value)
+        if isinstance(value, list):
+            return ", ".join(str(item) for item in value)
+
+    if "null" in types and value == 0 and schema.get("minimum") == 1:
+        return None
+
+    if "boolean" in types:
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, str):
+            lowered = value.strip().lower()
+            if lowered in {"true", "yes", "1"}:
+                return True
+            if lowered in {"false", "no", "0"}:
+                return False
+        if isinstance(value, int) and value in {0, 1}:
+            return bool(value)
+
+    if "integer" in types and not isinstance(value, bool):
+        if isinstance(value, int):
+            return value
+        if isinstance(value, float) and value.is_integer():
+            return int(value)
+        if isinstance(value, str):
+            stripped = value.strip()
+            try:
+                parsed = float(stripped)
+            except ValueError:
+                return value
+            if parsed.is_integer():
+                return int(parsed)
+
+    if "number" in types and not isinstance(value, bool):
+        if isinstance(value, (int, float)):
+            return value
+        if isinstance(value, str):
+            try:
+                return float(value.strip())
+            except ValueError:
+                return value
+
+    return value
+
+
+def normalize_instance_for_schema(instance: Any, schema: dict[str, Any]) -> Any:
+    """Coerce common LLM JSON type drift before strict schema validation.
+
+    Models sometimes return JSON-valid but schema-loose values such as
+    ``"true"`` for booleans or ``"2"`` for integers. This keeps validation
+    strict for structure and enums while accepting harmless scalar drift.
+    """
+    if not isinstance(schema, dict):
+        return instance
+
+    schema_types = _schema_types(schema)
+    if isinstance(instance, dict) and ("object" in schema_types or "properties" in schema):
+        properties = schema.get("properties")
+        if not isinstance(properties, dict):
+            return instance
+        normalized = dict(instance)
+        for key, child_schema in properties.items():
+            if key in normalized and isinstance(child_schema, dict):
+                normalized[key] = normalize_instance_for_schema(normalized[key], child_schema)
+        return normalized
+
+    if isinstance(instance, list) and "array" in schema_types:
+        item_schema = schema.get("items")
+        if isinstance(item_schema, dict):
+            return [normalize_instance_for_schema(item, item_schema) for item in instance]
+        return instance
+
+    return _coerce_scalar_for_schema(instance, schema)
+
+
 def collect_validation_messages(instance: Any, schema: dict[str, Any], *, limit: int = 12) -> list[str]:
     """Return human-readable validation issues, or [] if valid."""
     validator = Draft202012Validator(schema)

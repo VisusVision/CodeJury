@@ -12,6 +12,7 @@ from backend.agents.task_relevance import (
     _capability_match_signal,
     _has_recognized_capability_requirement,
     assess_task_relevance_llm,
+    deterministic_task_capability_match,
     merge_task_alignment,
 )
 from backend.core.config import settings
@@ -199,6 +200,32 @@ def fetch_status(path="/health"):
 """
 
         self.assertGreaterEqual(_capability_match_signal(brief, None, code), 0.75)
+
+    def test_task_relevance_uses_rubric_to_support_short_grade_average_brief(self):
+        brief = "Python ile ogrenci not ortalamasi hesaplayan ve gecme kalma durumunu yazdiran program."
+        rubric = [
+            {"name": "Ortalama hesaplama", "description": "Not listesinin ortalamasini dogru hesaplar."},
+            {"name": "Gecme kalma", "description": "Ortalamaya gore gecme kalma durumunu raporlar."},
+        ]
+        code = """
+def calculate_average(grades):
+    if not grades:
+        return 0
+    return sum(grades) / len(grades)
+
+status = "gecti" if calculate_average([80, 90, 100]) >= 60 else "kaldi"
+print(status)
+"""
+
+        brief_only = _capability_match_signal(brief, None, code)
+        with_rubric = _capability_match_signal(brief, rubric, code)
+
+        self.assertLess(brief_only, 0.25)
+        self.assertGreaterEqual(with_rubric, 0.75)
+        self.assertGreaterEqual(
+            deterministic_task_capability_match(brief, rubric, code),
+            0.75,
+        )
 
     def test_capability_match_keeps_unsafe_file_export_relevant(self):
         brief = "Ogrenci skorlarini CSV rapor dosyasina yazan CLI export araci gelistirin."
