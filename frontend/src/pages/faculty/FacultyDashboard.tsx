@@ -142,21 +142,21 @@ const FacultyDashboard = () => {
         name: newDeptName.trim(),
         created_by: teacher!.id,
       });
-      toast.success("Bölüm eklendi");
+      toast.success(t("faculty.departments.added") || "Bölüm eklendi");
       setNewDeptName("");
       await fetchAll();
     } catch (err: unknown) {
-      toast.error(getErrorMessage(err, "Bölüm eklenemedi"));
+      toast.error(getErrorMessage(err, t("faculty.departments.addError") || "Bölüm eklenemedi"));
     }
   };
 
   const deleteDepartment = async (id: string) => {
     try {
       await removeDepartment(id);
-      toast.success("Bölüm silindi");
+      toast.success(t("faculty.departments.deleted") || "Bölüm silindi");
       await fetchAll();
     } catch (err: unknown) {
-      toast.error(getErrorMessage(err, "Bölüm silinemedi"));
+      toast.error(getErrorMessage(err, t("faculty.departments.deleteError") || "Bölüm silinemedi"));
     }
   };
 
@@ -262,7 +262,7 @@ const FacultyDashboard = () => {
     { key: "courses", label: t("faculty.tabs.courses"), icon: <BookOpen className="h-4 w-4" /> },
     { key: "assignments", label: t("faculty.tabs.assignments"), icon: <FileText className="h-4 w-4" /> },
     { key: "students", label: t("faculty.tabs.students"), icon: <Users className="h-4 w-4" /> },
-    { key: "evaluations", label: language === "tr" ? "Değerlendirmeler" : "Evaluations", icon: <FileText className="h-4 w-4" /> },
+    { key: "evaluations", label: t("faculty.tabs.evaluations"), icon: <FileText className="h-4 w-4" /> },
     { key: "settings", label: t("faculty.tabs.settings"), icon: <Settings className="h-4 w-4" /> },
   ];
 
@@ -325,11 +325,11 @@ const FacultyDashboard = () => {
                 type="text"
                 value={newDeptName}
                 onChange={(e) => setNewDeptName(e.target.value)}
-                placeholder="Bölüm adı"
+                placeholder={t("faculty.departments.name")}
                 className="flex-1 px-3 py-2 rounded-lg border border-input bg-background text-foreground text-sm focus:outline-none focus:ring-2 focus:ring-ring"
               />
               <button onClick={addDepartment} className="flex items-center gap-1 px-4 py-2 rounded-lg bg-primary text-primary-foreground text-sm font-medium hover:brightness-110 transition-all">
-                <Plus className="h-4 w-4" /> Ekle
+                <Plus className="h-4 w-4" /> {t("common.add")}
               </button>
             </div>
 
@@ -351,8 +351,11 @@ const FacultyDashboard = () => {
 
         {activeTab === "courses" && (
           <>
-            <h1 className="text-2xl font-bold tracking-tight text-foreground mb-1">Dersler</h1>
-            <p className="text-sm text-muted-foreground mb-6">Ders ekleyin veya mevcut dersleri yönetin.</p>
+            <div className="flex items-center justify-between mb-1">
+              <h1 className="text-2xl font-bold tracking-tight text-foreground">{t("faculty.courses.title")}</h1>
+              <LanguageToggle />
+            </div>
+            <p className="text-sm text-muted-foreground mb-6">{t("faculty.courses.subtitle")}</p>
 
             <div className="flex flex-col gap-3 mb-6 max-w-lg">
               <div className="grid grid-cols-2 gap-2">
@@ -360,14 +363,14 @@ const FacultyDashboard = () => {
                   type="text"
                   value={newCourseName}
                   onChange={(e) => setNewCourseName(e.target.value)}
-                  placeholder="Ders adı"
+                  placeholder={t("faculty.courses.name")}
                   className="px-3 py-2 rounded-lg border border-input bg-background text-foreground text-sm focus:outline-none focus:ring-2 focus:ring-ring"
                 />
                 <input
                   type="text"
                   value={newCourseCode}
                   onChange={(e) => setNewCourseCode(e.target.value)}
-                  placeholder="Ders kodu"
+                  placeholder={t("faculty.courses.code")}
                   className="px-3 py-2 rounded-lg border border-input bg-background text-foreground text-sm focus:outline-none focus:ring-2 focus:ring-ring"
                 />
               </div>
@@ -377,7 +380,7 @@ const FacultyDashboard = () => {
                   onChange={(e) => setSelectedDeptId(e.target.value)}
                   className="w-full px-3 py-2 rounded-lg border border-input bg-background text-foreground text-sm focus:outline-none focus:ring-2 focus:ring-ring"
                 >
-                  <option value="">Bölüm seçin</option>
+                  <option value="">{t("faculty.courses.selectDepartment")}</option>
                   {departments.map((d) => (
                     <option key={d.id} value={d.id}>{d.name}</option>
                   ))}
@@ -389,14 +392,14 @@ const FacultyDashboard = () => {
                     onChange={(e) => setSelectedClassYear(e.target.value)}
                     className="flex-1 min-w-0 px-3 py-2 rounded-lg border border-input bg-background text-foreground text-sm focus:outline-none focus:ring-2 focus:ring-ring"
                   >
-                    <option value="">Sınıf seçin</option>
-                    <option value="1">1. sınıf</option>
-                    <option value="2">2. sınıf</option>
-                    <option value="3">3. sınıf</option>
-                    <option value="4">4. sınıf</option>
+                    <option value="">{t("faculty.courses.selectClass")}</option>
+                    <option value="1">1. {t("courses.classYear")}</option>
+                    <option value="2">2. {t("courses.classYear")}</option>
+                    <option value="3">3. {t("courses.classYear")}</option>
+                    <option value="4">4. {t("courses.classYear")}</option>
                   </select>
                   <button onClick={addCourse} className="flex items-center gap-1 px-4 py-2 rounded-lg bg-primary text-primary-foreground text-sm font-medium hover:brightness-110 transition-all">
-                    <Plus className="h-4 w-4" /> Ekle
+                    <Plus className="h-4 w-4" /> {t("common.add")}
                   </button>
                 </div>
               </div>
@@ -411,7 +414,7 @@ const FacultyDashboard = () => {
                       <span className="text-sm font-medium text-foreground">{c.name}</span>
                       <span className="text-xs text-muted-foreground ml-2">{c.code}</span>
                       <span className="text-xs text-muted-foreground ml-2">
-                        {c.class_year ? `${c.class_year}. sınıf` : "Genel"}
+                        {c.class_year ? `${c.class_year}. ${t("courses.classYear")}` : t("courses.general")}
                       </span>
                     </div>
                   </div>
@@ -426,23 +429,28 @@ const FacultyDashboard = () => {
 
         {activeTab === "assignments" && (
           <>
-            <h1 className="text-2xl font-bold tracking-tight text-foreground mb-1">Ödevler</h1>
-            <p className="text-sm text-muted-foreground mb-6">Ödev oluşturun ve düzenleyin.</p>
+            <div className="flex items-center justify-between mb-1">
+              <h1 className="text-2xl font-bold tracking-tight text-foreground">{t("faculty.assignments.title")}</h1>
+              <LanguageToggle />
+            </div>
+            <p className="text-sm text-muted-foreground mb-6">{t("faculty.assignments.subtitle")}</p>
 
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
               {/* Left: Add form */}
               <div>
                 <div className="flex items-center justify-between mb-3">
                   <div className="flex items-center gap-2">
-                    <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wider">Yeni Ödev</h2>
+                    <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wider">{t("faculty.assignments.create")}</h2>
                     <div className="group relative">
                       <div className="inline-flex h-6 w-6 items-center justify-center rounded-full border border-emerald-500/30 bg-emerald-500/10 text-emerald-600">
                         <ShieldCheck className="h-3.5 w-3.5" />
                       </div>
                       <div className="pointer-events-none absolute left-0 top-8 z-20 w-72 rounded-lg border border-border bg-card p-3 text-xs shadow-lg opacity-0 transition-opacity duration-150 group-hover:opacity-100">
-                        <p className="font-semibold text-emerald-700 dark:text-emerald-300">Güvenlik Ajanı Aktif</p>
+                        <p className="font-semibold text-emerald-700 dark:text-emerald-300">{language === "tr" ? "Güvenlik Ajanı Aktif" : "Security Agent Active"}</p>
                         <p className="mt-1 text-muted-foreground">
-                          Kayıt öncesi suç, madde kullanımı, terör gibi riskli içerikler kontrol edilir. Paylaşılan içeriklerin hukuki sorumluluğu eğitmene aittir.
+                          {language === "tr" 
+                            ? "Kayıt öncesi suç, madde kullanımı, terör gibi riskli içerikler kontrol edilir. Paylaşılan içeriklerin hukuki sorumluluğu eğitmene aittir."
+                            : "Risk factors like crime, substance abuse, and terrorism are checked before saving. Legal responsibility for shared content belongs to the instructor."}
                         </p>
                       </div>
                     </div>
@@ -453,7 +461,7 @@ const FacultyDashboard = () => {
                     title="AI ile ödev oluştur"
                   >
                     <span className="text-base leading-none animate-bounce">🤖</span>
-                    <span>AI ile Oluştur</span>
+                    <span>{t("chatbot.aiSuggestions")}</span>
                     <span className="absolute -top-1 -right-1 h-2 w-2 rounded-full bg-emerald-400 animate-ping" />
                     <span className="absolute -top-1 -right-1 h-2 w-2 rounded-full bg-emerald-400" />
                   </button>
@@ -464,22 +472,22 @@ const FacultyDashboard = () => {
                     onChange={(e) => setSelectedCourseId(e.target.value)}
                     className="px-3 py-2 rounded-lg border border-input bg-background text-foreground text-sm focus:outline-none focus:ring-2 focus:ring-ring"
                   >
-                    <option value="">Ders seçin</option>
+                    <option value="">{t("chatbot.greet")}</option>
                     {courses.map((c) => (
-                      <option key={c.id} value={c.id}>{c.name} ({c.code}) - {c.class_year ? `${c.class_year}. sınıf` : "Genel"}</option>
+                      <option key={c.id} value={c.id}>{c.name} ({c.code}) - {c.class_year ? `${c.class_year}. ${t("courses.classYear")}` : t("courses.general")}</option>
                     ))}
                   </select>
                   <input
                     type="text"
                     value={newAssignmentName}
                     onChange={(e) => setNewAssignmentName(e.target.value)}
-                    placeholder="Ödev başlığı"
+                    placeholder={t("chatbot.assignmentTitle")}
                     className="px-3 py-2 rounded-lg border border-input bg-background text-foreground text-sm focus:outline-none focus:ring-2 focus:ring-ring"
                   />
                   <textarea
                     value={newAssignmentDesc}
                     onChange={(e) => setNewAssignmentDesc(e.target.value)}
-                    placeholder="Ödev açıklaması"
+                    placeholder={t("chatbot.assignmentDesc")}
                     rows={4}
                     className="px-3 py-2 rounded-lg border border-input bg-background text-foreground text-sm placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring resize-none"
                   />
@@ -526,11 +534,11 @@ const FacultyDashboard = () => {
                   >
                     {assignmentSubmitting ? (
                       <>
-                        <Loader2 className="h-4 w-4 animate-spin" /> Ajan kontrol ediyor...
+                        <Loader2 className="h-4 w-4 animate-spin" /> {t("faculty.assignments.agentChecking")}
                       </>
                     ) : (
                       <>
-                        <Plus className="h-4 w-4" /> Ödev Ekle
+                        <Plus className="h-4 w-4" /> {t("faculty.assignments.create")}
                       </>
                     )}
                   </button>
@@ -539,12 +547,12 @@ const FacultyDashboard = () => {
 
               {/* Right: Assignment list */}
               <div>
-                <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wider mb-3">Düzenleyici</h2>
+                <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wider mb-3">{t("common.edit")}</h2>
                 <div className="space-y-2">
                   {assignments.length === 0 ? (
                     <div className="text-center py-8 text-sm text-muted-foreground">
                       <FileText className="h-6 w-6 mx-auto mb-2 opacity-40" />
-                      Henüz ödev eklenmemiş.
+                      {t("faculty.assignments.noAssignments")}
                     </div>
                   ) : (
                     assignments.map((a) => {
@@ -560,10 +568,10 @@ const FacultyDashboard = () => {
                           remainingLabel = "";
                           remainingColor = "text-destructive";
                         } else if (days === 0) {
-                          remainingLabel = `${hours} saat kaldı`;
+                          remainingLabel = `${hours} ${t("faculty.assignments.hoursRemaining")}`;
                           remainingColor = "text-orange-500";
                         } else {
-                          remainingLabel = `${days} gün kaldı`;
+                          remainingLabel = `${days} ${t("faculty.assignments.daysRemaining")}`;
                           remainingColor = days <= 3 ? "text-orange-500" : "text-emerald-500";
                         }
                       }
@@ -584,7 +592,7 @@ const FacultyDashboard = () => {
                                         "text-[10px] font-semibold uppercase tracking-wider px-1.5 py-0.5 rounded whitespace-nowrap",
                                         "bg-destructive/15 text-destructive"
                                       )}>
-                                        Geçmiş
+                                        {t("faculty.assignments.past")}
                                       </span>
                                     );
                                   }
@@ -595,7 +603,7 @@ const FacultyDashboard = () => {
                                         ? "bg-emerald-500/15 text-emerald-600"
                                         : "bg-yellow-500/15 text-yellow-600"
                                     )}>
-                                      {isApproved ? "Onaylandı" : "Taslak"}
+                                      {isApproved ? t("rubricModal.approved") : t("rubricModal.draft")}
                                     </span>
                                   );
                                 })()}
@@ -606,7 +614,7 @@ const FacultyDashboard = () => {
                                 )}
                               </div>
                               <p className="text-xs text-muted-foreground">
-                                {course?.name || "—"}{course?.code ? ` (${course.code})` : ""}{course?.class_year ? ` - ${course.class_year}. sınıf` : ""}
+                                {course?.name || "—"}{course?.code ? ` (${course.code})` : ""}{course?.class_year ? ` - ${course.class_year}. ${t("courses.classYear")}` : ""}
                                 {a.due_date && ` · ${format(new Date(a.due_date), "dd MMM yyyy HH:mm", { locale: dateLocale })}`}
                               </p>
                             </div>
@@ -616,7 +624,7 @@ const FacultyDashboard = () => {
                               onClick={() => setRubricModal({ open: true, assignment: a })}
                               className="flex items-center gap-1 px-3 py-1.5 rounded-lg bg-accent text-accent-foreground text-xs font-medium hover:bg-accent/80 transition-colors"
                             >
-                              <Pencil className="h-3 w-3" /> Düzenle
+                              <Pencil className="h-3 w-3" /> {t("common.edit")}
                             </button>
                             <button onClick={() => deleteAssignment(a.id)} className="text-muted-foreground hover:text-destructive transition-colors">
                               <Trash2 className="h-4 w-4" />
@@ -651,38 +659,59 @@ const FacultyDashboard = () => {
           </>
         )}
 
-        {activeTab === "settings" && teacher && <SettingsPanel teacher={teacher} onTeacherUpdate={setTeacher} />}
+        {activeTab === "settings" && teacher && (
+          <>
+            <div className="flex items-center justify-between mb-1">
+              <h1 className="text-2xl font-bold tracking-tight text-foreground">{t("faculty.settings.title")}</h1>
+              <LanguageToggle />
+            </div>
+            <p className="text-sm text-muted-foreground">{t("faculty.settings.subtitle")}</p>
+            <SettingsPanel teacher={teacher} onTeacherUpdate={setTeacher} />
+          </>
+        )}
 
-        {activeTab === "students" && <StudentsPanel departments={departments} />}
+        {activeTab === "students" && (
+          <>
+            <div className="flex items-center justify-between mb-1">
+              <h1 className="text-2xl font-bold tracking-tight text-foreground">{t("faculty.students.title")}</h1>
+              <LanguageToggle />
+            </div>
+            <p className="text-sm text-muted-foreground mb-4">{t("faculty.students.subtitle")}</p>
+            <StudentsPanel departments={departments} />
+          </>
+        )}
 
         {activeTab === "evaluations" && (
           <div className="flex h-full flex-col overflow-hidden">
-            <h1 className="mb-1 text-2xl font-bold tracking-tight text-foreground">{language === "tr" ? "Değerlendirmeler" : "Evaluations"}</h1>
+            <div className="flex items-center justify-between mb-1">
+              <h1 className="text-2xl font-bold tracking-tight text-foreground">{t("faculty.evaluations.title")}</h1>
+              <LanguageToggle />
+            </div>
             <p className="mb-6 text-sm text-muted-foreground">
-              {language === "tr" ? "Öğrenci değerlendirme listesi." : "Student evaluation list."}
+              {t("faculty.evaluations.subtitle")}
             </p>
 
             <div className="overflow-x-auto rounded-xl border border-border bg-card">
               <table className="w-full text-sm">
                 <thead className="sticky top-0 bg-muted/60 backdrop-blur">
                   <tr className="text-left text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-                    <th className="whitespace-nowrap px-4 py-3">Öğrenci No</th>
-                    <th className="whitespace-nowrap px-4 py-3">Ad</th>
-                    <th className="whitespace-nowrap px-4 py-3">Soyad</th>
-                    <th className="whitespace-nowrap px-4 py-3">Fayda</th>
-                    <th className="whitespace-nowrap px-4 py-3">Doğruluk</th>
-                    <th className="whitespace-nowrap px-4 py-3">Açıklık</th>
-                    <th className="whitespace-nowrap px-4 py-3">Yorum</th>
-                    <th className="whitespace-nowrap px-4 py-3">Durum</th>
-                    <th className="whitespace-nowrap px-4 py-3">Ödev</th>
-                    <th className="whitespace-nowrap px-4 py-3">Teslim Tarihi</th>
+                    <th className="whitespace-nowrap px-4 py-3">{t("faculty.evaluations.studentNo")}</th>
+                    <th className="whitespace-nowrap px-4 py-3">{t("faculty.evaluations.firstName")}</th>
+                    <th className="whitespace-nowrap px-4 py-3">{t("faculty.evaluations.lastName")}</th>
+                    <th className="whitespace-nowrap px-4 py-3">{t("faculty.evaluations.usefulness")}</th>
+                    <th className="whitespace-nowrap px-4 py-3">{t("faculty.evaluations.accuracy")}</th>
+                    <th className="whitespace-nowrap px-4 py-3">{t("faculty.evaluations.clarity")}</th>
+                    <th className="whitespace-nowrap px-4 py-3">{t("faculty.evaluations.comment")}</th>
+                    <th className="whitespace-nowrap px-4 py-3">{t("faculty.evaluations.status")}</th>
+                    <th className="whitespace-nowrap px-4 py-3">{t("faculty.evaluations.assignment")}</th>
+                    <th className="whitespace-nowrap px-4 py-3">{t("faculty.evaluations.deliveryDate")}</th>
                   </tr>
                 </thead>
                 <tbody>
                   {evaluations.length === 0 ? (
                     <tr>
                       <td className="px-4 py-8 text-center text-muted-foreground" colSpan={10}>
-                        {language === "tr" ? "Henüz değerlendirme yok." : "No evaluations yet."}
+                        {t("faculty.evaluations.noEvaluations")}
                       </td>
                     </tr>
                   ) : (
@@ -711,8 +740,8 @@ const FacultyDashboard = () => {
                               : "bg-emerald-500/15 text-emerald-700"
                           )}>
                             {evaluation.status === "pending"
-                              ? (language === "tr" ? "Bekliyor" : "Pending")
-                              : (language === "tr" ? "Gönderildi" : "Submitted")}
+                              ? t("faculty.evaluations.pending")
+                              : t("faculty.evaluations.submitted")}
                           </span>
                         </td>
                         <td className="whitespace-nowrap px-4 py-3 text-muted-foreground">{evaluation.uploaded_file_name}</td>

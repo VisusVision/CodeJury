@@ -126,7 +126,7 @@ const titleFromLongBrief = (raw: string) => {
     .replace(/^(öğrenciler|ogrenciler|öğrenci|ogrenci)\s+/i, "")
     .split(/[.!?]\s+/)[0]
     .trim();
-  if (!cleaned) return "Yeni Ödev";
+  if (!cleaned) return language === "tr" ? "Yeni Ödev" : "New Assignment";
   return cleaned.length > 90 ? `${cleaned.slice(0, 87).trim()}...` : cleaned;
 };
 
@@ -155,13 +155,13 @@ const AssignmentChatbot = ({ open, onClose, courses, teacherId, onCreated }: Pro
 
   useEffect(() => {
     if (open && messages.length === 0) {
-      addMsg({ from: "bot", text: "Merhaba! 👋 Hangi derse ödev oluşturmak istersiniz?" });
+      addMsg({ from: "bot", text: t("chatbot.greet") });
       addMsg({
         from: "bot",
         node: (
           <div className="flex flex-wrap gap-2 mt-1">
             {courses.length === 0 ? (
-              <span className="text-xs text-muted-foreground italic">Henüz ders eklenmemiş.</span>
+              <span className="text-xs text-muted-foreground italic">{t("chatbot.noCourses")}</span>
             ) : (
               courses.map((c) => (
                 <button
@@ -170,7 +170,7 @@ const AssignmentChatbot = ({ open, onClose, courses, teacherId, onCreated }: Pro
                   className="flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-primary/10 text-primary text-xs font-medium hover:bg-primary/20 transition-all hover:scale-105"
                 >
                   <BookOpen className="h-3 w-3" />
-                  {c.name} <span className="opacity-60">({c.code}) - {c.class_year ? `${c.class_year}. sınıf` : "Genel"}</span>
+                  {c.name} <span className="opacity-60">({c.code}) - {c.class_year ? `${c.class_year}. ${t("chatbot.classLabel")}` : t("chatbot.general")}</span>
                 </button>
               ))
             )}
@@ -204,10 +204,10 @@ const AssignmentChatbot = ({ open, onClose, courses, teacherId, onCreated }: Pro
 
   const handleCourseSelect = (c: Course) => {
     setCourse(c);
-    addMsg({ from: "user", text: `${c.name} (${c.code}) - ${c.class_year ? `${c.class_year}. sınıf` : "Genel"}` });
+    addMsg({ from: "user", text: `${c.name} (${c.code}) - ${c.class_year ? `${c.class_year}. ${t("chatbot.classLabel")}` : t("chatbot.general")}` });
     addMsg({
       from: "bot",
-      text: 'Harika seçim! 🎯 Hangi konu üzerinde çalışmak istersiniz? (örn. matematik, linked list). Konuyu yazdıktan sonra **kolay / orta / zor** seçmenizi isteyeceğim.',
+      text: t("chatbot.topicPrompt"),
     });
     setStep("askHint");
   };
@@ -216,7 +216,7 @@ const AssignmentChatbot = ({ open, onClose, courses, teacherId, onCreated }: Pro
     setStep("loadingSuggestions");
     setSuggestions([]);
     setSelectedSuggestionId(null);
-    addMsg({ from: "bot", text: "Sizin için yapay zekâdan ödev önerileri alıyorum... ✨" });
+    addMsg({ from: "bot", text: t("chatbot.fetchingSuggestions") });
     try {
       const fullHint = formatCourseHint(course, hint);
       const { suggestions: list } = await fetchAssignmentSuggestions(
@@ -228,23 +228,23 @@ const AssignmentChatbot = ({ open, onClose, courses, teacherId, onCreated }: Pro
       );
       setSuggestions(list);
       if (!list.length) {
-        addMsg({ from: "bot", text: "Üzgünüm, öneri üretemedim. İpucunuzu biraz daha detaylandırır mısınız?" });
+        addMsg({ from: "bot", text: t("chatbot.noSuggestions") });
         setStep("pickSuggestion");
         return;
       }
       addMsg({ from: "bot", text: commentaryForHint(hint) });
       setStep("pickSuggestion");
     } catch (e) {
-      const msg = e instanceof Error ? e.message : "Öneriler alınamadı";
+      const msg = e instanceof Error ? e.message : t("assignments.loadError");
       toast.error(msg);
-      addMsg({ from: "bot", text: `Bir sorun oluştu: ${msg}. Tekrar deneyebilirsiniz.` });
+      addMsg({ from: "bot", text: `${t("common.error")}: ${msg}.` });
       setStep("pickSuggestion");
     }
   };
 
   const handleDifficultyPick = (d: AssignmentDifficulty) => {
     setDifficultyLevel(d);
-    const label = d === "easy" ? "🟢 Kolay" : d === "medium" ? "🟡 Orta" : "🔴 Zor";
+    const label = d === "easy" ? `🟢 ${t("chatbot.easy")}` : d === "medium" ? `🟡 ${t("chatbot.medium")}` : `🔴 ${t("chatbot.hard")}`;
     addMsg({ from: "user", text: label });
     void loadSuggestions(hintMemo, d);
   };
@@ -267,8 +267,8 @@ const AssignmentChatbot = ({ open, onClose, courses, teacherId, onCreated }: Pro
         from: "bot",
         text:
           difficultyLevel != null
-            ? `İpucunu güncelliyorum: "${nextHint}". Yeni öneriler hazırlanıyor…`
-            : `İpucunu güncelliyorum: "${nextHint}". Tekrar zorluk seçin.`,
+            ? `${language === "tr" ? "İpucunu güncelliyorum" : "Updating hint"}: "${nextHint}". ${t("chatbot.preparing")}`
+            : `${language === "tr" ? "İpucunu güncelliyorum" : "Updating hint"}: "${nextHint}". ${language === "tr" ? "Tekrar zorluk seçin." : "Pick difficulty again."}`,
       });
     }
     setHintMemo(nextHint);
@@ -276,8 +276,7 @@ const AssignmentChatbot = ({ open, onClose, courses, teacherId, onCreated }: Pro
     if (!difficultyLevel) {
       addMsg({
         from: "bot",
-        text:
-          "**Zorluk düzeyi:** Kolay seçersen gerçekten kısıtlı bir ödev (tek dosya / birkaç kısa fonksiyon) üretilir; orta tipik bir ödev; zor çok parçalı ve daha seçici kabul kriterleri ister. Aşağıdan birini seçin.",
+        text: t("chatbot.difficultyPrompt"),
       });
       setStep("pickDifficulty");
       return;
@@ -286,8 +285,8 @@ const AssignmentChatbot = ({ open, onClose, courses, teacherId, onCreated }: Pro
   };
 
   const refreshSuggestions = () => {
-    addMsg({ from: "user", text: "🔁 Yeni öneriler" });
-    addMsg({ from: "bot", text: "Aynı ipucu ve zorlukla yeni 5 öneri hazırlıyorum…" });
+    addMsg({ from: "user", text: t("chatbot.newSuggestions") });
+    addMsg({ from: "bot", text: t("chatbot.newSuggestionsMsg") });
     void loadSuggestions(hintMemo, difficultyLevel ?? "medium", true);
   };
 
@@ -295,10 +294,10 @@ const AssignmentChatbot = ({ open, onClose, courses, teacherId, onCreated }: Pro
     setSelectedSuggestionId(s.id);
     setTitle(s.title);
     setDescription(s.description);
-    addMsg({ from: "user", text: `Seçtim: ${s.title}` });
+    addMsg({ from: "user", text: `${language === "tr" ? "Seçtim" : "Selected"}: ${s.title}` });
     addMsg({
       from: "bot",
-      text: `Güzel seçim! "${s.title}" detaylarını aşağıda hazırladım. Başlığı veya metni düzenleyebilir, beğenirsen onaylayıp tarihe geçebilirsin. Beğenmezsen listeye dönüp başka birini seçebilirsin.`,
+      text: `${language === "tr" ? "Güzel seçim!" : "Great choice!"} "${s.title}" ${language === "tr" ? "detaylarını aşağıda hazırladım. Başlığı veya metni düzenleyebilir, beğenirsen onaylayıp tarihe geçebilirsin. Beğenmezsen listeye dönüp başka birini seçebilirsin." : "details are ready below. You can edit the title or description, approve it if you like, or go back to the list."}`,
     });
     setEditingDesc(false);
     setStep("rateDesc");
@@ -306,14 +305,14 @@ const AssignmentChatbot = ({ open, onClose, courses, teacherId, onCreated }: Pro
 
   const handleRateDesc = (good: boolean) => {
     if (good) {
-      addMsg({ from: "user", text: "👍 Beğendim" });
-      addMsg({ from: "bot", text: "Süper! Şimdi ödevin son teslim tarihini seçelim. 📅" });
+      addMsg({ from: "user", text: t("chatbot.liked") });
+      addMsg({ from: "bot", text: t("chatbot.likedMsg") });
       setStep("askDate");
     } else {
-      addMsg({ from: "user", text: "👎 Bu olmadı" });
+      addMsg({ from: "user", text: t("chatbot.disliked") });
       addMsg({
         from: "bot",
-        text: "Tamam, listeye geri dönüyorum. Başka bir öneri seçebilir veya altta yeni bir konu yazıp listeyi yenileyebilirsin.",
+        text: t("chatbot.dislikedMsg"),
       });
       setSelectedSuggestionId(null);
       setStep("pickSuggestion");
@@ -322,7 +321,7 @@ const AssignmentChatbot = ({ open, onClose, courses, teacherId, onCreated }: Pro
 
   const handleBackToList = () => {
     setSelectedSuggestionId(null);
-    addMsg({ from: "bot", text: "Listeye döndüm. İstersen başka bir öneri seç ya da altta yeni ipucu yaz." });
+    addMsg({ from: "bot", text: t("chatbot.dislikedMsg") });
     setStep("pickSuggestion");
   };
 
@@ -330,7 +329,7 @@ const AssignmentChatbot = ({ open, onClose, courses, teacherId, onCreated }: Pro
     if (!d) return;
     setDate(d);
     addMsg({ from: "user", text: format(d, "dd MMM yyyy", { locale: dateLocale }) });
-    addMsg({ from: "bot", text: "Şimdi son teslim saatini belirleyin. ⏰" });
+    addMsg({ from: "bot", text: t("chatbot.selectTime") });
     setStep("askTime");
   };
 
@@ -339,15 +338,15 @@ const AssignmentChatbot = ({ open, onClose, courses, teacherId, onCreated }: Pro
     const dueLabel = `${format(date!, "dd MMM yyyy", { locale: dateLocale })} - ${time}`;
     addMsg({
       from: "bot",
-      text: `Tamamdır! 📋 Aşağıdaki ödevi oluşturmak istediğinizi onaylıyor musunuz?\n\n• Ders: ${course?.name}${course?.class_year ? ` (${course.class_year}. sınıf)` : ""}\n• Başlık: ${title}\n• Son Teslim: ${dueLabel}`,
+      text: `${t("chatbot.confirmCreate")}\n\n• ${t("chatbot.course")}: ${course?.name}${course?.class_year ? ` (${course.class_year}. ${t("chatbot.classLabel")})` : ""}\n• ${t("chatbot.titleLabel")}: ${title}\n• ${t("chatbot.deadline")}: ${dueLabel}`,
     });
     setStep("confirm");
   };
 
   const handleConfirm = async (yes: boolean) => {
     if (!yes) {
-      addMsg({ from: "user", text: "❌ Hayır" });
-      addMsg({ from: "bot", text: "Anladım, ödev oluşturulmadı. İstediğinizde tekrar başlayabilirsiniz. 👋" });
+      addMsg({ from: "user", text: t("chatbot.noConfirm") });
+      addMsg({ from: "bot", text: t("chatbot.noCancelMsg") });
       setStep("done");
       return;
     }
@@ -355,8 +354,8 @@ const AssignmentChatbot = ({ open, onClose, courses, teacherId, onCreated }: Pro
       toast.error("Eksik bilgi");
       return;
     }
-    addMsg({ from: "user", text: "✅ Evet, onaylıyorum" });
-    addMsg({ from: "bot", text: "Ödev Güvenlik Ajanı kayıt öncesi son kontrolü yapıyor..." });
+    addMsg({ from: "user", text: t("chatbot.yesConfirm") });
+    addMsg({ from: "bot", text: t("chatbot.securityCheck") });
     setSubmitting(true);
     try {
       const [h, m] = time.split(":").map(Number);
@@ -369,8 +368,8 @@ const AssignmentChatbot = ({ open, onClose, courses, teacherId, onCreated }: Pro
         course_id: course.id,
         due_date: d.toISOString(),
       });
-      toast.success("Ödev oluşturuldu! 🎉");
-      addMsg({ from: "bot", text: "Ödev başarıyla oluşturuldu! 🎉 Listede görebilirsiniz." });
+      toast.success(t("chatbot.createdSuccessShort"));
+      addMsg({ from: "bot", text: t("chatbot.createdSuccess") });
       setStep("done");
       onCreated();
     } catch (e) {
@@ -389,9 +388,9 @@ const AssignmentChatbot = ({ open, onClose, courses, teacherId, onCreated }: Pro
         <div className="flex items-center gap-2.5">
           <div className="text-2xl drop-shadow-md">🤖</div>
           <div>
-            <p className="text-sm font-semibold leading-tight">Ödev Asistanı</p>
+            <p className="text-sm font-semibold leading-tight">{t("chatbot.title")}</p>
             <p className="text-[10px] opacity-80 flex items-center gap-1">
-              <span className="h-1.5 w-1.5 rounded-full bg-emerald-400 animate-pulse" /> AI ile çevrimiçi
+              <span className="h-1.5 w-1.5 rounded-full bg-emerald-400 animate-pulse" /> {t("chatbot.online")}
             </p>
           </div>
         </div>
@@ -421,7 +420,7 @@ const AssignmentChatbot = ({ open, onClose, courses, teacherId, onCreated }: Pro
           <div className="flex justify-start animate-fade-in">
             <div className="max-w-[92%] w-full rounded-2xl rounded-bl-sm border border-border bg-card shadow-sm p-3 space-y-2">
               <p className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground flex items-center gap-1">
-                <Sparkles className="h-3 w-3 text-primary" /> Zorluk
+                <Sparkles className="h-3 w-3 text-primary" /> {t("chatbot.difficultyTitle")}
               </p>
               <div className="flex flex-col gap-2">
                 <button
@@ -429,9 +428,9 @@ const AssignmentChatbot = ({ open, onClose, courses, teacherId, onCreated }: Pro
                   onClick={() => handleDifficultyPick("easy")}
                   className="w-full text-left rounded-xl border border-emerald-500/35 bg-emerald-500/10 px-3 py-2.5 hover:bg-emerald-500/15 transition-colors"
                 >
-                  <span className="text-xs font-semibold text-emerald-800 dark:text-emerald-200">Kolay</span>
+                  <span className="text-xs font-semibold text-emerald-800 dark:text-emerald-200">{t("chatbot.easy")}</span>
                   <p className="text-[11px] text-muted-foreground mt-0.5 leading-snug">
-                    Küçük kapsam — birkaç kısa fonksiyon, basit matematik/tekrar kodu (örn. factorial, küçük N).
+                    {t("chatbot.easyDesc")}
                   </p>
                 </button>
                 <button
@@ -439,9 +438,9 @@ const AssignmentChatbot = ({ open, onClose, courses, teacherId, onCreated }: Pro
                   onClick={() => handleDifficultyPick("medium")}
                   className="w-full text-left rounded-xl border border-amber-500/40 bg-amber-500/10 px-3 py-2.5 hover:bg-amber-500/15 transition-colors"
                 >
-                  <span className="text-xs font-semibold text-amber-900 dark:text-amber-100">Orta</span>
+                  <span className="text-xs font-semibold text-amber-900 dark:text-amber-100">{t("chatbot.medium")}</span>
                   <p className="text-[11px] text-muted-foreground mt-0.5 leading-snug">
-                    Tipik homework — birkaç modül fonksiyon veya küçük sınıf yapısı, biraz veri yapısı veya nümerik adım.
+                    {t("chatbot.mediumDesc")}
                   </p>
                 </button>
                 <button
@@ -449,9 +448,9 @@ const AssignmentChatbot = ({ open, onClose, courses, teacherId, onCreated }: Pro
                   onClick={() => handleDifficultyPick("hard")}
                   className="w-full text-left rounded-xl border border-red-500/35 bg-red-500/10 px-3 py-2.5 hover:bg-red-500/15 transition-colors"
                 >
-                  <span className="text-xs font-semibold text-red-900 dark:text-red-100">Zor</span>
+                  <span className="text-xs font-semibold text-red-900 dark:text-red-100">{t("chatbot.hard")}</span>
                   <p className="text-[11px] text-muted-foreground mt-0.5 leading-snug">
-                    Çok parçalı — kenar örnekler, ek senaryolar, karşılaştırmalı yöntem veya daha ağır algoritma beklentisi.
+                    {t("chatbot.hardDesc")}
                   </p>
                 </button>
               </div>
@@ -462,7 +461,7 @@ const AssignmentChatbot = ({ open, onClose, courses, teacherId, onCreated }: Pro
         {step === "loadingSuggestions" && (
           <div className="flex justify-start animate-fade-in">
             <div className="rounded-2xl rounded-bl-sm border border-border bg-card shadow-sm px-3.5 py-2 text-xs text-muted-foreground flex items-center gap-2">
-              <Loader2 className="h-3.5 w-3.5 animate-spin text-primary" /> Öneriler hazırlanıyor…
+              <Loader2 className="h-3.5 w-3.5 animate-spin text-primary" /> {t("chatbot.preparing")}
             </div>
           </div>
         )}
@@ -472,13 +471,13 @@ const AssignmentChatbot = ({ open, onClose, courses, teacherId, onCreated }: Pro
             <div className="max-w-[92%] w-full rounded-2xl rounded-bl-sm border border-border bg-card shadow-sm overflow-hidden">
               <div className="flex items-center justify-between px-3 py-2 bg-muted/50 border-b border-border">
                 <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground flex items-center gap-1">
-                  <Sparkles className="h-3 w-3 text-primary" /> AI Önerileri
+                  <Sparkles className="h-3 w-3 text-primary" /> {t("chatbot.aiSuggestions")}
                 </span>
                 <button
                   onClick={refreshSuggestions}
                   className="text-[10px] font-medium text-primary hover:underline"
                 >
-                  Yeniden öner
+                  {t("chatbot.refreshSuggestions")}
                 </button>
               </div>
               <div className="divide-y divide-border max-h-[320px] overflow-y-auto">
@@ -508,7 +507,7 @@ const AssignmentChatbot = ({ open, onClose, courses, teacherId, onCreated }: Pro
             <div className="max-w-[92%] w-full rounded-2xl rounded-bl-sm border border-border bg-card shadow-sm overflow-hidden">
               <div className="flex items-center justify-between px-3 py-2 bg-muted/50 border-b border-border">
                 <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground flex items-center gap-1">
-                  <Sparkles className="h-3 w-3 text-primary" /> Seçilen ödev {editingDesc ? "· Düzenleniyor" : ""}
+                  <Sparkles className="h-3 w-3 text-primary" /> {t("chatbot.selectedAssignment")} {editingDesc ? `· ${t("chatbot.editing")}` : ""}
                 </span>
               </div>
               <div className="px-3 pt-2">
@@ -517,7 +516,7 @@ const AssignmentChatbot = ({ open, onClose, courses, teacherId, onCreated }: Pro
                     autoFocus
                     value={title}
                     onChange={(e) => setTitle(e.target.value)}
-                    placeholder="Ödev başlığı"
+                    placeholder={t("chatbot.assignmentTitle")}
                     className="w-full px-2 py-1 text-xs font-semibold rounded border border-primary/40 bg-background text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
                   />
                 ) : (
@@ -530,7 +529,7 @@ const AssignmentChatbot = ({ open, onClose, courses, teacherId, onCreated }: Pro
                     value={description}
                     onChange={(e) => setDescription(e.target.value)}
                     rows={8}
-                    placeholder="Ödev açıklaması — istediğin gibi düzenleyebilirsin"
+                    placeholder={t("chatbot.assignmentDesc")}
                     className="w-full px-2 py-2 text-xs rounded border border-primary/40 bg-background text-foreground focus:outline-none focus:ring-2 focus:ring-ring resize-y"
                   />
                 </div>
@@ -543,19 +542,19 @@ const AssignmentChatbot = ({ open, onClose, courses, teacherId, onCreated }: Pro
                     onClick={() => handleRateDesc(true)}
                     className="flex-1 flex items-center justify-center gap-1 px-3 py-1.5 rounded-lg bg-emerald-500/15 text-emerald-600 text-xs font-medium hover:bg-emerald-500/25 transition-colors"
                   >
-                    <ThumbsUp className="h-3 w-3" /> İyi, devam
+                    <ThumbsUp className="h-3 w-3" /> {t("chatbot.approve")}
                   </button>
                   <button
                     onClick={() => setEditingDesc(true)}
                     className="flex-1 flex items-center justify-center gap-1 px-3 py-1.5 rounded-lg bg-primary/10 text-primary text-xs font-medium hover:bg-primary/20 transition-colors"
                   >
-                    <Pencil className="h-3 w-3" /> Düzenle
+                    <Pencil className="h-3 w-3" /> {t("chatbot.editBtn")}
                   </button>
                   <button
                     onClick={handleBackToList}
                     className="flex-1 flex items-center justify-center gap-1 px-3 py-1.5 rounded-lg bg-muted text-foreground text-xs font-medium hover:bg-muted/70 transition-colors"
                   >
-                    <ThumbsDown className="h-3 w-3" /> Listeye dön
+                    <ThumbsDown className="h-3 w-3" /> {t("chatbot.backToList")}
                   </button>
                 </div>
               ) : (
@@ -563,11 +562,11 @@ const AssignmentChatbot = ({ open, onClose, courses, teacherId, onCreated }: Pro
                   <button
                     onClick={() => {
                       setEditingDesc(false);
-                      addMsg({ from: "bot", text: "Düzenleme kaydedildi. Hazırsan onaylayabilirsin." });
+                      addMsg({ from: "bot", text: t("chatbot.editSaved") });
                     }}
                     className="flex-1 flex items-center justify-center gap-1 px-3 py-1.5 rounded-lg bg-emerald-500 text-white text-xs font-medium hover:brightness-110 transition-all"
                   >
-                    <Check className="h-3 w-3" /> Düzenlemeyi bitir
+                    <Check className="h-3 w-3" /> {t("chatbot.finishEdit")}
                   </button>
                 </div>
               )}
@@ -616,7 +615,7 @@ const AssignmentChatbot = ({ open, onClose, courses, teacherId, onCreated }: Pro
                 onClick={handleTimeConfirm}
                 className="px-3 py-1.5 rounded-lg bg-primary text-primary-foreground text-xs font-medium hover:brightness-110 transition-all"
               >
-                Devam
+                {t("common.continue")}
               </button>
             </div>
           </div>
@@ -625,18 +624,18 @@ const AssignmentChatbot = ({ open, onClose, courses, teacherId, onCreated }: Pro
         {step === "confirm" && (
           <div className="flex justify-start gap-2 animate-fade-in pl-1">
             <button
-              disabled={submitting}
+               disabled={submitting}
               onClick={() => handleConfirm(true)}
               className="flex items-center gap-1 px-3 py-1.5 rounded-lg bg-emerald-500 text-white text-xs font-medium hover:brightness-110 transition-all disabled:opacity-60"
             >
-              <Check className="h-3 w-3" /> {submitting ? "Oluşturuluyor..." : "Evet, onayla"}
+              <Check className="h-3 w-3" /> {submitting ? t("chatbot.creating") : t("chatbot.yesConfirmBtn")}
             </button>
             <button
-              disabled={submitting}
+               disabled={submitting}
               onClick={() => handleConfirm(false)}
               className="flex items-center gap-1 px-3 py-1.5 rounded-lg bg-muted text-foreground text-xs font-medium hover:bg-muted/80 transition-colors"
             >
-              <X className="h-3 w-3" /> Hayır
+              <X className="h-3 w-3" /> {t("chatbot.noConfirm")}
             </button>
           </div>
         )}
@@ -646,20 +645,20 @@ const AssignmentChatbot = ({ open, onClose, courses, teacherId, onCreated }: Pro
         <div className="border-t border-border p-3 bg-card">
           {step !== "askHint" && hintMemo && (
             <div className="mb-2 flex items-center gap-2 text-[11px] text-muted-foreground">
-              <span className="px-2 py-0.5 rounded-full bg-muted">Mevcut ipucu: {hintMemo}</span>
+              <span className="px-2 py-0.5 rounded-full bg-muted">{t("chatbot.currentHint")}: {hintMemo}</span>
               <button
                 type="button"
                 onClick={() => {
                   setHintMemo("");
                   setDifficultyLevel(null);
-                  setSuggestions([]);
+                   setSuggestions([]);
                   setSelectedSuggestionId(null);
-                  addMsg({ from: "bot", text: "İpucunu sıfırladım. Yeni baştan konu yaz, lütfen." });
+                  addMsg({ from: "bot", text: t("chatbot.resetHintMsg") });
                   setStep("askHint");
                 }}
                 className="text-[11px] text-primary hover:underline"
               >
-                Sıfırla
+                {t("chatbot.resetHint")}
               </button>
             </div>
           )}
@@ -674,18 +673,18 @@ const AssignmentChatbot = ({ open, onClose, courses, teacherId, onCreated }: Pro
                   handleHintSubmit();
                 }
               }}
-              placeholder={
+               placeholder={
                 step === "askHint"
-                  ? "Konu, anahtar kelime veya uzun ödev açıklaması yazın..."
-                  : "Daraltmak için yaz (örn. 'matris çarpımı', 'AVL ağacı')..."
+                  ? t("chatbot.hintPlaceholder")
+                  : t("chatbot.hintNarrowPlaceholder")
               }
               rows={hintInput.length > 120 ? 4 : 2}
               className="flex-1 max-h-32 resize-y px-3 py-2 rounded-lg border border-input bg-background text-foreground text-sm focus:outline-none focus:ring-2 focus:ring-ring"
             />
-            <button
+             <button
               onClick={handleHintSubmit}
               className="p-2 rounded-lg bg-primary text-primary-foreground hover:brightness-110 transition-all"
-              title="Gönder"
+              title={t("chatbot.send")}
             >
               <Send className="h-4 w-4" />
             </button>
@@ -695,11 +694,11 @@ const AssignmentChatbot = ({ open, onClose, courses, teacherId, onCreated }: Pro
 
       {step === "done" && (
         <div className="border-t border-border p-3 bg-card">
-          <button
+           <button
             onClick={onClose}
             className="w-full px-3 py-2 rounded-lg bg-primary text-primary-foreground text-sm font-medium hover:brightness-110 transition-all"
           >
-            Kapat
+            {t("common.close")}
           </button>
         </div>
       )}
