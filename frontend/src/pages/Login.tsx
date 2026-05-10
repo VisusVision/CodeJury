@@ -140,7 +140,7 @@ const Login = () => {
                 type="text"
                 value={studentNo}
                 onChange={(e) => setStudentNo(e.target.value)}
-                placeholder="Örn: 2021001"
+                placeholder={t("login.studentNoPlaceholder")}
                 className="w-full px-3 py-2.5 rounded-lg border border-input bg-background text-foreground text-sm placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring"
               />
             </div>
@@ -210,7 +210,7 @@ const Login = () => {
                 type="email"
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
-                placeholder="ornek@universite.edu.tr"
+                placeholder={t("login.emailPlaceholder")}
                 className="w-full px-3 py-2.5 rounded-lg border border-input bg-background text-foreground text-sm placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring"
               />
             </div>

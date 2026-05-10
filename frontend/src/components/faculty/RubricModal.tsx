@@ -55,12 +55,12 @@ const criterionCountOptions = Array.from(
 const clampCriterionCount = (value: number) =>
   Math.max(RUBRIC_MIN_CRITERIA, Math.min(RUBRIC_MAX_CRITERIA, value));
 
-const getRubricValidationMessage = (criteria: RubricCriterion[]) => {
+const getRubricValidationMessage = (criteria: RubricCriterion[], t: any) => {
   if (criteria.length < RUBRIC_MIN_CRITERIA || criteria.length > RUBRIC_MAX_CRITERIA) {
-    return `Rubrik ${RUBRIC_MIN_CRITERIA}-${RUBRIC_MAX_CRITERIA} kriterden oluşmalıdır.`;
+    return t("faculty.rubricModal.validationMinMax");
   }
   if (criteria.some((criterion) => !criterion.name.trim())) {
-    return "Tum kriterlerin adı doldurulmalıdır.";
+    return t("faculty.rubricModal.validationEmptyName");
   }
   if (
     criteria.some((criterion) => {
@@ -68,11 +68,11 @@ const getRubricValidationMessage = (criteria: RubricCriterion[]) => {
       return !Number.isInteger(score) || score < RUBRIC_MIN_POINTS || score > RUBRIC_MAX_POINTS;
     })
   ) {
-    return `Her kriter puanı ${RUBRIC_MIN_POINTS}-${RUBRIC_MAX_POINTS} arasında tam sayı olmalıdır.`;
+    return t("faculty.rubricModal.validationScoreRange");
   }
   const total = criteria.reduce((sum, criterion) => sum + (Number(criterion.max_score) || 0), 0);
   if (total !== RUBRIC_TOTAL_POINTS) {
-    return `Rubrik toplam puanı ${RUBRIC_TOTAL_POINTS} olmalıdır.`;
+    return t("faculty.rubricModal.validationTotalPoints");
   }
   return null;
 };
@@ -103,7 +103,7 @@ const RubricModal = ({ assignment, teacherId, open, onClose }: RubricModalProps)
     if (!open) return;
     const aid = String(assignment?.id ?? "").trim();
     if (!aid) {
-      toast.error("Geçersiz ödev kimliği");
+      toast.error(t("faculty.rubricModal.loadError") || "Geçersiz ödev kimliği");
       return;
     }
 
@@ -133,7 +133,7 @@ const RubricModal = ({ assignment, teacherId, open, onClose }: RubricModalProps)
         const selectedIds = new Set(assignmentQuestions.map((q) => q.id));
         setSelectedQuestionIds(selectedIds);
       } catch (err: unknown) {
-        const msg = err instanceof Error ? err.message : "Veri yüklenemedi";
+        const msg = err instanceof Error ? err.message : t("faculty.rubricModal.loadError");
         toast.error(msg);
       } finally {
         setLoading(false);
@@ -154,7 +154,7 @@ const RubricModal = ({ assignment, teacherId, open, onClose }: RubricModalProps)
         report_language: language,
       });
       setCriteria(data.criteria || []);
-      toast.success(t("rubricModal.aiSuccess"));
+      toast.success(t("faculty.rubricModal.aiSuccess") || (language === "tr" ? "AI Önerisi Alındı" : "AI Suggestion Received"));
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : t("common.error");
       toast.error(msg);
@@ -177,14 +177,14 @@ const RubricModal = ({ assignment, teacherId, open, onClose }: RubricModalProps)
 
   const addCriterion = () => {
     if (criteria.length >= RUBRIC_MAX_CRITERIA) {
-      toast.error(`En fazla ${RUBRIC_MAX_CRITERIA} kriter eklenebilir.`);
+      toast.error(`${language === "tr" ? "En fazla" : "Maximum"} ${RUBRIC_MAX_CRITERIA} ${t("faculty.rubricModal.item")} ${language === "tr" ? "eklenebilir" : "can be added"}.`);
       return;
     }
     setCriteria([...criteria, { name: "", description: "", max_score: RUBRIC_MIN_POINTS }]);
   };
 
   const saveRubric = async (status: "draft" | "approved") => {
-    const validationMessage = getRubricValidationMessage(criteria);
+    const validationMessage = getRubricValidationMessage(criteria, t);
     if (validationMessage) {
       toast.error(validationMessage);
       return;
@@ -198,16 +198,16 @@ const RubricModal = ({ assignment, teacherId, open, onClose }: RubricModalProps)
         created_by: teacherId,
       });
       setRubric(saved);
-      toast.success(status === "approved" ? "Rubrik onaylandı!" : "Rubrik taslak olarak kaydedildi.");
+      toast.success(status === "approved" ? t("faculty.rubricModal.saveApproveSuccess") : t("faculty.rubricModal.saveDraftSuccess"));
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : "Kaydetme hatası";
+      const msg = err instanceof Error ? err.message : (language === "tr" ? "Kaydetme hatası" : "Save error");
       toast.error(msg);
     }
   };
 
   const handleCreateQuestion = async () => {
     if (!newQuestionContent.trim()) {
-      toast.error("Soru içeriği boş olamaz");
+      toast.error(language === "tr" ? "Soru içeriği boş olamaz" : "Question content cannot be empty");
       return;
     }
 
@@ -220,9 +220,9 @@ const RubricModal = ({ assignment, teacherId, open, onClose }: RubricModalProps)
       setQuestions([...questions, newQuestion]);
       setNewQuestionContent("");
       setNewQuestionColor("blue");
-      toast.success("Soru oluşturuldu");
+      toast.success(t("faculty.rubricModal.questionCreated"));
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : "Soru oluşturulamadı";
+      const msg = err instanceof Error ? err.message : (language === "tr" ? "Soru oluşturulamadı" : "Question could not be created");
       toast.error(msg);
     } finally {
       setQuestionCreateLoading(false);
@@ -252,9 +252,9 @@ const RubricModal = ({ assignment, teacherId, open, onClose }: RubricModalProps)
         assignment_id: assignment.id,
         question_ids: Array.from(selectedQuestionIds),
       });
-      toast.success("Sorular kaydedildi");
+      toast.success(t("faculty.rubricModal.questionsSaved"));
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : "Sorular kaydedilemedi";
+      const msg = err instanceof Error ? err.message : (language === "tr" ? "Sorular kaydedilemedi" : "Questions could not be saved");
       toast.error(msg);
     } finally {
       setQuestionSaveLoading(false);
@@ -266,9 +266,9 @@ const RubricModal = ({ assignment, teacherId, open, onClose }: RubricModalProps)
       await deleteQuestion(questionId);
       setQuestions(questions.filter((q) => q.id !== questionId));
       removeSelectedQuestion(questionId);
-      toast.success("Soru silindi");
+      toast.success(t("faculty.rubricModal.questionDeleted"));
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : "Soru silinemedi";
+      const msg = err instanceof Error ? err.message : (language === "tr" ? "Soru silinemedi" : "Question could not be deleted");
       toast.error(msg);
     }
   };
@@ -312,7 +312,7 @@ const RubricModal = ({ assignment, teacherId, open, onClose }: RubricModalProps)
       <div className="relative bg-background border border-border rounded-2xl shadow-2xl w-full max-w-3xl h-[85vh] max-h-[85vh] flex flex-col mx-4">
         <div className="flex items-start justify-between gap-4 p-5 border-b border-border shrink-0">
           <div className="space-y-1">
-            <h2 className="text-lg font-bold text-foreground">Rubrik & Sorular Düzenleyici</h2>
+            <h2 className="text-lg font-bold text-foreground">{t("faculty.rubricModal.title")}</h2>
             <p className="text-xs text-muted-foreground">{assignment.name}</p>
           </div>
           <div className="flex items-center gap-3">
@@ -324,7 +324,7 @@ const RubricModal = ({ assignment, teacherId, open, onClose }: RubricModalProps)
                     : "bg-yellow-100 text-yellow-800 dark:bg-yellow-900/30 dark:text-yellow-400"
                 }`}
               >
-                {rubric.status === "approved" ? "Onaylandı" : "Taslak"}
+                {rubric.status === "approved" ? t("faculty.evaluations.evaluated") : t("faculty.evaluations.notEvaluated")}
               </span>
             )}
             <button type="button" onClick={onClose} className="text-muted-foreground hover:text-foreground transition-colors">
@@ -344,7 +344,7 @@ const RubricModal = ({ assignment, teacherId, open, onClose }: RubricModalProps)
                 : "text-muted-foreground border-transparent hover:text-foreground"
             }`}
           >
-            Rubrik Kriterleri
+            {t("faculty.rubricModal.rubricCriteria")}
           </button>
           <button
             type="button"
@@ -355,7 +355,7 @@ const RubricModal = ({ assignment, teacherId, open, onClose }: RubricModalProps)
                 : "text-muted-foreground border-transparent hover:text-foreground"
             }`}
           >
-            Sorular ({selectedQuestions.length})
+            {t("faculty.rubricModal.questions")} ({selectedQuestions.length})
           </button>
         </div>
 
@@ -364,7 +364,7 @@ const RubricModal = ({ assignment, teacherId, open, onClose }: RubricModalProps)
           {activeTab === "rubric" && (
             <div className="p-5 space-y-4">
               {loading ? (
-                <div className="flex items-center justify-center py-12 text-muted-foreground text-sm">Yükleniyor...</div>
+                <div className="flex items-center justify-center py-12 text-muted-foreground text-sm">{t("common.loading")}</div>
               ) : (
                 <>
                   {assignment.description && (
@@ -374,7 +374,7 @@ const RubricModal = ({ assignment, teacherId, open, onClose }: RubricModalProps)
                   <div className="flex items-center justify-between gap-3 rounded-xl border border-border bg-muted/20 p-3">
                     <div className="flex items-center gap-1.5">
                       <label htmlFor="rubric-criterion-count" className="text-xs font-medium text-foreground">
-                        Kriter Sayısı
+                        {t("faculty.rubricModal.criterionCount")}
                       </label>
                       <div className="relative">
                         <Info
@@ -384,7 +384,7 @@ const RubricModal = ({ assignment, teacherId, open, onClose }: RubricModalProps)
                         />
                         {criterionCountTooltipOpen && (
                           <div className="absolute bottom-full left-0 mb-1 bg-popover border border-border rounded-lg px-2 py-1 text-xs text-muted-foreground whitespace-nowrap z-50">
-                            10-20 kriterden her kriter 5-10 puan arası, toplam 100 puan.
+                            10-20 {t("faculty.rubricModal.item")} - 5-10 pt, total 100 pt.
                           </div>
                         )}
                       </div>
@@ -396,7 +396,7 @@ const RubricModal = ({ assignment, teacherId, open, onClose }: RubricModalProps)
                         className="h-9 rounded-lg border border-input bg-background px-3 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
                       >
                         {criterionCountOptions.map((count) => (
-                          <option key={count} value={count}>{count} madde</option>
+                          <option key={count} value={count}>{count} {t("faculty.rubricModal.item")}</option>
                         ))}
                       </select>
                     </div>
@@ -407,7 +407,7 @@ const RubricModal = ({ assignment, teacherId, open, onClose }: RubricModalProps)
                       className="flex items-center justify-center gap-2 px-4 py-2 rounded-lg bg-gradient-to-r from-primary to-primary/80 text-primary-foreground text-sm font-medium hover:brightness-110 transition-all disabled:opacity-50"
                     >
                       {aiLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Sparkles className="h-4 w-4" />}
-                      {aiLoading ? "AI düşünüyor..." : "AI Rubrik Önerisi Al"}
+                      {aiLoading ? t("faculty.rubricModal.aiThinking") : t("faculty.rubricModal.aiSuggestionBtn")}
                     </button>
                   </div>
 
@@ -420,13 +420,13 @@ const RubricModal = ({ assignment, teacherId, open, onClose }: RubricModalProps)
                               type="text"
                               value={c.name}
                               onChange={(e) => updateCriterion(i, "name", e.target.value)}
-                              placeholder="Kriter adı"
+                              placeholder={t("faculty.rubricModal.placeholderName")}
                               className="w-full px-3 py-1 rounded-lg border border-input bg-background text-foreground text-sm font-medium focus:outline-none focus:ring-2 focus:ring-ring"
                             />
                             <textarea
                               value={c.description}
                               onChange={(e) => updateCriterion(i, "description", e.target.value)}
-                              placeholder="Açıklama"
+                              placeholder={t("faculty.rubricModal.placeholderDesc")}
                               rows={2}
                               className="w-full px-3 py-1 rounded-lg border border-input bg-background text-foreground text-sm focus:outline-none focus:ring-2 focus:ring-ring resize-none"
                             />
@@ -462,7 +462,7 @@ const RubricModal = ({ assignment, teacherId, open, onClose }: RubricModalProps)
                     disabled={criteria.length >= RUBRIC_MAX_CRITERIA}
                     className="flex items-center gap-1 px-3 py-1.5 rounded-lg border border-dashed border-border text-sm text-muted-foreground hover:text-foreground hover:border-primary/50 transition-colors disabled:cursor-not-allowed disabled:opacity-50"
                   >
-                    <Plus className="h-4 w-4" /> Kriter Ekle
+                    <Plus className="h-4 w-4" /> {t("faculty.rubricModal.addCriterion")}
                   </button>
                 </>
               )}
@@ -472,17 +472,17 @@ const RubricModal = ({ assignment, teacherId, open, onClose }: RubricModalProps)
           {activeTab === "questions" && (
             <div className="p-5 space-y-4">
               {questionsLoading ? (
-                <div className="flex items-center justify-center py-12 text-muted-foreground text-sm">Sorular yükleniyor...</div>
+                <div className="flex items-center justify-center py-12 text-muted-foreground text-sm">{language === "tr" ? "Sorular yükleniyor..." : "Questions loading..."}</div>
               ) : (
                 <>
                   {/* Create new question */}
                   <div className="p-3 rounded-lg border border-border bg-card space-y-2">
-                    <p className="text-xs font-medium text-foreground">Yeni Soru Oluştur</p>
+                    <p className="text-xs font-medium text-foreground">{t("faculty.rubricModal.newQuestionTitle")}</p>
                     <div className="flex items-center gap-2">
                       <textarea
                         value={newQuestionContent}
                         onChange={(e) => setNewQuestionContent(e.target.value)}
-                        placeholder="Soru metnini girin..."
+                        placeholder={t("faculty.rubricModal.placeholderQuestion")}
                         rows={2}
                         className="flex-1 px-3 py-0 rounded-lg border border-input bg-background text-foreground text-sm focus:outline-none focus:ring-2 focus:ring-ring resize-none"
                       />
@@ -508,7 +508,7 @@ const RubricModal = ({ assignment, teacherId, open, onClose }: RubricModalProps)
                         className="px-3 py-1 rounded-lg bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90 transition-colors disabled:opacity-50 flex items-center gap-1 flex-shrink-0"
                       >
                         {questionCreateLoading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Plus className="h-3.5 w-3.5" />}
-                        Ekle
+                        {t("common.add") || "Ekle"}
                       </button>
                     </div>
                   </div>
@@ -520,7 +520,7 @@ const RubricModal = ({ assignment, teacherId, open, onClose }: RubricModalProps)
                       type="text"
                       value={questionSearch}
                       onChange={(e) => setQuestionSearch(e.target.value)}
-                      placeholder="Sorular içinde ara..."
+                      placeholder={t("faculty.rubricModal.searchQuestions")}
                       className="w-full pl-9 pr-3 py-2 rounded-lg border border-input bg-background text-foreground text-sm focus:outline-none focus:ring-2 focus:ring-ring"
                     />
                   </div>
@@ -529,7 +529,7 @@ const RubricModal = ({ assignment, teacherId, open, onClose }: RubricModalProps)
                   {selectedQuestions.length > 0 && (
                     <div className="p-3 rounded-lg border border-green-200 bg-green-50 dark:border-green-800 dark:bg-green-900/20 space-y-2">
                       <p className="text-xs font-medium text-green-700 dark:text-green-400">
-                        Seçili Sorular ({selectedQuestions.length})
+                        {t("faculty.rubricModal.selectedQuestions")} ({selectedQuestions.length})
                       </p>
                       <div className="space-y-1">
                         {selectedQuestions.map((q) => (
@@ -550,10 +550,10 @@ const RubricModal = ({ assignment, teacherId, open, onClose }: RubricModalProps)
 
                   {/* All questions */}
                   <div className="space-y-2">
-                    <p className="text-xs font-medium text-muted-foreground">Tüm Sorular</p>
+                    <p className="text-xs font-medium text-muted-foreground">{t("faculty.rubricModal.allQuestions")}</p>
                     <div className="space-y-1.5 max-h-60 overflow-y-auto">
                       {filteredQuestions.length === 0 ? (
-                        <p className="text-xs text-muted-foreground py-3 text-center">Soru bulunamadı</p>
+                        <p className="text-xs text-muted-foreground py-3 text-center">{t("faculty.rubricModal.noQuestionsFound")}</p>
                       ) : (
                         filteredQuestions.map((q) => (
                           <div
@@ -594,9 +594,9 @@ const RubricModal = ({ assignment, teacherId, open, onClose }: RubricModalProps)
           <div className="flex items-center justify-between p-4 border-t border-border shrink-0">
             <div>
               <p className={`text-sm font-medium ${validationMessage ? "text-destructive" : "text-foreground"}`}>
-                Toplam: {totalScore} puan
+                {language === "tr" ? "Toplam" : "Total"}: {totalScore} {language === "tr" ? "puan" : "pts"}
               </p>
-              <p className="text-xs text-muted-foreground">{criteria.length} kriter</p>
+              <p className="text-xs text-muted-foreground">{criteria.length} {t("faculty.rubricModal.item")}</p>
               {validationMessage && <p className="text-xs text-destructive">{validationMessage}</p>}
             </div>
             <div className="flex gap-2">
@@ -605,14 +605,14 @@ const RubricModal = ({ assignment, teacherId, open, onClose }: RubricModalProps)
                 onClick={() => saveRubric("draft")}
                 className="px-3 py-1.5 rounded-lg border border-border text-sm font-medium text-foreground hover:bg-muted/50 transition-colors"
               >
-                Taslak Kaydet
+                {t("faculty.rubricModal.saveDraft")}
               </button>
               <button
                 type="button"
                 onClick={() => saveRubric("approved")}
                 className="flex items-center gap-1 px-3 py-1.5 rounded-lg bg-green-600 text-white text-sm font-medium hover:bg-green-700 transition-colors"
               >
-                <Check className="h-4 w-4" /> Onayla
+                <Check className="h-4 w-4" /> {t("faculty.rubricModal.approve")}
               </button>
             </div>
           </div>
@@ -625,7 +625,7 @@ const RubricModal = ({ assignment, teacherId, open, onClose }: RubricModalProps)
               onClick={onClose}
               className="px-3 py-1.5 rounded-lg border border-border text-sm font-medium text-foreground hover:bg-muted/50 transition-colors"
             >
-              İptal
+              {t("common.cancel")}
             </button>
             <button
               type="button"
@@ -634,7 +634,7 @@ const RubricModal = ({ assignment, teacherId, open, onClose }: RubricModalProps)
               className="flex items-center gap-1 px-3 py-1.5 rounded-lg bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90 transition-colors disabled:opacity-50"
             >
               {questionSaveLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Check className="h-4 w-4" />}
-              Sorular Kaydet
+              {t("faculty.rubricModal.saveQuestions")}
             </button>
           </div>
         )}
