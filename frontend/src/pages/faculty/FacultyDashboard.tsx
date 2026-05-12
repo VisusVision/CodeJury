@@ -603,7 +603,7 @@ const FacultyDashboard = () => {
                                         ? "bg-emerald-500/15 text-emerald-600"
                                         : "bg-yellow-500/15 text-yellow-600"
                                     )}>
-                                      {isApproved ? t("rubricModal.approved") : t("rubricModal.draft")}
+                                      {isApproved ? t("faculty.rubricModal.approved") : t("faculty.rubricModal.draft")}
                                     </span>
                                   );
                                 })()}
