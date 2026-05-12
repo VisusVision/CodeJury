@@ -55,7 +55,7 @@ const criterionCountOptions = Array.from(
 const clampCriterionCount = (value: number) =>
   Math.max(RUBRIC_MIN_CRITERIA, Math.min(RUBRIC_MAX_CRITERIA, value));
 
-const getRubricValidationMessage = (criteria: RubricCriterion[], t: any) => {
+const getRubricValidationMessage = (criteria: RubricCriterion[], t: any = (key: string) => key) => {
   if (criteria.length < RUBRIC_MIN_CRITERIA || criteria.length > RUBRIC_MAX_CRITERIA) {
     return t("faculty.rubricModal.validationMinMax");
   }
@@ -303,7 +303,7 @@ const RubricModal = ({ assignment, teacherId, open, onClose }: RubricModalProps)
   if (!open) return null;
 
   const totalScore = criteria.reduce((sum, c) => sum + (Number(c.max_score) || 0), 0);
-  const validationMessage = getRubricValidationMessage(criteria);
+  const validationMessage = getRubricValidationMessage(criteria, t);
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center">

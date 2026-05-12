@@ -155,7 +155,7 @@ Düzenlenebilir alanlar:
 
 | Anahtar | Varsayılan | Açıklama |
 |---------|------------|----------|
-| `DATABASE_URL` | `postgresql://semas:12345@localhost:5432/agent_db` | Postgres bağlantısı |
+| `DATABASE_URL` | `postgresql://KULLANICIADI:SIFRE@localhost:5432/agent_db` | Postgres bağlantısı |
 | `REDIS_URL` | `redis://localhost:6379/0` | Analiz is kuyrugu baglantisi |
 | `ANALYSIS_QUEUE_NAME` | `stream:analysis_jobs` | Redis Streams analiz kuyrugu |
 | `LLM_PROVIDER` | `ollama` | `ollama` veya `nvidia_nim`; NIM secilirse ajanlar NVIDIA API'ye gider |
@@ -193,8 +193,8 @@ docker compose up -d postgres redis
 **B) Yerel PostgreSQL kurulumu varsa:**
 
 ```bash
-psql -U postgres -c "CREATE USER semas WITH PASSWORD '12345';"
-psql -U postgres -c "CREATE DATABASE agent_db OWNER semas;"
+psql -U postgres -c "CREATE USER KULLANCIADI WITH PASSWORD 'SIFRE';"
+psql -U postgres -c "CREATE DATABASE agent_db OWNER KULLANICIADI;"
 ```
 
 ### 4.5 Ollama Modeli
