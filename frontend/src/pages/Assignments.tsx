@@ -7,6 +7,7 @@ import { tr as trLocale } from "date-fns/locale";
 import { enUS as enLocale } from "date-fns/locale";
 import { cn } from "@/lib/utils";
 import { useTranslation } from "@/i18n/LanguageContext";
+import { splitAssignmentDescription } from "@/lib/assignmentDescription";
 
 interface Student {
   id: string;
@@ -215,6 +216,7 @@ const Assignments = () => {
                 const questions = assignmentQuestions[assignment.id] || [];
                 const isHovered = hoveredAssignmentId === assignment.id;
                 const isLoading = loadingQuestions[assignment.id];
+                const description = splitAssignmentDescription(assignment.description);
 
                 return (
                   <div
@@ -237,8 +239,14 @@ const Assignments = () => {
                             </span>
                           )}
                         </div>
-                        {assignment.description && (
-                          <p className="text-xs text-muted-foreground mt-0.5 whitespace-normal break-words">{assignment.description}</p>
+                        {description.body && (
+                          <p className="text-xs text-muted-foreground mt-0.5 whitespace-normal break-words">{description.body}</p>
+                        )}
+                        {description.expectedOutput && (
+                          <div className="mt-2 rounded-lg border border-primary/15 bg-primary/5 px-3 py-2">
+                            <p className="text-[11px] font-semibold text-primary">Beklenen çıktı</p>
+                            <pre className="mt-1 whitespace-pre-wrap break-words font-mono text-[11px] leading-relaxed text-foreground">{description.expectedOutput}</pre>
+                          </div>
                         )}
                         {assignment.due_date && (
                           <p className="text-xs text-muted-foreground mt-0.5">

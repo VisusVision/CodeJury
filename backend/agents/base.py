@@ -155,6 +155,8 @@ class BaseAgent(ABC):
         if result is None:
             raise LLMInferenceError(f"[{self.name}] LLM returned an empty or unparseable response.")
 
+        repaired = False
+        guardrail_flags: list[str] = []
         if required_keys:
             result = self._unwrap_required_response(result, required_keys)
             # 1 ilk çağrı + en fazla 3 onarım çağrısı (eksik üst seviye anahtarlar).
@@ -163,6 +165,8 @@ class BaseAgent(ABC):
                 missing = [k for k in required_keys if k not in result]
                 if not missing:
                     break
+                repaired = True
+                guardrail_flags.append("missing_required_keys_repair")
                 logger.warning(
                     "[%s] LLM yanitinda eksik alanlar: %s; onarim denemesi %d/%d",
                     self.name,
@@ -181,7 +185,7 @@ class BaseAgent(ABC):
                     f"Use this JSON skeleton exactly (fill values):\n{self._required_keys_scaffold(required_keys)}"
                 )
                 try:
-                    repaired = await chat_json(
+                    repair_payload = await chat_json(
                         system_prompt=system_prompt,
                         user_prompt=repair_prompt,
                         schema_hint=output_json_schema,
@@ -197,9 +201,9 @@ class BaseAgent(ABC):
                         attempt,
                         exc,
                     )
-                    repaired = None
-                if isinstance(repaired, dict):
-                    result = self._unwrap_required_response({**result, **repaired}, required_keys)
+                    repair_payload = None
+                if isinstance(repair_payload, dict):
+                    result = self._unwrap_required_response({**result, **repair_payload}, required_keys)
             missing = [k for k in required_keys if k not in result]
             if missing:
                 raise LLMInferenceError(
@@ -218,6 +222,8 @@ class BaseAgent(ABC):
                         f"[{self.name}] JSON Schema validation failed: "
                         + "; ".join(schema_msgs[:8])
                     )
+                repaired = True
+                guardrail_flags.append("json_schema_repair")
                 logger.warning(
                     "[%s] JSON Schema ihlali; onarim denemesi %d/%d: %s",
                     self.name,
@@ -236,7 +242,7 @@ class BaseAgent(ABC):
                     "Return ONLY valid JSON."
                 )
                 try:
-                    repaired = await chat_json(
+                    repair_payload = await chat_json(
                         system_prompt=system_prompt,
                         user_prompt=repair_prompt,
                         schema_hint=output_json_schema,
@@ -252,14 +258,42 @@ class BaseAgent(ABC):
                         attempt + 1,
                         exc,
                     )
-                    repaired = None
-                if isinstance(repaired, dict):
+                    repair_payload = None
+                if isinstance(repair_payload, dict):
                     result = self._unwrap_required_response(
-                        {**result, **repaired},
+                        {**result, **repair_payload},
                         list(output_json_schema.get("required", [])),
                     )
 
-        return result
+        return self._with_contract_metadata(
+            result,
+            llm_status="repaired" if repaired else "ok",
+            guardrail_flags=guardrail_flags,
+        )
+
+    @staticmethod
+    def _with_contract_metadata(
+        result: dict[str, Any],
+        *,
+        llm_status: str,
+        guardrail_flags: list[str] | None = None,
+    ) -> dict[str, Any]:
+        """Attach common, non-breaking agent metadata."""
+        if not isinstance(result, dict):
+            return result
+        out = dict(result)
+        out.setdefault("llm_status", llm_status)
+        existing_flags = out.get("guardrail_flags")
+        flags: list[str] = []
+        if isinstance(existing_flags, list):
+            flags.extend(str(flag) for flag in existing_flags if str(flag).strip())
+        for flag in guardrail_flags or []:
+            if flag not in flags:
+                flags.append(flag)
+        out["guardrail_flags"] = flags
+        if "confidence" not in out:
+            out["confidence"] = 0.0
+        return out
 
     @staticmethod
     def _unwrap_required_response(result: dict[str, Any], required_keys: list[str]) -> dict[str, Any]:

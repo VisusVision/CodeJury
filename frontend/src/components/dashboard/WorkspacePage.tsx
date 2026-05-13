@@ -30,6 +30,7 @@ import ExecutionStats from "@/components/dashboard/ExecutionStats";
 import RightPanel from "@/components/dashboard/RightPanel";
 import { cn } from "@/lib/utils";
 import { useTranslation } from "@/i18n/LanguageContext";
+import { splitAssignmentDescription } from "@/lib/assignmentDescription";
 
 interface UploadedFile {
   name: string;
@@ -70,6 +71,7 @@ interface WorkspacePageProps {
   sidebarTitle: string;
   sidebarSubtitle: string;
   headerTitle: string;
+  assignmentDescription?: string | null;
   assignmentId: string;
   studentNo: string;
   assignmentDueDate?: string | null;
@@ -319,7 +321,7 @@ const savePersistedState = (assignmentId: string, studentNo: string, state: Pers
   }
 };
 
-const WorkspacePage = ({ sidebarTitle, sidebarSubtitle, headerTitle, assignmentId, studentNo, assignmentDueDate, onBack }: WorkspacePageProps) => {
+const WorkspacePage = ({ sidebarTitle, sidebarSubtitle, headerTitle, assignmentDescription, assignmentId, studentNo, assignmentDueDate, onBack }: WorkspacePageProps) => {
   const { t, language } = useTranslation();
   const agentDefs: AgentDef[] = useMemo(() =>
     agentKeys.map((a) => ({ id: a.id, name: t(a.nameKey), description: t(a.descKey), icon: a.icon })),
@@ -427,7 +429,7 @@ const WorkspacePage = ({ sidebarTitle, sidebarSubtitle, headerTitle, assignmentI
       return remaining;
     });
     if (activeFile === name) setActiveFile(null);
-  }, [activeFile, hasEverRun, isPastDue]);
+  }, [activeFile, agentDefs, hasEverRun, isPastDue]);
 
   const addLog = useCallback((agent: string, message: string, type: LogEntry["type"] = "info") => {
     const now = new Date();
@@ -633,7 +635,7 @@ const WorkspacePage = ({ sidebarTitle, sidebarSubtitle, headerTitle, assignmentI
     } finally {
       setIsRunning(false);
     }
-  }, [currentEvaluation?.status, files, addLog, assignmentId, isPastDue, language, studentNo, t]);
+  }, [agentDefs, currentEvaluation?.status, files, addLog, assignmentId, isPastDue, language, studentNo, t]);
 
   const handleEvaluationSubmit = useCallback(async (data: { usefulness: number; accuracy: number; clarity: number; comment: string }) => {
     const rawStudent = sessionStorage.getItem("student");
@@ -838,6 +840,7 @@ const WorkspacePage = ({ sidebarTitle, sidebarSubtitle, headerTitle, assignmentI
   const hasScoredUploadForCurrentAssignment = uploadRecords.some((record) => typeof record.score === "number" && !record.hasError);
   const hasEvaluationForCurrentAssignment = Boolean(currentEvaluation?.assignment_id && currentEvaluation.assignment_id === assignmentId);
   const evaluationButtonVisible = hasScoredUploadForCurrentAssignment || hasEvaluationForCurrentAssignment;
+  const description = splitAssignmentDescription(assignmentDescription);
   const evaluationButtonLabel = currentEvaluation?.status === "submitted"
     ? (language === "tr" ? "Değerlendirildi" : "Rated")
     : (language === "tr" ? "Değerlendir" : "Rate");
@@ -1003,6 +1006,19 @@ const WorkspacePage = ({ sidebarTitle, sidebarSubtitle, headerTitle, assignmentI
                    ? t("workspace.uploadFirst")
                    : `${files.length} ${language === "tr" ? "dosya yüklendi" : "files uploaded"}${isRunning ? " — " + t("workspace.running") : report ? " — " + t("workspace.analysisComplete") : ""}`}
               </p>
+              {(description.body || description.expectedOutput) && (
+                <div className="mt-2 max-w-3xl space-y-2">
+                  {description.body && (
+                    <p className="text-xs leading-relaxed text-muted-foreground">{description.body}</p>
+                  )}
+                  {description.expectedOutput && (
+                    <div className="rounded-lg border border-primary/15 bg-primary/5 px-3 py-2">
+                      <p className="text-[11px] font-semibold text-primary">Beklenen çıktı</p>
+                      <pre className="mt-1 max-h-28 overflow-auto whitespace-pre-wrap break-words font-mono text-[11px] leading-relaxed text-foreground">{description.expectedOutput}</pre>
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
           </div>
           <div className="flex items-center gap-2">

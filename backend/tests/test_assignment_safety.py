@@ -87,6 +87,16 @@ class AssignmentSafetyTests(unittest.TestCase):
         self.assertFalse(result.allowed)
         self.assertTrue(any(issue.category == "crime" for issue in result.issues))
 
+    def test_weapon_word_variants_are_blocked(self):
+        result = AssignmentSafetyAgent().analyze(
+            title="Envanter uygulamasi",
+            description="Silahlarin stok, hedef ve kullanim plani bilgisini tutan bir uygulama yazin.",
+            course_context="Python",
+        )
+
+        self.assertFalse(result.allowed)
+        self.assertTrue(any(issue.category == "violence" for issue in result.issues))
+
 
 if __name__ == "__main__":
     unittest.main()

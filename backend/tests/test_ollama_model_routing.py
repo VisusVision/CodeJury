@@ -3,7 +3,7 @@ from unittest.mock import AsyncMock, patch
 
 from backend.agents.base import BaseAgent
 from backend.core.config import settings
-from backend.llm.ollama_client import chat_json, chat_text
+from backend.llm.ollama_client import chat_json, chat_text, get_llm_diagnostics_snapshot
 from frontend.backend.main import RubricSuggestionRequest, suggest_rubric
 
 
@@ -32,6 +32,11 @@ class OllamaModelRoutingTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(result, {"ok": True})
         self.assertEqual(request.await_args.args[0]["model"], "qwen2.5-coder:7b")
+        meta = get_llm_diagnostics_snapshot()
+        self.assertEqual(meta["provider"], "ollama")
+        self.assertEqual(meta["model"], "qwen2.5-coder:7b")
+        self.assertEqual(meta["result_status"], "ok")
+        self.assertNotIn("user_prompt", meta)
 
     async def test_base_agent_routes_llm_calls_to_coder_model_by_default(self):
         agent = _DummyAgent()
@@ -47,7 +52,27 @@ class OllamaModelRoutingTests(unittest.IsolatedAsyncioTestCase):
             )
 
         self.assertEqual(result["score"], 100)
+        self.assertEqual(result["llm_status"], "ok")
+        self.assertEqual(result["guardrail_flags"], [])
         self.assertEqual(chat.await_args.kwargs["model"], "qwen2.5-coder:7b")
+
+    async def test_base_agent_marks_repaired_required_key_responses(self):
+        agent = _DummyAgent()
+
+        with patch(
+            "backend.agents.base.chat_json",
+            new=AsyncMock(side_effect=[{"score": 70}, {"summary": "Tamamlandi"}]),
+        ):
+            result = await agent._call_llm(
+                system_prompt="Return JSON.",
+                user_prompt="{}",
+                required_keys=["score", "summary"],
+            )
+
+        self.assertEqual(result["score"], 70)
+        self.assertEqual(result["summary"], "Tamamlandi")
+        self.assertEqual(result["llm_status"], "repaired")
+        self.assertIn("missing_required_keys_repair", result["guardrail_flags"])
 
     async def test_rubric_suggester_uses_general_model(self):
         payload = {
@@ -175,6 +200,10 @@ class OllamaModelRoutingTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertIsNone(result)
         request.assert_not_awaited()
+        meta = get_llm_diagnostics_snapshot()
+        self.assertEqual(meta["provider"], "nvidia_nim")
+        self.assertEqual(meta["result_status"], "skipped")
+        self.assertEqual(meta["fallback_reason"], "missing_api_key")
 
     async def test_hybrid_provider_routes_general_to_nim_and_coder_to_ollama(self):
         with (

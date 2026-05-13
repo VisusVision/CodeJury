@@ -258,8 +258,8 @@ _UNSAFE_CATEGORY_PATTERNS: dict[str, tuple[str, ...]] = {
         r"\bsaldiri plani\b",
     ),
     "violence": (
-        r"\bsilah\b",
-        r"\bsilahli\b",
+        r"\bsilah\w*\b",
+        r"\bsilahli\w*\b",
         r"\boldur(me|mek|me)\b",
         r"\byarala(ma|mak)?\b",
         r"\bintihar\b",

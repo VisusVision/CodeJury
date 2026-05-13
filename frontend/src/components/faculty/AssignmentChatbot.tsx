@@ -6,9 +6,10 @@ import { format } from "date-fns";
 import { tr as trLocale } from "date-fns/locale";
 import { enUS as enLocale } from "date-fns/locale";
 import { cn } from "@/lib/utils";
-import { createAssignment, fetchAssignmentSuggestions, type AssignmentSuggestion, type AssignmentDifficulty } from "@/services/api";
+import { createAssignment, fetchAssignmentSuggestions, generateAssignmentExample, type AssignmentSuggestion, type AssignmentDifficulty } from "@/services/api";
 import { toast } from "sonner";
 import { useTranslation } from "@/i18n/LanguageContext";
+import { buildAssignmentExample, descriptionWithExample, exampleBody } from "./assignmentExample";
 
 interface Course { id: string; name: string; code: string; class_year?: number | null }
 interface Props {
@@ -144,6 +145,8 @@ const AssignmentChatbot = ({ open, onClose, courses, teacherId, onCreated }: Pro
   const [selectedSuggestionId, setSelectedSuggestionId] = useState<string | null>(null);
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
+  const [assignmentExample, setAssignmentExample] = useState("");
+  const [assignmentExampleLoading, setAssignmentExampleLoading] = useState(false);
   const [editingDesc, setEditingDesc] = useState(false);
   const [date, setDate] = useState<Date | undefined>();
   const [time, setTime] = useState("23:59");
@@ -190,6 +193,8 @@ const AssignmentChatbot = ({ open, onClose, courses, teacherId, onCreated }: Pro
         setSelectedSuggestionId(null);
         setTitle("");
         setDescription("");
+        setAssignmentExample("");
+        setAssignmentExampleLoading(false);
         setEditingDesc(false);
         setDate(undefined);
         setTime("23:59");
@@ -201,6 +206,45 @@ const AssignmentChatbot = ({ open, onClose, courses, teacherId, onCreated }: Pro
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
   }, [messages, suggestions, description, step]);
+
+  useEffect(() => {
+    if (!open || !title.trim() || !description.trim()) {
+      setAssignmentExample("");
+      setAssignmentExampleLoading(false);
+      return;
+    }
+
+    const fallback = buildAssignmentExample(title, description);
+    setAssignmentExample(fallback);
+    let cancelled = false;
+    setAssignmentExampleLoading(true);
+    const timer = window.setTimeout(() => {
+      generateAssignmentExample({
+        assignment_title: title,
+        assignment_description: description,
+      })
+        .then((result) => {
+          if (!cancelled && result.example?.trim()) {
+            setAssignmentExample(result.example);
+          }
+        })
+        .catch(() => {
+          if (!cancelled) {
+            setAssignmentExample(fallback);
+          }
+        })
+        .finally(() => {
+          if (!cancelled) {
+            setAssignmentExampleLoading(false);
+          }
+        });
+    }, 450);
+
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [open, title, description]);
 
   const handleCourseSelect = (c: Course) => {
     setCourse(c);
@@ -364,7 +408,7 @@ const AssignmentChatbot = ({ open, onClose, courses, teacherId, onCreated }: Pro
       const normalizedTitle = (title || "Yeni Ödev").replace(/\b\w+/g, (word) => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase());
       await createAssignment({
         name: normalizedTitle,
-        description,
+        description: descriptionWithExample(description, assignmentExample || buildAssignmentExample(normalizedTitle, description)),
         course_id: course.id,
         due_date: d.toISOString(),
       });
@@ -534,7 +578,16 @@ const AssignmentChatbot = ({ open, onClose, courses, teacherId, onCreated }: Pro
                   />
                 </div>
               ) : (
-                <p className="px-3 py-2 text-xs text-foreground leading-relaxed whitespace-pre-wrap">{description}</p>
+                <div className="px-3 py-2 space-y-2">
+                  <p className="text-xs text-foreground leading-relaxed whitespace-pre-wrap">{description}</p>
+                  <div className="rounded-lg border border-primary/20 bg-primary/5 px-2.5 py-2">
+                    <div className="flex items-center gap-2">
+                      <p className="text-[10px] font-semibold uppercase tracking-wider text-primary">Örnek Çıktı</p>
+                      {assignmentExampleLoading && <Loader2 className="h-3 w-3 animate-spin text-primary" />}
+                    </div>
+                    <p className="mt-1 whitespace-pre-wrap text-xs text-foreground leading-relaxed">{exampleBody(assignmentExample)}</p>
+                  </div>
+                </div>
               )}
               {!editingDesc ? (
                 <div className="flex gap-2 px-3 pb-3 pt-1">

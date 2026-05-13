@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
-import { ArrowLeft, Sparkles, Check, Pencil, Trash2, Plus, Loader2 } from "lucide-react";
+import { ArrowLeft, Sparkles, Check, Trash2, Plus, Loader2 } from "lucide-react";
 import { toast } from "sonner";
 import {
   getAssignment,
@@ -20,14 +20,6 @@ const RUBRIC_MAX_CRITERIA = 20;
 const RUBRIC_MIN_POINTS = 5;
 const RUBRIC_MAX_POINTS = 10;
 const RUBRIC_TOTAL_POINTS = 100;
-
-const criterionCountOptions = Array.from(
-  { length: RUBRIC_MAX_CRITERIA - RUBRIC_MIN_CRITERIA + 1 },
-  (_, index) => RUBRIC_MIN_CRITERIA + index,
-);
-
-const clampCriterionCount = (value: number) =>
-  Math.max(RUBRIC_MIN_CRITERIA, Math.min(RUBRIC_MAX_CRITERIA, value));
 
 const getRubricValidationMessage = (criteria: RubricCriterion[]) => {
   if (criteria.length < RUBRIC_MIN_CRITERIA || criteria.length > RUBRIC_MAX_CRITERIA) {
@@ -60,7 +52,6 @@ const RubricEditor = () => {
   const [loading, setLoading] = useState(true);
   const [aiLoading, setAiLoading] = useState(false);
   const [teacherId, setTeacherId] = useState<string | null>(null);
-  const [criterionCount, setCriterionCount] = useState(RUBRIC_MIN_CRITERIA);
 
   useEffect(() => {
     const init = async () => {
@@ -88,7 +79,6 @@ const RubricEditor = () => {
           setRubric(rubricData);
           const loadedCriteria = rubricData.criteria || [];
           setCriteria(loadedCriteria);
-          setCriterionCount(clampCriterionCount(loadedCriteria.length || RUBRIC_MIN_CRITERIA));
         }
       } catch (err: unknown) {
         toast.error(getErrorMessage(err, "Rubrik verileri yuklenemedi"));
@@ -107,7 +97,6 @@ const RubricEditor = () => {
       const data = await suggestRubric({
         assignment_title: assignment.name,
         assignment_description: assignment.description || "",
-        criterion_count: criterionCount,
       });
       setCriteria(data.criteria || []);
       toast.success("AI rubrik önerisi oluşturuldu. Lütfen kontrol edip onaylayın.");
@@ -203,23 +192,11 @@ const RubricEditor = () => {
         )}
 
         {/* AI Suggestion controls */}
-        <div className="mb-6 flex flex-col gap-3 rounded-xl border border-border bg-muted/20 p-4 sm:flex-row sm:items-end sm:justify-between">
+        <div className="mb-6 flex flex-col gap-3 rounded-xl border border-border bg-muted/20 p-4 sm:flex-row sm:items-center sm:justify-between">
           <div className="space-y-1">
-            <label htmlFor="rubric-editor-criterion-count" className="text-xs font-medium text-foreground">
-              Kriter sayisi
-            </label>
-            <select
-              id="rubric-editor-criterion-count"
-              value={criterionCount}
-              onChange={(e) => setCriterionCount(clampCriterionCount(Number(e.target.value)))}
-              className="h-9 rounded-lg border border-input bg-background px-3 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
-            >
-              {criterionCountOptions.map((count) => (
-                <option key={count} value={count}>{count} madde</option>
-              ))}
-            </select>
+            <p className="text-xs font-medium text-foreground">AI rubrik kapsami</p>
             <p className="text-[11px] text-muted-foreground">
-              10-20 kriter, her kriter 5-10 puan, toplam 100.
+              Kriter sayisi odev zorluguna gore otomatik belirlenir. Her kriter 5-10 puan, toplam 100.
             </p>
           </div>
           <button
