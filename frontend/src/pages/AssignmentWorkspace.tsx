@@ -15,6 +15,7 @@ const AssignmentWorkspace = () => {
   const [student, setStudent] = useState<Student | null>(null);
   const [courseName, setCourseName] = useState("");
   const [assignmentName, setAssignmentName] = useState("");
+  const [assignmentDescription, setAssignmentDescription] = useState<string | null>(null);
   const [assignmentDueDate, setAssignmentDueDate] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const navigate = useNavigate();
@@ -32,11 +33,13 @@ const AssignmentWorkspace = () => {
         const [course, assignment] = await Promise.all([getCourse(courseId!), getAssignment(assignmentId!)]);
         setCourseName(course?.name || "");
         setAssignmentName(assignment?.name || "");
+        setAssignmentDescription(assignment?.description || null);
         setAssignmentDueDate(assignment?.due_date || null);
       } catch (error) {
         console.error(error);
         setCourseName("");
         setAssignmentName("");
+        setAssignmentDescription(null);
         setAssignmentDueDate(null);
       } finally {
         setLoading(false);
@@ -54,6 +57,7 @@ const AssignmentWorkspace = () => {
       sidebarTitle={studentFullName}
       sidebarSubtitle={courseName}
       headerTitle={assignmentName}
+      assignmentDescription={assignmentDescription}
       assignmentId={assignmentId!}
       studentNo={student.student_no}
       assignmentDueDate={assignmentDueDate}

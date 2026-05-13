@@ -35,6 +35,28 @@ _last_nim_request_at: float = 0.0
 _cache: OrderedDict[str, tuple[dict, float]] = OrderedDict()
 _CACHE_MAX_SIZE = 128
 _CACHE_TTL_SECONDS = 600
+_last_call_metadata: dict[str, Any] = {}
+
+
+def _record_call_metadata(**metadata: Any) -> None:
+    """Store safe, prompt-free diagnostics for the most recent LLM call."""
+    global _last_call_metadata
+    allowed = {
+        "function",
+        "provider",
+        "model",
+        "cache_hit",
+        "result_status",
+        "response_format",
+        "max_tokens",
+        "fallback_reason",
+    }
+    _last_call_metadata = {key: value for key, value in metadata.items() if key in allowed}
+
+
+def get_llm_diagnostics_snapshot() -> dict[str, Any]:
+    """Return safe metadata for diagnostics; never includes prompts or secrets."""
+    return dict(_last_call_metadata)
 
 
 def _get_semaphore() -> asyncio.Semaphore:
@@ -340,6 +362,7 @@ async def chat_json(
         return None
 
     provider_is_nim = _provider_is_nvidia_nim(_provider_for_model(model))
+    provider_name = "nvidia_nim" if provider_is_nim else "ollama"
     selected_model = _select_nim_model(model) if provider_is_nim else (model or settings.ollama_general_model)
     if provider_is_nim:
         predict = int(num_predict) if num_predict is not None else int(settings.nvidia_nim_num_predict)
@@ -349,6 +372,15 @@ async def chat_json(
     if use_cache:
         cached = _cache_get(cache_key)
         if cached is not None:
+            _record_call_metadata(
+                function="chat_json",
+                provider=provider_name,
+                model=selected_model,
+                cache_hit=True,
+                result_status="ok",
+                response_format="json",
+                max_tokens=predict,
+            )
             return cached
 
     messages = [
@@ -359,6 +391,16 @@ async def chat_json(
     if provider_is_nim:
         if not settings.nvidia_nim_api_key.strip():
             logger.warning("[nvidia-nim] API key missing; JSON request skipped")
+            _record_call_metadata(
+                function="chat_json",
+                provider=provider_name,
+                model=selected_model,
+                cache_hit=False,
+                result_status="skipped",
+                response_format="json",
+                max_tokens=predict,
+                fallback_reason="missing_api_key",
+            )
             return None
         payload: dict[str, Any] = {
             "model": selected_model,
@@ -384,6 +426,16 @@ async def chat_json(
 
     if result is not None and use_cache:
         _cache_put(cache_key, result)
+    _record_call_metadata(
+        function="chat_json",
+        provider=provider_name,
+        model=selected_model,
+        cache_hit=False,
+        result_status="ok" if result is not None else "failed",
+        response_format="json",
+        max_tokens=predict,
+        fallback_reason="" if result is not None else "empty_or_unparseable",
+    )
     return result
 
 
@@ -405,11 +457,22 @@ async def chat_text(
 
     predict = num_predict if num_predict is not None else min(int(settings.ollama_num_predict), 2048)
     provider_is_nim = _provider_is_nvidia_nim(_provider_for_model(model))
+    provider_name = "nvidia_nim" if provider_is_nim else "ollama"
     selected_model = _select_nim_model(model) if provider_is_nim else (model or settings.ollama_general_model)
 
     if provider_is_nim:
         if not settings.nvidia_nim_api_key.strip():
             logger.warning("[nvidia-nim] API key missing; text request skipped")
+            _record_call_metadata(
+                function="chat_text",
+                provider=provider_name,
+                model=selected_model,
+                cache_hit=False,
+                result_status="skipped",
+                response_format="text",
+                max_tokens=predict,
+                fallback_reason="missing_api_key",
+            )
             return None
         payload: dict[str, Any] = {
             "model": selected_model,
@@ -417,7 +480,18 @@ async def chat_text(
             "temperature": temperature,
             "max_tokens": predict,
         }
-        return await _do_nvidia_nim_text_request(payload)
+        text_result = await _do_nvidia_nim_text_request(payload)
+        _record_call_metadata(
+            function="chat_text",
+            provider=provider_name,
+            model=selected_model,
+            cache_hit=False,
+            result_status="ok" if text_result else "failed",
+            response_format="text",
+            max_tokens=predict,
+            fallback_reason="" if text_result else "empty_response",
+        )
+        return text_result
 
     payload: dict[str, Any] = {
         "model": selected_model,
@@ -442,6 +516,15 @@ async def chat_text(
                 content = (data.get("message") or {}).get("content") or ""
                 text = content.strip()
                 if text:
+                    _record_call_metadata(
+                        function="chat_text",
+                        provider=provider_name,
+                        model=selected_model,
+                        cache_hit=False,
+                        result_status="ok",
+                        response_format="text",
+                        max_tokens=predict,
+                    )
                     return text
                 logger.warning("[ollama] chat_text bos yanit (attempt %d)", attempt + 1)
             except httpx.TimeoutException:
@@ -458,4 +541,14 @@ async def chat_text(
         if attempt < settings.ollama_max_retries:
             await asyncio.sleep(settings.ollama_retry_delay * (attempt + 1))
 
+    _record_call_metadata(
+        function="chat_text",
+        provider=provider_name,
+        model=selected_model,
+        cache_hit=False,
+        result_status="failed",
+        response_format="text",
+        max_tokens=predict,
+        fallback_reason="empty_or_failed",
+    )
     return None

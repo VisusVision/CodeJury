@@ -42,8 +42,9 @@ from backend.agents.test_agent import TestAgent
 from backend.agents.evidence import EvidenceAgent
 from backend.agents.master_evaluator import MasterEvaluatorAgent
 from backend.agents.assignment_safety import AssignmentSafetyAgent
+from backend.agents.project_context import build_project_context
 from backend.core.config import settings
-from backend.llm.ollama_client import chat_json
+from backend.llm.ollama_client import chat_json, get_llm_diagnostics_snapshot
 from backend.queue.analysis_jobs import (
     AnalysisJobNotFound,
     AnalysisJobStore,
@@ -598,7 +599,7 @@ class RubricUpdateStatusRequest(BaseModel):
 class RubricSuggestionRequest(BaseModel):
     assignment_title: str
     assignment_description: str = ""
-    criterion_count: int = 10
+    criterion_count: int | None = None
 
 
 _RUBRIC_SUGGEST_SYSTEM = """\
@@ -611,7 +612,7 @@ JSON shape exactly:
   "criteria": [
     {
       "name": "short criterion name in Turkish",
-      "description": "Plain Turkish, ONE short paragraph: what is graded and what excellent work looks like. No markdown.",
+      "description": "Plain Turkish, ONE short paragraph: what is graded, what earns full credit, and what loses points. No markdown.",
       "max_score": 10
     }
   ]
@@ -619,10 +620,14 @@ JSON shape exactly:
 
 Rules:
 - Produce EXACTLY the requested number of criteria.
-- The requested criterion count will always be between 10 and 20.
+- The requested criterion count will always be between 10 and 20 and is chosen by the system from assignment difficulty.
 - Each max_score MUST be an integer from 5 to 10 inclusive.
 - The sum of all max_score values MUST equal exactly 100.
+- Put more difficult, high-impact criteria earlier and give them higher points when possible.
+- You MUST include these criteria in every rubric: Gereksinimlere Uyum, Mantiksal Dogruluk, Kodlama Stili, Dokumantasyon, Guvenlik.
 - Tailor names and descriptions to the assignment title and description (e.g. OOP, data structures, APIs, file I/O, tests).
+- Use the provided "Proje terimleri" in most descriptions. A strong rubric for a library API should mention books, loans, endpoints, JSON errors, etc.; a CSV report rubric should mention file columns, reports, invalid rows, etc.
+- Avoid generic descriptions that could apply to any software project. Each criterion must name concrete project artifacts, inputs, outputs, flows, or edge cases when they are present in the assignment.
 - If the assignment mentions unit tests, pytest, unittest, or testing, include a dedicated testing criterion.
 - If the assignment does NOT mention tests, do not invent a dedicated test criterion;
   you may mention testability inside correctness or maintainability instead.
@@ -631,6 +636,7 @@ Rules:
 - Names must be distinct; avoid duplicate or near-duplicate criteria.
 - Descriptions must be measurable: say what evidence earns full credit and what defects lose credit.
 - Do not include vague criteria such as "Genel", "Sunum", "Sekil", or "Kalite" unless the description ties them to concrete code evidence.
+- Do not use English filler words such as excellent, excellence, handled, user-friendly, input, output, or failure case; use natural Turkish equivalents.
 """
 
 
@@ -639,6 +645,43 @@ _RUBRIC_MAX_CRITERIA = 20
 _RUBRIC_MIN_POINTS = 5
 _RUBRIC_MAX_POINTS = 10
 _RUBRIC_TOTAL_POINTS = 100
+
+_RUBRIC_MANDATORY_CRITERIA: list[dict[str, str]] = [
+    {
+        "name": "Gereksinimlere Uyum",
+        "description": "Odevde istenen tum ciktilar, kisitlar ve teslim beklentileri eksiksiz ve izlenebilir bicimde karsilanir.",
+    },
+    {
+        "name": "Mantiksal Dogruluk",
+        "description": "Cozum dogru algoritma ve karar akislariyla beklenen sonuclari uretir; kenar durumlarda tutarli davranir.",
+    },
+    {
+        "name": "Kodlama Stili",
+        "description": "Kod okunabilir, adlandirmalar tutarli, tekrarlar kontrollu ve proje dilinin stil beklentilerine uygundur.",
+    },
+    {
+        "name": "Dokumantasyon",
+        "description": "Kurulum, calistirma, varsayimlar ve onemli tasarim kararlarinin kisa ama yeterli aciklamasi bulunur.",
+    },
+    {
+        "name": "Guvenlik",
+        "description": "Girdi dogrulama, hata durumlari, hassas veri kullanimi ve guvenli varsayimlar odev kapsaminda dikkate alinir.",
+    },
+]
+
+_RUBRIC_CANONICAL_NAME_MAP: dict[str, str] = {
+    "gereksinimlere uyum": "Gereksinimlere Uyum",
+    "mantiksal dogruluk": "Mantiksal Dogruluk",
+    "mant?ksal do?ruluk": "Mantiksal Dogruluk",
+    "mantksal doruluk": "Mantiksal Dogruluk",
+    "kodlama stili": "Kodlama Stili",
+    "dokumantasyon": "Dokumantasyon",
+    "dok?mantasyon": "Dokumantasyon",
+    "dokmantasyon": "Dokumantasyon",
+    "guvenlik": "Guvenlik",
+    "g?venlik": "Guvenlik",
+    "gvenlik": "Guvenlik",
+}
 
 _RUBRIC_FALLBACK_NAMES = [
     "Gereksinimlere Uyum",
@@ -713,6 +756,48 @@ _RUBRIC_NON_CODE_ODD_TOKENS = (
     "yıkımlılık",
 )
 
+_RUBRIC_API_SCOPE_TOKENS = (
+    "api",
+    "endpoint",
+    "rest",
+    "fastapi",
+    "flask",
+    "http",
+    "route",
+)
+
+_RUBRIC_OOP_SCOPE_TOKENS = (
+    "sinif",
+    "sınıf",
+    "class",
+    "oop",
+    "nesne",
+    "kalitim",
+    "kalıtım",
+    "kapsul",
+    "kapsül",
+    "kapsulleme",
+    "kapsülleme",
+    "sinif tasarimi",
+    "sınıf tasarımı",
+)
+
+_RUBRIC_FILE_SCOPE_TOKENS = (
+    "dosya",
+    "file",
+    "csv",
+    "json",
+    "log",
+)
+
+_RUBRIC_CLI_SCOPE_TOKENS = (
+    "cli",
+    "komut satiri",
+    "komut satırı",
+    "arguman",
+    "argüman",
+)
+
 _RUBRIC_CONCRETE_DESC_TOKENS = (
     "api",
     "endpoint",
@@ -748,6 +833,229 @@ _RUBRIC_CONCRETE_DESC_TOKENS = (
     "doküm",
 )
 
+_RUBRIC_PROJECT_STOPWORDS = {
+    "odev",
+    "ogrenci",
+    "ogrenciler",
+    "gelistirin",
+    "gelistir",
+    "yazin",
+    "yaz",
+    "olusturun",
+    "olustur",
+    "yoneten",
+    "durumlari",
+    "durumlar",
+    "kayitlari",
+    "kayit",
+    "olsun",
+    "icin",
+    "ile",
+    "ve",
+    "veya",
+    "bir",
+    "tum",
+    "olarak",
+    "beklenen",
+    "teslim",
+    "proje",
+    "program",
+    "uygulama",
+}
+
+_RUBRIC_IMPORTANT_SHORT_TERMS = {"api", "csv", "json", "cli", "sql", "ph"}
+
+
+def _rubric_project_terms(title: str, description: str, *, limit: int = 10) -> list[str]:
+    return build_project_context(title, description, term_limit=limit).terms
+
+
+def _rubric_project_context(title: str, description: str) -> str:
+    context = build_project_context(title, description)
+    terms = list(context.terms[:12])
+    seen = {term.lower() for term in terms}
+    for important in [*context.deliverables, *context.io_formats, *context.tech_stack]:
+        item = important.strip()
+        if item and item.lower() not in seen:
+            terms.append(item)
+            seen.add(item.lower())
+    return ", ".join(terms[:14]) if terms else context.summary
+
+
+def _rubric_scope_blob(title: str, description: str) -> str:
+    text = f"{title}\n{description}".lower().translate(_TURKISH_FOLD_MAP)
+    text = unicodedata.normalize("NFKD", text)
+    return "".join(ch for ch in text if not unicodedata.combining(ch))
+
+
+def _rubric_has_scope_token(blob: str, tokens: tuple[str, ...]) -> bool:
+    normalized_tokens: list[str] = []
+    for token in tokens:
+        folded = token.lower().translate(_TURKISH_FOLD_MAP)
+        folded = unicodedata.normalize("NFKD", folded)
+        normalized_tokens.append("".join(ch for ch in folded if not unicodedata.combining(ch)))
+    return any(
+        re.search(rf"(?<![a-z0-9_]){re.escape(token)}(?![a-z0-9_])", blob)
+        for token in normalized_tokens
+    )
+
+
+def _assignment_requires_api_scope(title: str, description: str) -> bool:
+    return _rubric_has_scope_token(_rubric_scope_blob(title, description), _RUBRIC_API_SCOPE_TOKENS)
+
+
+def _assignment_requires_oop_scope(title: str, description: str) -> bool:
+    return _rubric_has_scope_token(_rubric_scope_blob(title, description), _RUBRIC_OOP_SCOPE_TOKENS)
+
+
+def _assignment_has_file_scope(title: str, description: str) -> bool:
+    return _rubric_has_scope_token(_rubric_scope_blob(title, description), _RUBRIC_FILE_SCOPE_TOKENS)
+
+
+def _assignment_has_cli_scope(title: str, description: str) -> bool:
+    return _rubric_has_scope_token(_rubric_scope_blob(title, description), _RUBRIC_CLI_SCOPE_TOKENS)
+
+
+def _rubric_fallback_names_for_assignment(title: str, description: str) -> list[str]:
+    api_required = _assignment_requires_api_scope(title, description)
+    oop_required = _assignment_requires_oop_scope(title, description)
+    filtered: list[str] = []
+    for candidate in _RUBRIC_FALLBACK_NAMES:
+        key = _rubric_scope_blob(candidate, "")
+        if not api_required and _rubric_has_scope_token(key, _RUBRIC_API_SCOPE_TOKENS):
+            continue
+        if not oop_required and _rubric_has_scope_token(key, _RUBRIC_OOP_SCOPE_TOKENS):
+            continue
+        filtered.append(candidate)
+    return filtered or ["Gereksinimlere Uyum", "Mantiksal Dogruluk", "Kodlama Stili"]
+
+
+def _project_specific_rubric_description(name: str, title: str, description: str) -> str:
+    context = _rubric_project_context(title, description)
+    context_note = f" Baglam: {context}." if context else ""
+    key = _rubric_name_key(name)
+    scope_blob = _rubric_scope_blob(title, description)
+    has_csv = "csv" in scope_blob
+    has_report = "rapor" in scope_blob
+    has_error_rows = "hatali" in scope_blob or "hata" in scope_blob
+    has_overdue = "gecik" in scope_blob
+    has_category = "kategori" in scope_blob
+    if any(token in key for token in ("csv", "dosya isleme", "dosya")):
+        if has_csv:
+            return (
+                "CSV dosya isleme icin books.csv, loans.csv veya odevde verilen CSV dosyalari dogru okunur; "
+                "zorunlu kolonlar, bos degerler ve sayi/tarih formatlari denetlenir, gecersiz satirlar "
+                f"ana raporu bozmadan acik uyariyla ayrilir.{context_note}"
+            )
+        return (
+            "Dosya girdileri dogru okunur; eksik alanlar, bos degerler ve format hatalari "
+            f"ana is akisini bozmadan acik bicimde raporlanir.{context_note}"
+        )
+    if "hata" in key or "guven" in key:
+        details = ["gecersiz girdi"]
+        if has_error_rows:
+            details.append("hatali satirlar")
+        if has_overdue:
+            details.append("geciken iade/tarih tutarsizliklari")
+        if has_csv:
+            details.append("eksik CSV kolonlari")
+        return (
+            f"Hata yonetiminde {', '.join(dict.fromkeys(details))} acik ve izlenebilir bicimde ele alinir; "
+            f"program beklenmeyen degerlerde sessizce yanlis sonuc uretmez.{context_note}"
+        )
+    if "test" in key:
+        details = ["basarili senaryolar", "kenar durumlar"]
+        if has_csv:
+            details.append("gecersiz CSV satirlari")
+        if has_overdue:
+            details.append("geciken/gecikmeyen iade ayrimi")
+        return (
+            f"Testlerde {', '.join(dict.fromkeys(details))} gosterilir; "
+            f"testler beklenen rapor, hata mesaji ve hesaplama sonuclarini dogrular.{context_note}"
+        )
+    if "metot" in key or "fonksiyon" in key:
+        details = ["okuma", "hesaplama", "raporlama"]
+        if has_csv:
+            details.insert(0, "books.csv/loans.csv ayristirma")
+        if has_error_rows:
+            details.append("hatali satir ayirma")
+        return (
+            f"Fonksiyonlar {', '.join(dict.fromkeys(details))} sorumluluklarina ayrilir; "
+            f"her fonksiyon net girdi alir, beklenen sonucu dondurur ve ana akisi gereksiz karmasadan korur.{context_note}"
+        )
+    if "veri modeli" in key:
+        return (
+            "Kitap, kayit, kategori, tarih veya odevdeki temel varliklar tutarli veri "
+            f"temsilleriyle tutulur; alan adlari ve tipleri hesaplama/raporlama akisini destekler.{context_note}"
+        )
+    if "calisabilirlik" in key:
+        return (
+            "Teslim edilen proje kurulabilir ve calistirilabilir olmalidir; ornek girdilerle ana rapor, "
+            f"hata raporu ve beklenen ciktilar tekrar uretilebilir.{context_note}"
+        )
+    if "stok" in key:
+        return (
+            "Toplam kopya, odunc verilen kopya ve kalan stok hesaplari dogru yapilir; "
+            f"negatif stok veya tutarsiz sayilar acik hata/uyari olarak ele alinir.{context_note}"
+        )
+    if "geciken" in key or "iade" in key:
+        return (
+            "Teslim tarihi ve iade tarihi dogru yorumlanir; geciken, zamaninda iade edilen "
+            f"ve henuz iade edilmemis kayitlar ayri ve dogru raporlanir.{context_note}"
+        )
+    if "kategori" in key and has_category:
+        return (
+            "Kategori bazli toplam, odunc ve kalan stok ozetleri dogru gruplanir; "
+            f"kategori adi eksik veya tutarsiz kayitlar raporda anlasilir bicimde gosterilir.{context_note}"
+        )
+    if key == "gereksinimlere uyum":
+        scope_parts = ["cikti", "teslim beklentileri"]
+        if _assignment_has_cli_scope(title, description):
+            scope_parts.insert(0, "CLI/komut satiri")
+        if _assignment_has_file_scope(title, description):
+            scope_parts.insert(0, "dosya")
+        if _assignment_requires_api_scope(title, description):
+            scope_parts.insert(0, "endpoint")
+        if _assignment_requires_oop_scope(title, description):
+            scope_parts.insert(0, "sinif")
+        scope = ", ".join(dict.fromkeys(scope_parts))
+        return (
+            f"Odev kapsamindaki {scope} eksiksiz karsilanir; "
+            f"eksik akilari veya atlanan proje gereksinimleri notu dusurur.{context_note}"
+        )
+    if key == "mantiksal dogruluk":
+        return (
+            "Ana is akislari ve kenar durumlari dogru sonuc uretir; "
+            f"yanlis hesaplama, hatali durum gecisi veya tutarsiz cikti notu dusurur.{context_note}"
+        )
+    if key == "kodlama stili":
+        return (
+            "Kod okunabilir, moduler ve adlandirmalari proje kavramlariyla tutarlidir; "
+            f"gereksiz tekrar, karmasik fonksiyonlar ve belirsiz isimler notu dusurur.{context_note}"
+        )
+    if key == "dokumantasyon":
+        return (
+            "Kurulum, calistirma, ornek girdi/cikti ve onemli tasarim kararlarini aciklayan "
+            f"kisa ama uygulanabilir dokumantasyon bulunur.{context_note}"
+        )
+    if key == "guvenlik":
+        safety_parts = ["girdi dogrulama"]
+        if _assignment_requires_api_scope(title, description):
+            safety_parts.append("JSON/hata yanitlari")
+        if _assignment_has_file_scope(title, description):
+            safety_parts.append("hatali satirlar")
+        if not _assignment_requires_api_scope(title, description):
+            safety_parts.append("beklenmeyen degerler")
+        safety = ", ".join(dict.fromkeys(safety_parts))
+        return (
+            f"Odev kapsaminda {safety} ve hassas veri "
+            f"varsayimlari guvenli bicimde ele alinir.{context_note}"
+        )
+    return (
+        f"{name} beklentisi odevdeki girdi, cikti, is akisi ve hata durumlariyla dogrudan iliskili "
+        f"kanitlar uzerinden degerlendirilir.{context_note}"
+    )
+
 
 def _assignment_allows_presentation_criteria(title: str, description: str) -> bool:
     blob = f"{title}\n{description}".lower()
@@ -764,8 +1072,8 @@ def _assignment_requires_process_evidence(title: str, description: str) -> bool:
     return any(token in blob for token in _RUBRIC_PROCESS_TOKENS)
 
 
-def _next_rubric_replacement_name(used_names: set[str]) -> str:
-    for candidate in _RUBRIC_FALLBACK_NAMES:
+def _next_rubric_replacement_name(used_names: set[str], fallback_names: list[str] | None = None) -> str:
+    for candidate in fallback_names or _RUBRIC_FALLBACK_NAMES:
         key = candidate.lower()
         if key not in used_names:
             used_names.add(key)
@@ -781,6 +1089,74 @@ def _rubric_description_is_concrete(description: str) -> bool:
     return any(token in blob for token in _RUBRIC_CONCRETE_DESC_TOKENS)
 
 
+_TEXT_POLISH_REPLACEMENTS: tuple[tuple[str, str], ...] = (
+    ("Excellence gostermek icin", "Tam puan icin"),
+    ("Excellence göstermek için", "Tam puan için"),
+    ("excellence gostermek icin", "tam puan icin"),
+    ("excellence göstermek için", "tam puan için"),
+    ("Excellence", "Tam puan"),
+    ("excellence", "tam puan"),
+    ("excellent", "tam puanlik"),
+    ("handled edilir", "ele alinir"),
+    ("handled", "ele alinir"),
+    ("user-friendly", "kullanici dostu"),
+    ("Input:", "Girdi:"),
+    ("Input ", "Girdi "),
+    ("Output:", "Beklenen cikti:"),
+    ("Output ", "Beklenen cikti "),
+    ("Expected output:", "Beklenen cikti:"),
+    ("Failure case:", "Hata senaryosu:"),
+    ("Failure case", "Hata senaryosu"),
+)
+
+_ASSIGNMENT_EXAMPLE_OUTPUT_HEADING_RE = re.compile(
+    r"(?im)^\s*(?:(?:beklenen\s+)?(?:konsol\s+)?(?:cikti|çıktı|ciktisi|çıktısı)|expected\s+output|console\s+output)\s*:\s*"
+)
+
+
+def _polish_turkish_instruction_text(text: str) -> str:
+    cleaned = str(text or "")
+    for old, new in _TEXT_POLISH_REPLACEMENTS:
+        cleaned = cleaned.replace(old, new)
+    cleaned = re.sub(r"\s+\n", "\n", cleaned)
+    cleaned = re.sub(r"[ \t]{2,}", " ", cleaned)
+    return cleaned.strip()
+
+
+def _rubric_description_is_template_noise(description: str) -> bool:
+    blob = _rubric_name_key(description)
+    return (
+        "kriteri" in blob
+        and "somut girdi" in blob
+        and "olculebilir kanit" in blob
+    )
+
+
+def _polish_rubric_criteria(
+    criteria: list[dict[str, Any]],
+    *,
+    assignment_title: str,
+    assignment_description: str,
+) -> list[dict[str, Any]]:
+    polished: list[dict[str, Any]] = []
+    for row in criteria:
+        item = dict(row)
+        item["name"] = _polish_turkish_instruction_text(str(item.get("name", "")))
+        item["description"] = _polish_turkish_instruction_text(str(item.get("description", "")))
+        if _rubric_description_is_template_noise(item["description"]) or not _rubric_description_has_project_context(
+            item["description"],
+            assignment_title,
+            assignment_description,
+        ):
+            item["description"] = _project_specific_rubric_description(
+                item["name"],
+                assignment_title,
+                assignment_description,
+            )
+        polished.append(item)
+    return polished
+
+
 def _rubric_name_is_too_weak(name: str, description: str) -> bool:
     blob = (name or "").strip().lower()
     return (
@@ -788,6 +1164,14 @@ def _rubric_name_is_too_weak(name: str, description: str) -> bool:
         and any(token in blob for token in _RUBRIC_WEAK_NAME_TOKENS)
         and not _rubric_description_is_concrete(description)
     )
+
+
+def _rubric_description_has_project_context(description: str, title: str, assignment_description: str) -> bool:
+    context = build_project_context(title, assignment_description)
+    desc = str(description or "").lower().translate(_TURKISH_FOLD_MAP)
+    if not context.terms:
+        return True
+    return any(term.lower() in desc for term in context.terms[:12])
 
 
 def _rubric_is_unrequested_test_criterion(name: str, description: str, *, testing_required: bool) -> bool:
@@ -812,6 +1196,18 @@ def _rubric_is_unrequested_process_criterion(
     return any(token in blob for token in _RUBRIC_PROCESS_TOKENS)
 
 
+def _rubric_is_unrequested_api_criterion(name: str, description: str, *, api_required: bool) -> bool:
+    if api_required:
+        return False
+    return _rubric_has_scope_token(_rubric_scope_blob(name, description), _RUBRIC_API_SCOPE_TOKENS)
+
+
+def _rubric_is_unrequested_oop_criterion(name: str, description: str, *, oop_required: bool) -> bool:
+    if oop_required:
+        return False
+    return _rubric_has_scope_token(_rubric_scope_blob(name, description), _RUBRIC_OOP_SCOPE_TOKENS)
+
+
 def _sanitize_rubric_scope(
     criteria: list[dict[str, Any]],
     *,
@@ -828,6 +1224,9 @@ def _sanitize_rubric_scope(
         assignment_title,
         assignment_description,
     )
+    api_required = _assignment_requires_api_scope(assignment_title, assignment_description)
+    oop_required = _assignment_requires_oop_scope(assignment_title, assignment_description)
+    fallback_names = _rubric_fallback_names_for_assignment(assignment_title, assignment_description)
 
     used_names: set[str] = set()
     sanitized: list[dict[str, Any]] = []
@@ -850,17 +1249,29 @@ def _sanitize_rubric_scope(
                 desc,
                 process_required=process_required,
             )
+            or _rubric_is_unrequested_api_criterion(
+                name,
+                desc,
+                api_required=api_required,
+            )
+            or _rubric_is_unrequested_oop_criterion(
+                name,
+                desc,
+                oop_required=oop_required,
+            )
             or any(token in blob for token in _RUBRIC_NON_CODE_ODD_TOKENS)
             or _rubric_name_is_too_weak(name, desc)
+            or not _rubric_description_has_project_context(desc, assignment_title, assignment_description)
         )
         if should_replace:
-            replacement = _next_rubric_replacement_name(used_names)
+            replacement = _next_rubric_replacement_name(used_names, fallback_names)
             criterion = {
                 **criterion,
                 "name": replacement,
-                "description": (
-                    f"{replacement} kriteri, odevin kod tabanli tesliminde beklenen kapsam, "
-                    "dogruluk ve kalite gereksinimlerinin ne kadar karsilandigini olcer."
+                "description": _project_specific_rubric_description(
+                    replacement,
+                    assignment_title,
+                    assignment_description,
                 ),
             }
         else:
@@ -877,6 +1288,58 @@ def _clamp_rubric_count(value: Any) -> int:
     return max(_RUBRIC_MIN_CRITERIA, min(_RUBRIC_MAX_CRITERIA, n))
 
 
+def _rubric_name_key(name: str) -> str:
+    text = str(name or "").strip().translate(_TURKISH_FOLD_MAP)
+    text = unicodedata.normalize("NFKD", text)
+    text = "".join(ch for ch in text if not unicodedata.combining(ch))
+    return re.sub(r"\s+", " ", text).lower()
+
+
+def _infer_rubric_count_from_assignment(title: str, description: str) -> int:
+    blob = f"{title}\n{description}".lower()
+    hard_hits = sum(
+        1
+        for token in (
+            "zor",
+            "cok parcali",
+            "cok asamali",
+            "moduler mimari",
+            "raporlama",
+            "tasarim karar",
+            "kenar durum",
+            "test senaryo",
+            "entegrasyon",
+            "optimiz",
+            "performans",
+            "api",
+            "veritabani",
+            "database",
+        )
+        if token in blob
+    )
+    medium_hits = sum(
+        1
+        for token in (
+            "orta",
+            "birden fazla",
+            "dosya",
+            "sinif",
+            "metot",
+            "fonksiyon",
+            "hata",
+            "test",
+            "rapor",
+        )
+        if token in blob
+    )
+    word_count = len(re.findall(r"\w+", blob, flags=re.UNICODE))
+    if hard_hits >= 3 or word_count >= 90:
+        return 14
+    if hard_hits >= 1 or medium_hits >= 3 or word_count >= 45:
+        return 12
+    return 10
+
+
 def _rubric_weights_for_count(count: int) -> list[int]:
     """Return count integers, each 5..10, summing to 100."""
     count = _clamp_rubric_count(count)
@@ -889,6 +1352,76 @@ def _rubric_weights_for_count(count: int) -> list[int]:
             remaining -= 1
         i = (i + 1) % count
     return weights
+
+
+def _rubric_num_predict_for_count(count: int) -> int:
+    """Bound rubric generation output size to the requested rubric length."""
+    count = _clamp_rubric_count(count)
+    return min(2400, max(1400, count * 120))
+
+
+def _rebalance_rubric_scores(criteria: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    weights = _rubric_weights_for_count(len(criteria))
+    return [{**criterion, "max_score": weights[i]} for i, criterion in enumerate(criteria)]
+
+
+def _ensure_mandatory_rubric_criteria(
+    criteria: list[dict[str, Any]],
+    *,
+    assignment_title: str = "",
+    assignment_description: str = "",
+) -> list[dict[str, Any]]:
+    target = _clamp_rubric_count(len(criteria))
+    rows = [dict(row) for row in criteria[:target]]
+    canonical_seen: set[str] = set()
+    deduped: list[dict[str, Any]] = []
+    for row in rows:
+        key = _rubric_name_key(str(row.get("name", "")))
+        canonical_name = _RUBRIC_CANONICAL_NAME_MAP.get(key)
+        if canonical_name:
+            if canonical_name in canonical_seen:
+                continue
+            row["name"] = canonical_name
+            if assignment_title or assignment_description:
+                row["description"] = _project_specific_rubric_description(
+                    canonical_name,
+                    assignment_title,
+                    assignment_description,
+                )
+            canonical_seen.add(canonical_name)
+        deduped.append(row)
+    rows = deduped
+
+    existing = {_rubric_name_key(str(row.get("name", ""))) for row in rows}
+    missing = [row for row in _RUBRIC_MANDATORY_CRITERIA if _rubric_name_key(row["name"]) not in existing]
+    if not missing:
+        return rows
+
+    protected = {_rubric_name_key(row["name"]) for row in _RUBRIC_MANDATORY_CRITERIA}
+    replaceable_indexes = [
+        index
+        for index in range(len(rows) - 1, -1, -1)
+        if _rubric_name_key(str(rows[index].get("name", ""))) not in protected
+    ]
+    for mandatory in missing:
+        new_row = {
+            "name": mandatory["name"],
+            "description": _project_specific_rubric_description(
+                mandatory["name"],
+                assignment_title,
+                assignment_description,
+            )
+            if assignment_title or assignment_description
+            else mandatory["description"],
+            "max_score": _RUBRIC_MIN_POINTS,
+        }
+        if replaceable_indexes:
+            rows[replaceable_indexes.pop(0)] = new_row
+        elif len(rows) < _RUBRIC_MAX_CRITERIA:
+            rows.append(new_row)
+        else:
+            rows[-1] = new_row
+    return rows[:target]
 
 
 def _ensure_rubric_constraints(criteria: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -961,10 +1494,7 @@ def _criteria_from_llm_payload(result: dict[str, Any], criterion_count: int) -> 
             "max_score": _RUBRIC_MIN_POINTS,
         })
 
-    weights = _rubric_weights_for_count(target)
-    for i, criterion in enumerate(cleaned):
-        criterion["max_score"] = weights[i]
-    return cleaned
+    return _rebalance_rubric_scores(cleaned)
 
 
 class AssignmentAssistantSuggestionsRequest(BaseModel):
@@ -974,6 +1504,102 @@ class AssignmentAssistantSuggestionsRequest(BaseModel):
     count: int = 5
     difficulty: str | None = None  # "easy" | "medium" | "hard"
     prefer_fresh: bool = False  # True → Ollama önbelleğini atl (yeniden öner)
+
+
+class AssignmentExampleRequest(BaseModel):
+    assignment_title: str = ""
+    assignment_description: str = ""
+
+
+_ASSIGNMENT_EXAMPLE_SYSTEM = """\
+You reply with a single JSON object only. No markdown fences.
+
+JSON shape exactly:
+{"example": "Örnek: ..."}
+
+You create a concrete expected-output example for a programming homework.
+The example is not a new assignment and not grading advice. It must show what a
+student's submission output should roughly look like.
+
+Rules:
+- Start the string with "Örnek:".
+- Ground it in the assignment title and description. Preserve domain nouns, file names,
+  APIs, inputs, required reports, formulas, classes, or edge cases from the teacher text.
+- Include a tiny input/sample scenario and the expected output/result format.
+- If the homework is API based, include endpoint calls and JSON responses.
+- If it is file/report based, include a sample file snippet and expected report lines.
+- If it is OOP/data-structure/algorithm based, include object/input setup and expected
+  method/console results.
+- Include at least one failure or edge case if the assignment asks for validation,
+  errors, tests, or robustness.
+- Do not include full solution code.
+- Keep it under 900 characters, but it may contain line breaks.
+"""
+
+
+def _clean_assignment_example(raw: Any, title: str, description: str) -> str:
+    text = str(raw or "").strip()
+    if not text:
+        return _fallback_assignment_example(title, description)
+    text = _strip_md_leaks(text)
+    text = re.sub(r"```(?:json|text|python|ts|js)?", "", text, flags=re.IGNORECASE).replace("```", "")
+    text = _polish_turkish_instruction_text(text)
+    text = _ASSIGNMENT_EXAMPLE_OUTPUT_HEADING_RE.sub("Beklenen cikti: ", text, count=1)
+    text = text.strip()
+    if not re.match(r"^(Ornek|Örnek)\s*:", text, flags=re.IGNORECASE):
+        text = f"Örnek: {text}"
+    if not _ASSIGNMENT_EXAMPLE_OUTPUT_HEADING_RE.search(text):
+        text += "\nBeklenen cikti: Odev aciklamasinda istenen rapor veya sonuc alanlari bu formatta gosterilir."
+    edge_blob = _rubric_scope_blob(title, description)
+    edge_required = any(token in edge_blob for token in ("hata", "hatali", "gecersiz", "test", "kenar", "robust"))
+    if edge_required and "Hata senaryosu" not in text:
+        text += "\nHata senaryosu: Eksik, hatali veya gecersiz girdi icin acik bir uyari/hata mesaji uretilir."
+    if len(text) > 1200:
+        text = text[:1190].rstrip(" ,;:-\n") + "..."
+    return text
+
+
+def _fallback_assignment_example(title: str, description: str) -> str:
+    blob = f"{title} {description}".lower().translate(_TURKISH_FOLD_MAP)
+
+    def has_any(*tokens: str) -> bool:
+        return any(token in blob for token in tokens)
+
+    if has_any("log", "gunluk"):
+        return (
+            "Örnek: Girdi `ornek_log.txt`:\n"
+            "INFO Uygulama basladi\nERROR Baglanti koptu\nWARNING Disk doluyor\nbozuk_satir\n\n"
+            "Beklenen cikti:\nINFO: 1\nWARNING: 1\nERROR: 1\nBozuk satir: 1\nHata satirlari: 2"
+        )
+    if has_any("api", "endpoint", "fastapi", "rest"):
+        return (
+            "Örnek: POST /items -> 201 {\"id\":1,\"name\":\"Ornek Kayit\",\"status\":\"active\"}\n"
+            "GET /items -> 200 [{\"id\":1,\"name\":\"Ornek Kayit\",\"status\":\"active\"}]\n"
+            "GET /items/999 -> 404 {\"detail\":\"Kayit bulunamadi\"}"
+        )
+    if has_any("csv", "json", "dosya", "rapor") or re.search(r"(^|[^a-z0-9])ph([^a-z0-9]|$)", blob):
+        return (
+            "Örnek: Girdi dosyasi 3 satirlik kucuk veri icerir; iki satir gecerli, bir satir eksik/gecersizdir.\n"
+            "Beklenen rapor:\nBasarili kayit: 2\nHesaplanan sonuc/ortalama: beklenen formatta yazilir\n"
+            "Atlanan satirlar: 3. satir icin acik uyari"
+        )
+    if has_any("sinif", "oop", "nesne", "class", "kalitim"):
+        return (
+            "Örnek: Iki gecerli nesne olusturulur, temel metotlar sirayla cagrilir.\n"
+            "Beklenen cikti:\nKayit olusturuldu: #1\nDurum guncellendi: aktif\n"
+            "Gecersiz deger -> acik hata mesaji"
+        )
+    if has_any("agac", "bst", "graf", "bfs", "dfs", "algoritma", "liste", "stack", "queue", "kuyruk", "yigin"):
+        return (
+            "Örnek: Kucuk bir girdi kumesiyle algoritma calistirilir ve ara/final sonuc yazdirilir.\n"
+            "Beklenen cikti:\nGirdi: [4, 2, 2, 9]\nFinal sonuc: odevde istenen sirada/degerde\n"
+            "Bos girdi -> 'islem yapilacak veri yok'"
+        )
+    return (
+        "Örnek: Basarili senaryoda odevde istenen en kucuk anlamli girdi calistirilir.\n"
+        "Beklenen cikti:\nSonuc: basarili\nIslenen kayit: 2\nUyari/Hata: yok\n\n"
+        "Hata senaryosu: Eksik veya gecersiz girdi verildiginde program acik bir hata mesaji uretir."
+    )
 
 
 def _strip_course_context_from_hint(raw: str) -> str:
@@ -1685,6 +2311,8 @@ class StudentUpdateRequest(BaseModel):
 # ---- Severity mapping: backend -> frontend ----
 
 _SEVERITY_MAP = {
+    "error": "error",
+    "warning": "warning",
     "critical": "error",
     "high": "error",
     "medium": "warning",
@@ -1695,7 +2323,58 @@ _SEVERITY_MAP = {
 
 
 def _map_severity(sev: str) -> str:
-    return _SEVERITY_MAP.get(sev, "info")
+    return _SEVERITY_MAP.get(str(sev or "").strip().lower(), "info")
+
+
+def _line_from_text(raw: Any) -> int | None:
+    text = str(raw or "")
+    match = re.search(r"(\d+)", text)
+    if not match:
+        return None
+    try:
+        line = int(match.group(1))
+    except ValueError:
+        return None
+    return line if line >= 1 else None
+
+
+def _normalize_agent_findings(findings: Any) -> list[dict[str, Any]]:
+    """Normalize frontend findings from all agents into one stable contract."""
+    if not isinstance(findings, list):
+        return []
+    normalized: list[dict[str, Any]] = []
+    seen: set[tuple[str, str, int | None]] = set()
+    for item in findings:
+        if not isinstance(item, dict):
+            continue
+        message = re.sub(r"\s+", " ", str(item.get("message") or "").strip())
+        if not message:
+            continue
+        agent = str(item.get("agent") or "").strip() or "Ajan"
+        line = item.get("line")
+        if not isinstance(line, int) or line < 1:
+            line = None
+        key = (agent, message.lower(), line)
+        if key in seen:
+            continue
+        seen.add(key)
+        normalized.append({
+            "severity": _map_severity(str(item.get("severity", "info"))),
+            "message": message,
+            "line": line,
+            "agent": agent,
+            "code": item.get("code"),
+        })
+    severity_rank = {"error": 0, "warning": 1, "info": 2}
+    normalized.sort(key=lambda row: (severity_rank.get(row["severity"], 2), row["line"] or 10**9, row["message"]))
+    return normalized
+
+
+def _normalize_agents_for_frontend(agents: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    for agent in agents:
+        if isinstance(agent, dict):
+            agent["findings"] = _normalize_agent_findings(agent.get("findings"))
+    return agents
 
 
 def _parse_class_year(raw_value: int | None) -> int:
@@ -2533,6 +3212,49 @@ async def run_analysis_pipeline(
         "analysisEngine": _ANALYSIS_ENGINE,
         "relevanceScoreWarning": relevance_score_warning,
         "taskAlignment": task_alignment,
+        "agentDiagnostics": _build_agent_diagnostics(
+            {
+                "code_quality": cq,
+                "seniority": sn,
+                "guideline": gl,
+                "security": sc,
+                "testing": ta,
+                "evidence": ev,
+                "master": final,
+            },
+            task_alignment=task_alignment,
+        ),
+    }
+
+
+def _build_agent_diagnostics(
+    agent_outputs: dict[str, dict[str, Any]],
+    *,
+    task_alignment: dict[str, Any],
+) -> dict[str, Any]:
+    """Safe diagnostic summary for debugging agent behavior; no prompts or secrets."""
+    agents: list[dict[str, Any]] = []
+    for name, output in agent_outputs.items():
+        if not isinstance(output, dict):
+            continue
+        flags = output.get("guardrail_flags")
+        agents.append({
+            "id": name,
+            "score": output.get("score", output.get("final_score")),
+            "llm_status": output.get("llm_status", "unknown"),
+            "confidence": output.get("confidence"),
+            "guardrail_flags": flags if isinstance(flags, list) else [],
+        })
+    return {
+        "agents": agents,
+        "taskAlignment": {
+            "factor": task_alignment.get("factor"),
+            "llm_factor": task_alignment.get("llm_factor"),
+            "llm_skipped": task_alignment.get("llm_skipped"),
+            "llm_off_topic": task_alignment.get("llm_off_topic"),
+            "reasons": task_alignment.get("reasons", []),
+        },
+        "lastLlmCall": get_llm_diagnostics_snapshot(),
     }
 
 
@@ -2570,14 +3292,18 @@ def _build_agents_list(cq, sn, gl, sc, ta, ev) -> list[dict]:
     failed = ta.get("failed_tests", 0)
     edge_q = ta.get("edge_case_handling")
     if comp_ok and runs_ok:
-        summary_ta = f"Derleme basarili, {passed} test gecti"
-        if failed:
-            summary_ta += f", {failed} basarisiz"
+        perf_notes = str(ta.get("performance_notes") or "")
+        if "CLI tipi program arguman bekliyor" in perf_notes:
+            summary_ta = "Derleme basarili, CLI arguman bekliyor; kullanim mesaji hata sayilmadi"
+        else:
+            summary_ta = f"Derleme basarili, {passed} test gecti"
+            if failed:
+                summary_ta += f", {failed} basarisiz"
     elif comp_ok:
         summary_ta = "Derleme basarili, calisma hatasi"
     else:
         summary_ta = "Derleme hatasi"
-    if isinstance(edge_q, str) and edge_q:
+    if isinstance(edge_q, str) and edge_q and "CLI arguman bekliyor" not in summary_ta:
         summary_ta += f" • Uç durum: {edge_q}"
     agents.append({
         "id": "testing",
@@ -2631,10 +3357,11 @@ def _build_agents_list(cq, sn, gl, sc, ta, ev) -> list[dict]:
     # Guideline Agent
     gl_findings = []
     for viol in gl.get("style_violations", []):
+        line_hint = viol.get("line_hint", "")
         gl_findings.append({
             "severity": _map_severity(viol.get("severity", "info")),
             "message": viol.get("description", viol.get("rule", "")),
-            "line": None, "agent": "Standartlar Ajanı", "code": None,
+            "line": _line_from_text(line_hint), "agent": "Standartlar Ajanı", "code": None,
         })
     agents.append({
         "id": "guideline",
@@ -2695,10 +3422,11 @@ def _build_agents_list(cq, sn, gl, sc, ta, ev) -> list[dict]:
             "agent": "Kanıtlandırma Ajanı",
             "code": claim.get("code_snippet"),
         })
-    for rejected in (ev.get("rejected_claims", []) or [])[:4]:
+    for rejected in []:
         if isinstance(rejected, dict):
             text = str(
                 rejected.get("reason")
+                or rejected.get("claim")
                 or rejected.get("feedback")
                 or rejected.get("description")
                 or rejected
@@ -2746,13 +3474,14 @@ def _build_agents_list(cq, sn, gl, sc, ta, ev) -> list[dict]:
         "findings": ev_findings,
     })
 
-    return agents
+    return _normalize_agents_for_frontend(agents)
 
 
 def _build_line_evidence(cq, gl, sc, ev, source_code: str) -> list[dict]:
     """Satir bazli evidence listesi olustur (frontend code editor icin)."""
     evidence = []
     seen: set[tuple[int, str]] = set()
+    max_line = max(1, len((source_code or "").splitlines()))
 
     _AGENT_LABEL = {
         "code_quality": "Kod Kalitesi",
@@ -2766,7 +3495,7 @@ def _build_line_evidence(cq, gl, sc, ev, source_code: str) -> list[dict]:
         return re.sub(r"\s+", " ", (m or "").strip())
 
     def _add(line: int | None, agent: str, msg: str, sev: str):
-        if not line or line < 1:
+        if not line or line < 1 or line > max_line:
             return
         msg = (msg or "").strip()
         if not msg:
@@ -3537,11 +4266,17 @@ async def suggest_rubric(req: RubricSuggestionRequest):
 
     title = (req.assignment_title or "").strip() or "Ödev"
     desc = (req.assignment_description or "").strip()
-    criterion_count = _clamp_rubric_count(req.criterion_count)
+    criterion_count = (
+        _clamp_rubric_count(req.criterion_count)
+        if req.criterion_count is not None
+        else _infer_rubric_count_from_assignment(title, desc)
+    )
 
     user_prompt = (
         f"Assignment title: {title}\n"
         f"Assignment description (may be empty):\n{desc or '(none)'}\n\n"
+        f"{build_project_context(title, desc).prompt_block()}\n"
+        "Rubrik adlari ve aciklamalari bu proje terimlerini kullanmali; genel yazilim kalitesi cumleleriyle yetinme.\n"
         f"Requested criterion count: {criterion_count}\n"
         f"Generate rubric criteria JSON with exactly {criterion_count} criteria.\n"
         f"Each max_score must be between {_RUBRIC_MIN_POINTS} and {_RUBRIC_MAX_POINTS}; "
@@ -3552,7 +4287,7 @@ async def suggest_rubric(req: RubricSuggestionRequest):
         system_prompt=_RUBRIC_SUGGEST_SYSTEM,
         user_prompt=user_prompt,
         temperature=0.42,
-        num_predict=3072,
+        num_predict=_rubric_num_predict_for_count(criterion_count),
         model=_llm_cfg.ollama_general_model,
     )
     if not result:
@@ -3567,12 +4302,62 @@ async def suggest_rubric(req: RubricSuggestionRequest):
             assignment_title=title,
             assignment_description=desc,
         )
+        criteria = _ensure_mandatory_rubric_criteria(
+            criteria,
+            assignment_title=title,
+            assignment_description=desc,
+        )
+        criteria = _rebalance_rubric_scores(criteria)
+        criteria = _polish_rubric_criteria(
+            criteria,
+            assignment_title=title,
+            assignment_description=desc,
+        )
     except ValueError as exc:
         raise HTTPException(
             status_code=502,
             detail=f"LLM rubrik çıktısi geçersiz: {exc}",
         ) from exc
     return {"criteria": criteria}
+
+@app.post("/api/faculty/assignment-assistant/example")
+async def assignment_assistant_example(req: AssignmentExampleRequest):
+    """Create a concrete expected-output example for a draft assignment."""
+    from backend.core.config import settings as _llm_cfg
+
+    title = (req.assignment_title or "").strip() or "Yeni Odev"
+    desc = (req.assignment_description or "").strip()
+    if not desc:
+        return {"example": _fallback_assignment_example(title, desc), "source": "fallback"}
+
+    user_prompt = (
+        f"Assignment title: {title}\n"
+        f"Assignment description:\n{desc}\n\n"
+        f"{build_project_context(title, desc).prompt_block()}\n"
+        "Return a concrete expected-output example that helps the student understand the target output format."
+    )
+
+    if not _llm_cfg.ollama_enabled:
+        return {"example": _fallback_assignment_example(title, desc), "source": "fallback"}
+
+    try:
+        result = await chat_json(
+            system_prompt=_ASSIGNMENT_EXAMPLE_SYSTEM,
+            user_prompt=user_prompt,
+            temperature=0.25,
+            num_predict=1400,
+            model=_llm_cfg.ollama_general_model,
+            use_cache=True,
+        )
+        if isinstance(result, dict) and result.get("example"):
+            return {
+                "example": _clean_assignment_example(result.get("example"), title, desc),
+                "source": "llm",
+            }
+    except Exception as exc:
+        logger.warning("assignment-example: LLM cagrisi basarisiz: %s", exc)
+
+    return {"example": _fallback_assignment_example(title, desc), "source": "fallback"}
 
 
 @app.post("/api/faculty/assignment-assistant/suggestions")

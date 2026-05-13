@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Sparkles, Check, Trash2, Plus, Loader2, X, Search, Info } from "lucide-react";
+import { Sparkles, Check, Trash2, Plus, Loader2, X, Search } from "lucide-react";
 import { toast } from "sonner";
 import {
   getRubricByAssignment,
@@ -47,14 +47,6 @@ const RUBRIC_MIN_POINTS = 5;
 const RUBRIC_MAX_POINTS = 10;
 const RUBRIC_TOTAL_POINTS = 100;
 
-const criterionCountOptions = Array.from(
-  { length: RUBRIC_MAX_CRITERIA - RUBRIC_MIN_CRITERIA + 1 },
-  (_, index) => RUBRIC_MIN_CRITERIA + index,
-);
-
-const clampCriterionCount = (value: number) =>
-  Math.max(RUBRIC_MIN_CRITERIA, Math.min(RUBRIC_MAX_CRITERIA, value));
-
 const getRubricValidationMessage = (criteria: RubricCriterion[], t: any = (key: string) => key) => {
   if (criteria.length < RUBRIC_MIN_CRITERIA || criteria.length > RUBRIC_MAX_CRITERIA) {
     return t("faculty.rubricModal.validationMinMax");
@@ -84,10 +76,8 @@ const RubricModal = ({ assignment, teacherId, open, onClose }: RubricModalProps)
   // Rubric states
   const [rubric, setRubric] = useState<Rubric | null>(null);
   const [criteria, setCriteria] = useState<RubricCriterion[]>([]);
-  const [criterionCount, setCriterionCount] = useState(RUBRIC_MIN_CRITERIA);
   const [loading, setLoading] = useState(true);
   const [aiLoading, setAiLoading] = useState(false);
-  const [criterionCountTooltipOpen, setCriterionCountTooltipOpen] = useState(false);
 
   // Questions states
   const [questions, setQuestions] = useState<QuestionItem[]>([]);
@@ -117,11 +107,9 @@ const RubricModal = ({ assignment, teacherId, open, onClose }: RubricModalProps)
           setRubric(rubricData as Rubric);
           const loadedCriteria = (rubricData.criteria as RubricCriterion[]) || [];
           setCriteria(loadedCriteria);
-          setCriterionCount(clampCriterionCount(loadedCriteria.length || RUBRIC_MIN_CRITERIA));
         } else {
           setRubric(null);
           setCriteria([]);
-          setCriterionCount(RUBRIC_MIN_CRITERIA);
         }
 
         // Load all questions
@@ -150,7 +138,6 @@ const RubricModal = ({ assignment, teacherId, open, onClose }: RubricModalProps)
       const data = await suggestRubric({
         assignment_title: assignment.name,
         assignment_description: assignment.description || "",
-        criterion_count: criterionCount,
         report_language: language,
       });
       setCriteria(data.criteria || []);
@@ -372,33 +359,15 @@ const RubricModal = ({ assignment, teacherId, open, onClose }: RubricModalProps)
                   )}
 
                   <div className="flex items-center justify-between gap-3 rounded-xl border border-border bg-muted/20 p-3">
-                    <div className="flex items-center gap-1.5">
-                      <label htmlFor="rubric-criterion-count" className="text-xs font-medium text-foreground">
-                        {t("faculty.rubricModal.criterionCount")}
-                      </label>
-                      <div className="relative">
-                        <Info
-                          className="h-3.5 w-3.5 text-muted-foreground cursor-help flex-shrink-0"
-                          onMouseEnter={() => setCriterionCountTooltipOpen(true)}
-                          onMouseLeave={() => setCriterionCountTooltipOpen(false)}
-                        />
-                        {criterionCountTooltipOpen && (
-                          <div className="absolute bottom-full left-0 mb-1 bg-popover border border-border rounded-lg px-2 py-1 text-xs text-muted-foreground whitespace-nowrap z-50">
-                            10-20 {t("faculty.rubricModal.item")} - 5-10 pt, total 100 pt.
-                          </div>
-                        )}
-                      </div>
-                      <span className="text-xs text-foreground">:</span>
-                      <select
-                        id="rubric-criterion-count"
-                        value={criterionCount}
-                        onChange={(e) => setCriterionCount(clampCriterionCount(Number(e.target.value)))}
-                        className="h-9 rounded-lg border border-input bg-background px-3 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
-                      >
-                        {criterionCountOptions.map((count) => (
-                          <option key={count} value={count}>{count} {t("faculty.rubricModal.item")}</option>
-                        ))}
-                      </select>
+                    <div className="space-y-1">
+                      <p className="text-xs font-medium text-foreground">
+                        {language === "tr" ? "AI rubrik kapsamı" : "AI rubric scope"}
+                      </p>
+                      <p className="text-[11px] text-muted-foreground">
+                        {language === "tr"
+                          ? "Kriter sayısı ödev zorluğuna göre otomatik belirlenir. Her kriter 5-10 puan, toplam 100."
+                          : "Criterion count is inferred from assignment difficulty. Each criterion is 5-10 points, total 100."}
+                      </p>
                     </div>
                     <button
                       type="button"

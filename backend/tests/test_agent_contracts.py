@@ -6,6 +6,7 @@ from backend.agents.assignment_alignment import compute_brief_code_alignment
 from backend.agents.code_quality import CodeQualityAgent
 from backend.agents.code_utils import get_code_metrics
 from backend.agents.guideline import GuidelineAgent
+from backend.agents.evidence import _normalize_claims, _normalize_rejected_claims
 from backend.agents.master_evaluator import MasterEvaluatorAgent
 from backend.agents.security import SecurityAgent
 from backend.agents.seniority import SeniorityAgent
@@ -23,6 +24,7 @@ from backend.agents.test_agent import (
     _looks_like_service_program,
 )
 from backend.sandbox.executor import _simulate_sandbox
+from frontend.backend.main import _build_agent_diagnostics, _build_agents_list, _build_line_evidence
 
 
 class TaskRelevanceContractTests(unittest.TestCase):
@@ -132,6 +134,25 @@ int max_value(const std::vector<int>& values) { return *std::max_element(values.
         self.assertGreaterEqual(merged["factor"], 0.75)
         self.assertNotIn("llm_task_relevance_off_topic", merged["reasons"])
 
+    def test_merge_rewrites_contradictory_explanation_after_softening_off_topic(self):
+        merged = merge_task_alignment(
+            1.0,
+            [],
+            {
+                "relevance_factor": 0.15,
+                "off_topic": True,
+                "student_fulfills_assignment": False,
+                "capability_match": 0.86,
+                "explanation": "Odevle baglantisi yok; yanlis odev yuklenmis.",
+                "submission_domain_guess": "log dosya isleme",
+                "task_domain_guess": "log ozetleme CLI",
+            },
+        )
+
+        self.assertFalse(merged["llm_off_topic"])
+        self.assertNotIn("baglantisi yok", merged["llm_explanation"].lower())
+        self.assertIn("kismi", merged["llm_explanation"].lower())
+
     def test_merge_flags_deterministic_fallback_mismatch_without_llm(self):
         merged = merge_task_alignment(
             1.0,
@@ -227,6 +248,182 @@ print(status)
             deterministic_task_capability_match(brief, rubric, code),
             0.75,
         )
+
+
+class AgentDiagnosticsContractTests(unittest.TestCase):
+    def test_diagnostics_are_safe_and_optional(self):
+        diagnostics = _build_agent_diagnostics(
+            {
+                "code_quality": {
+                    "score": 82,
+                    "llm_status": "repaired",
+                    "confidence": 0.7,
+                    "guardrail_flags": ["json_schema_repair"],
+                },
+                "master": {"final_score": 78, "llm_status": "ok"},
+            },
+            task_alignment={
+                "factor": 0.8,
+                "llm_factor": 0.75,
+                "llm_skipped": False,
+                "llm_off_topic": False,
+                "reasons": [],
+            },
+        )
+
+        self.assertIn("agents", diagnostics)
+        self.assertIn("taskAlignment", diagnostics)
+        self.assertIn("lastLlmCall", diagnostics)
+        self.assertNotIn("prompt", str(diagnostics).lower())
+        self.assertEqual(diagnostics["agents"][0]["llm_status"], "repaired")
+
+    def test_frontend_agent_findings_are_normalized_and_deduplicated(self):
+        agents = _build_agents_list(
+            {
+                "time_complexity": "O(n)",
+                "score": 80,
+                "issues": [
+                    {"description": "  Ayni bulgu  ", "severity": "HIGH", "line": 2},
+                    {"description": "Ayni bulgu", "severity": "high", "line": 2},
+                    {"description": "", "severity": "medium", "line": 3},
+                ],
+            },
+            {"estimated_level": "mid", "score": 70, "immaturity_indicators": [], "maturity_indicators": []},
+            {
+                "naming_quality": "good",
+                "score": 75,
+                "style_violations": [
+                    {"description": "Satir bosluk sorunu", "severity": "medium", "line_hint": "Satir 4"},
+                ],
+            },
+            {"risk_level": "safe", "total_threats": 0, "score": 100, "threats": []},
+            {
+                "compilation_success": True,
+                "runs_successfully": True,
+                "passed_tests": 1,
+                "failed_tests": 0,
+                "score": 90,
+            },
+            {"total_claims_received": 0, "total_claims_validated": 0, "validated_claims": []},
+        )
+
+        quality = next(agent for agent in agents if agent["id"] == "quality")
+        guideline = next(agent for agent in agents if agent["id"] == "guideline")
+        self.assertEqual(len(quality["findings"]), 1)
+        self.assertEqual(quality["findings"][0]["severity"], "error")
+        self.assertEqual(quality["findings"][0]["message"], "Ayni bulgu")
+        self.assertEqual(guideline["findings"][0]["line"], 4)
+
+    def test_evidence_rejected_claims_stay_out_of_student_findings(self):
+        agents = _build_agents_list(
+            {"time_complexity": "O(n)", "score": 80, "issues": []},
+            {"estimated_level": "mid", "score": 70, "immaturity_indicators": [], "maturity_indicators": []},
+            {"naming_quality": "good", "score": 75, "style_violations": []},
+            {"risk_level": "safe", "total_threats": 0, "score": 100, "threats": []},
+            {
+                "compilation_success": True,
+                "runs_successfully": True,
+                "passed_tests": 1,
+                "failed_tests": 0,
+                "score": 90,
+            },
+            {
+                "total_claims_received": 2,
+                "total_claims_validated": 1,
+                "validated_claims": [
+                    {
+                        "feedback": "Somut bulgu",
+                        "severity": "medium",
+                        "lines": [1],
+                        "agent_source": "code_quality",
+                        "code_snippet": "print(1)",
+                    }
+                ],
+                "rejected_claims": [
+                    {"agent_source": "guideline", "claim": "Docstring yok", "reason": "Somut kanit yok"}
+                ],
+            },
+        )
+
+        evidence = next(agent for agent in agents if agent["id"] == "evidence")
+        messages = [finding["message"] for finding in evidence["findings"]]
+        self.assertEqual(messages, ["Somut bulgu"])
+        self.assertIn("reddedilen: 1", evidence["summary"])
+
+    def test_line_evidence_ignores_out_of_range_and_duplicate_findings(self):
+        evidence = _build_line_evidence(
+            {
+                "issues": [
+                    {"description": "Tekrar eden sorun", "severity": "high", "line": 1},
+                    {"description": "Tekrar eden sorun", "severity": "high", "line": 1},
+                    {"description": "Yok satir", "severity": "medium", "line": 99},
+                ]
+            },
+            {"style_violations": []},
+            {"threats": []},
+            {"validated_claims": []},
+            "print(1)\n",
+        )
+
+        self.assertEqual(len(evidence), 1)
+        self.assertEqual(evidence[0]["line"], 1)
+        self.assertEqual(evidence[0]["severity"], "error")
+
+
+class EvidenceNormalizationContractTests(unittest.TestCase):
+    def test_validated_claim_snippet_is_rebuilt_from_source(self):
+        source = ["def add(a, b):", "    return a + b"]
+        claims = [
+            {
+                "lines": [2],
+                "code_snippet": "print('hallucinated')",
+                "feedback": "```Kodda toplama islemi var.```",
+                "agent_source": "code_quality",
+                "severity": "HIGH",
+            }
+        ]
+
+        normalized = _normalize_claims(claims, source)
+
+        self.assertEqual(len(normalized), 1)
+        self.assertEqual(normalized[0]["code_snippet"], "    return a + b")
+        self.assertEqual(normalized[0]["feedback"], "Kodda toplama islemi var.")
+        self.assertEqual(normalized[0]["severity"], "high")
+
+    def test_block_claim_lines_are_kept_inside_range(self):
+        source = [
+            "def work():",
+            "    if True:",
+            "        return 1",
+            "print(work())",
+        ]
+        claims = [
+            {
+                "lines": [4],
+                "line_range": [1, 3],
+                "feedback": "Fonksiyon blogu dogrulandi.",
+                "agent_source": "evidence",
+                "severity": "medium",
+            }
+        ]
+
+        normalized = _normalize_claims(claims, source)
+
+        self.assertEqual(normalized[0]["lines"], [1, 2, 3])
+        self.assertIn("def work", normalized[0]["code_snippet"])
+
+    def test_rejected_claims_are_structured(self):
+        rejected = [
+            "[guideline] 'Docstring yok' -- somut kanit yok",
+            {"agent_source": "security", "claim": "Tehdit var", "reason": "Kodda ilgili satir yok"},
+        ]
+
+        normalized = _normalize_rejected_claims(rejected, ["def f(): pass"])
+
+        self.assertEqual(len(normalized), 2)
+        self.assertEqual(normalized[0]["agent_source"], "guideline")
+        self.assertIn("Docstring", normalized[0]["claim"])
+        self.assertTrue(normalized[0]["reason"])
 
 
 class CodeComplexityContractTests(unittest.TestCase):
@@ -353,6 +550,31 @@ class TestAgentContractTests(unittest.TestCase):
         self.assertTrue(result["runs_successfully"])
         self.assertEqual(result["failed_tests"], 0)
         self.assertGreaterEqual(result["score"], 70)
+
+    def test_cli_usage_summary_is_clear_for_argument_driven_programs(self):
+        agents = _build_agents_list(
+            {"time_complexity": "O(n)", "score": 80, "issues": []},
+            {"estimated_level": "mid", "score": 70, "immaturity_indicators": [], "maturity_indicators": []},
+            {"naming_quality": "good", "score": 75, "style_violations": []},
+            {"risk_level": "safe", "total_threats": 0, "score": 100, "threats": []},
+            {
+                "compilation_success": True,
+                "runs_successfully": True,
+                "passed_tests": 1,
+                "failed_tests": 0,
+                "score": 72,
+                "performance_notes": (
+                    "CLI tipi program arguman bekliyor; formal test girdisi verilmedigi icin "
+                    "kullanim mesaji runtime hatasi sayilmadi."
+                ),
+                "edge_case_handling": "fair",
+            },
+            {"total_claims_received": 0, "total_claims_validated": 0, "validated_claims": []},
+        )
+
+        testing = next(agent for agent in agents if agent["id"] == "testing")
+        self.assertIn("CLI arguman bekliyor", testing["summary"])
+        self.assertNotIn("Uç durum: fair", testing["summary"])
 
     def test_service_timeout_is_not_failure_for_server_assignment(self):
         code = "from http.server import HTTPServer, BaseHTTPRequestHandler\nHTTPServer(('127.0.0.1', 8000), BaseHTTPRequestHandler).serve_forever()\n"

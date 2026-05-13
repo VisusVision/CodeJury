@@ -128,6 +128,15 @@ def _normalize_severity(value) -> str:
     return sev if sev in ("low", "medium", "high", "critical", "info") else "medium"
 
 
+def _clean_evidence_text(value) -> str:
+    text = str(value or "").strip()
+    text = re.sub(r"^```(?:\w+)?\s*\n", "", text)
+    text = re.sub(r"\n?```$", "", text)
+    text = text.replace("```", "")
+    text = re.sub(r"\s+", " ", text).strip(" -•\t\r\n")
+    return text
+
+
 _WHOLE_FILE_EVIDENCE_TERMS = (
     "whole file",
     "entire file",
@@ -284,12 +293,12 @@ def _normalize_claims(
         )
         lines_v = [n for n in _coerce_lines(raw_lines) if n <= len(source_lines)]
 
-        feedback = str(
+        feedback = _clean_evidence_text(
             claim.get(
                 "feedback",
                 claim.get("message", claim.get("description", claim.get("reason", ""))),
             )
-        ).strip()
+        )
         if not feedback:
             continue
 
@@ -350,25 +359,24 @@ def _normalize_claims(
                 start, end = line_range
                 cap = min(end, start + 5)
                 lines_v = list(range(start, cap + 1))
+            else:
+                start, end = line_range
+                in_range = [n for n in lines_v if start <= n <= end]
+                if not in_range:
+                    cap = min(end, start + 5)
+                    in_range = list(range(start, cap + 1))
+                lines_v = in_range
 
         # ---- Snippet ----
-        code_snippet = str(claim.get("code_snippet", claim.get("snippet", "")) or "")
-        if code_snippet.startswith("```"):
-            snippet_lines = code_snippet.splitlines()
-            if snippet_lines and snippet_lines[0].lstrip().startswith("```"):
-                snippet_lines = snippet_lines[1:]
-            if snippet_lines and snippet_lines[-1].strip().startswith("```"):
-                snippet_lines = snippet_lines[:-1]
-            code_snippet = "\n".join(snippet_lines).strip()
-        if not code_snippet:
-            if line_range:
-                start, end = line_range
-                block_lines = source_lines[start - 1: end]
-                if len(block_lines) > 8:
-                    block_lines = block_lines[:5] + ["    # ..."] + block_lines[-2:]
-                code_snippet = "\n".join(s.rstrip() for s in block_lines)
-            elif lines_v:
-                code_snippet = "\n".join(source_lines[n - 1].rstrip() for n in lines_v[:4])
+        code_snippet = ""
+        if line_range:
+            start, end = line_range
+            block_lines = source_lines[start - 1: end]
+            if len(block_lines) > 8:
+                block_lines = block_lines[:5] + ["    # ..."] + block_lines[-2:]
+            code_snippet = "\n".join(s.rstrip() for s in block_lines)
+        elif lines_v:
+            code_snippet = "\n".join(source_lines[n - 1].rstrip() for n in lines_v[:4])
 
         if not lines_v and not line_range:
             if not _is_supported_file_level_claim(feedback, agent_source, node_type):
@@ -398,6 +406,52 @@ def _normalize_claims(
             out["symbol"] = symbol
         norm.append(out)
     return norm
+
+
+def _normalize_rejected_claims(rejected: list, source_lines: list[str]) -> list[dict]:
+    normalized: list[dict] = []
+    seen: set[str] = set()
+    for item in rejected:
+        if isinstance(item, dict):
+            claim = _clean_evidence_text(
+                item.get("claim")
+                or item.get("feedback")
+                or item.get("description")
+                or item.get("message")
+                or item.get("text")
+                or ""
+            )
+            reason = _clean_evidence_text(item.get("reason") or item.get("detail") or "")
+            agent_source = str(item.get("agent_source") or item.get("agent") or item.get("source") or "unknown").strip()
+            raw_lines = item.get("lines") if "lines" in item else item.get("line", item.get("line_hint", []))
+        else:
+            raw = _clean_evidence_text(item)
+            if " -- " in raw:
+                claim, reason = raw.split(" -- ", 1)
+            else:
+                claim, reason = raw, "Somut kod kaniti bulunamadi."
+            agent_match = re.match(r"^\[([^\]]+)\]\s*(.*)$", claim)
+            agent_source = agent_match.group(1) if agent_match else "unknown"
+            if agent_match:
+                claim = agent_match.group(2).strip()
+            raw_lines = []
+
+        lines_v = [n for n in _coerce_lines(raw_lines) if n <= len(source_lines)]
+        if not claim:
+            claim = "Desteklenmeyen bulgu"
+        if not reason:
+            reason = "Somut kod kaniti bulunamadi."
+        key = f"{agent_source}|{claim[:160]}|{reason[:160]}|{tuple(lines_v)}"
+        if key in seen:
+            continue
+        seen.add(key)
+        normalized.append({
+            "claim": claim[:240],
+            "reason": reason[:240],
+            "agent_source": agent_source,
+            "lines": lines_v[:4],
+        })
+    return normalized
 
 
 def _merge_claim_lists(*claim_lists: list[dict], max_items: int | None = None) -> list[dict]:
@@ -581,7 +635,7 @@ class EvidenceAgent(BaseAgent):
                 if key not in seen_rejected:
                     rejected.append(item)
                     seen_rejected.add(key)
-        llm_result["rejected_claims"] = rejected
+        llm_result["rejected_claims"] = _normalize_rejected_claims(rejected, source_lines)
         llm_result["llm_status"] = llm_status
         llm_result["ast_block_count"] = len(ast_blocks)
         if ast_map.get("syntax_error"):
@@ -590,6 +644,10 @@ class EvidenceAgent(BaseAgent):
         llm_result["block_evidence_count"] = sum(
             1 for c in norm if isinstance(c, dict) and c.get("line_range")
         )
+        llm_result["evidence_quality_flags"] = [
+            "source_snippets_rebuilt",
+            "rejected_claims_normalized",
+        ]
 
         return llm_result
 

@@ -25,6 +25,7 @@ from backend.agents.json_output_schema import (
     collect_validation_messages,
     normalize_instance_for_schema,
 )
+from backend.agents.project_context import build_project_context
 from backend.core.config import settings
 from backend.llm.ollama_client import chat_json
 
@@ -78,6 +79,8 @@ def _task_domain_guess_from_text(text: str) -> str:
         return "agac veri yapisi"
     if any(t in blob for t in ("liste", "ortalama", "istatistik", "flatten", "veri")):
         return "veri isleme"
+    if any(t in blob for t in ("metin", "text", "string", "kelime", "sozcu", "split", "join", "kompozisyon", "islev")):
+        return "metin/string isleme"
     return "programlama odevi"
 
 
@@ -172,6 +175,20 @@ def _has_recognized_capability_requirement(text: str) -> bool:
         ("sinif", "class", "oop", "nesne", "kalitim", "encapsulation"),
         ("agac", "tree", "bst", "dugum", "node", "traversal", "inorder", "preorder", "postorder"),
         ("liste", "list", "veri", "data", "istatistik", "ortalama", "average", "flatten", "donustur", "dönüştür"),
+        (
+            "metin",
+            "text",
+            "string",
+            "kelime",
+            "sozcu",
+            "istenmeyen kelime",
+            "fonksiyonel kompozisyon",
+            "kompozisyon",
+            "islev",
+            "fonksiyon",
+            "parametre",
+            "donmeli",
+        ),
         ("pytest", "unittest", "unit test", "otomatik test"),
     )
     return any(any(_contains_marker(task_text, marker) for marker in group) for group in marker_groups)
@@ -291,12 +308,15 @@ async def assess_task_relevance_llm(
             + code_sample[-max_chars // 2 :]
         )
 
+    project_context = build_project_context("", brief, rubric_criteria)
+
     user_prompt = (
         "[INSTRUCTOR BRIEF]\n"
         f"{brief or '(none)'}\n\n"
         "[FACULTY RUBRIC ROWS — name + description]\n"
         f"{json.dumps(rubric_json, ensure_ascii=False, indent=2) if rubric_json else '(none)'}\n\n"
         "[STUDENT SOURCE — excerpt]\n"
+        f"{project_context.prompt_block()}\n\n"
         f"```\n{code_sample}\n```\n"
         "Return JSON with: relevance_factor, off_topic, student_fulfills_assignment, explanation, "
         "submission_domain_guess, task_domain_guess; optional confidence 0–1."
@@ -578,6 +598,36 @@ def _capability_match_signal(
             },
         ),
         (
+            {
+                "metin",
+                "text",
+                "string",
+                "kelime",
+                "sozcu",
+                "istenmeyen kelime",
+                "fonksiyonel kompozisyon",
+                "kompozisyon",
+                "islev",
+                "fonksiyon",
+                "parametre",
+                "donmeli",
+            },
+            {
+                "def ",
+                "return ",
+                ".split(",
+                ".join(",
+                ".replace(",
+                "strip(",
+                "lower(",
+                "upper(",
+                "append(",
+                "filter(",
+                "map(",
+                "lambda ",
+            },
+        ),
+        (
             {"pytest", "unittest", "unit test", "otomatik test"},
             {"assert ", "pytest", "unittest", "test_"},
         ),
@@ -690,10 +740,12 @@ def merge_task_alignment(
 
     # If LLM marks off-topic but capability markers strongly match, convert it to
     # "in-topic but weak implementation" instead of full mismatch.
+    softened_false_off_topic = False
     if off and capability_signal >= 0.55:
         off = False
         fulfils = False
         llm_f = max(llm_f, 0.62 if capability_signal >= 0.72 else 0.55)
+        softened_false_off_topic = True
 
     # A strongly matching code shape (CLI/API/OOP/BST etc.) means the submission is
     # aimed at the assignment even if the LLM thinks one deliverable is incomplete.
@@ -734,6 +786,13 @@ def merge_task_alignment(
     out["llm_factor"] = llm_f
     out["factor"] = min(out["factor"], llm_f)
     out["llm_off_topic"] = off
+    if softened_false_off_topic:
+        task_guess = str(out.get("task_domain_guess") or "odev").strip()
+        submission_guess = str(out.get("submission_domain_guess") or "teslim").strip()
+        out["llm_explanation"] = (
+            f"Teslim {task_guess} beklentisiyle kismi olarak iliskili gorunuyor; "
+            f"{submission_guess} sinyalleri var, ancak eksik gereksinimler rubrikte puan kaybettirebilir."
+        )
 
     if off:
         if "llm_task_relevance_off_topic" not in reasons:

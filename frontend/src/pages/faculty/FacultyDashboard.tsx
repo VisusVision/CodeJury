@@ -12,6 +12,7 @@ import { Calendar } from "@/components/ui/calendar";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import RubricModal from "@/components/faculty/RubricModal";
 import AssignmentChatbot from "@/components/faculty/AssignmentChatbot";
+import { buildAssignmentExample, descriptionWithExample, exampleBody } from "@/components/faculty/assignmentExample";
 import SettingsPanel from "@/components/faculty/SettingsPanel";
 import StudentsPanel from "@/components/faculty/StudentsPanel";
 import { toast } from "sonner";
@@ -19,6 +20,7 @@ import {
   createAssignment,
   createCourse,
   createDepartment,
+  generateAssignmentExample,
   deleteAssignment as removeAssignment,
   deleteCourse as removeCourse,
   deleteDepartment as removeDepartment,
@@ -93,6 +95,8 @@ const FacultyDashboard = () => {
   const [selectedClassYear, setSelectedClassYear] = useState("");
   const [newAssignmentName, setNewAssignmentName] = useState("");
   const [newAssignmentDesc, setNewAssignmentDesc] = useState("");
+  const [manualAssignmentExample, setManualAssignmentExample] = useState("");
+  const [manualAssignmentExampleLoading, setManualAssignmentExampleLoading] = useState(false);
   const [selectedCourseId, setSelectedCourseId] = useState("");
   const [dueDate, setDueDate] = useState<Date | undefined>(undefined);
   const [dueTime, setDueTime] = useState("23:59");
@@ -111,6 +115,52 @@ const FacultyDashboard = () => {
     };
     checkAuth();
   }, [navigate]);
+
+  useEffect(() => {
+    const title = newAssignmentName.trim();
+    const description = newAssignmentDesc.trim();
+    if (!title && !description) {
+      setManualAssignmentExample("");
+      setManualAssignmentExampleLoading(false);
+      return;
+    }
+
+    const fallback = buildAssignmentExample(title || "Yeni Odev", description);
+    setManualAssignmentExample(fallback);
+    if (description.length < 20) {
+      setManualAssignmentExampleLoading(false);
+      return;
+    }
+
+    let cancelled = false;
+    setManualAssignmentExampleLoading(true);
+    const timer = window.setTimeout(() => {
+      generateAssignmentExample({
+        assignment_title: title || "Yeni Odev",
+        assignment_description: description,
+      })
+        .then((result) => {
+          if (!cancelled && result.example?.trim()) {
+            setManualAssignmentExample(result.example);
+          }
+        })
+        .catch(() => {
+          if (!cancelled) {
+            setManualAssignmentExample(fallback);
+          }
+        })
+        .finally(() => {
+          if (!cancelled) {
+            setManualAssignmentExampleLoading(false);
+          }
+        });
+    }, 650);
+
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [newAssignmentName, newAssignmentDesc]);
 
   const fetchAll = async () => {
     const [departmentsData, coursesData, assignmentsData, rubricsData, evaluationsData] = await Promise.all([
@@ -201,11 +251,15 @@ const FacultyDashboard = () => {
       dueDateISO = d.toISOString();
     }
     const normalizedName = newAssignmentName.trim().replace(/\b\w+/g, (word) => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase());
+    const trimmedDescription = newAssignmentDesc.trim();
+    const description = trimmedDescription
+      ? descriptionWithExample(trimmedDescription, manualAssignmentExample || buildAssignmentExample(normalizedName, trimmedDescription))
+      : null;
     setAssignmentSubmitting(true);
     try {
       const created = await createAssignment({
         name: normalizedName,
-        description: newAssignmentDesc.trim() || null,
+        description,
         course_id: selectedCourseId,
         due_date: dueDateISO,
       });
@@ -491,6 +545,17 @@ const FacultyDashboard = () => {
                     rows={4}
                     className="px-3 py-2 rounded-lg border border-input bg-background text-foreground text-sm placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring resize-none"
                   />
+                  {manualAssignmentExample && (
+                    <div className="rounded-lg border border-primary/20 bg-primary/5 px-3 py-2">
+                      <div className="flex items-center gap-2">
+                        <p className="text-[10px] font-semibold uppercase tracking-wider text-primary">Örnek Çıktı</p>
+                        {manualAssignmentExampleLoading && <Loader2 className="h-3 w-3 animate-spin text-primary" />}
+                      </div>
+                      <p className="mt-1 whitespace-pre-wrap text-xs leading-relaxed text-foreground">
+                        {exampleBody(manualAssignmentExample)}
+                      </p>
+                    </div>
+                  )}
                   {/* Due date & time */}
                   <div className="flex gap-2">
                     <Popover>

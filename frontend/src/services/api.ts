@@ -793,6 +793,24 @@ export async function fetchAssignmentSuggestions(
   return response.json();
 }
 
+export async function generateAssignmentExample(payload: {
+  assignment_title: string;
+  assignment_description: string;
+}): Promise<{ example: string; source?: string }> {
+  const response = await fetch(`${API_BASE_URL}/api/faculty/assignment-assistant/example`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new Error(
+      `Ödev örneği hatası (${response.status}): ${apiErrorMessage(errorText, "Ödev örneği üretilemedi")}`,
+    );
+  }
+  return response.json();
+}
+
 export async function getQuestions(): Promise<QuestionItem[]> {
   const response = await fetch(`${API_BASE_URL}/api/questions`);
   if (!response.ok) {
