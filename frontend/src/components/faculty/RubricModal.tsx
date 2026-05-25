@@ -361,7 +361,7 @@ const RubricModal = ({ assignment, teacherId, open, onClose }: RubricModalProps)
                   <div className="flex items-center justify-between gap-3 rounded-xl border border-border bg-muted/20 p-3">
                     <div className="space-y-1">
                       <p className="text-xs font-medium text-foreground">
-                        {language === "tr" ? "AI rubrik kapsamı" : "AI rubric scope"}
+                        {language === "tr" ? "AI Rubrik Kapsamı" : "AI rubric scope"}
                       </p>
                       <p className="text-[11px] text-muted-foreground">
                         {language === "tr"
