@@ -3,8 +3,12 @@ export interface SplitAssignmentDescription {
   expectedOutput: string | null;
 }
 
-const EXPECTED_OUTPUT_HEADING =
-  /^\s*(?:(?:beklenen\s+)?(?:konsol\s+)?(?:[cç][iıİI]kt[iıİI]|[cç][iıİI]kt[iıİI]s[iıİI])|expected\s+output|console\s+output)\s*:\s*/im;
+const OUTPUT_WORD = "(?:cikti|ciktisi|çıktı|çıktısı|ÇIKTI|ÇIKTISI|Ã§Ä±ktÄ±|Ã§Ä±ktÄ±sÄ±)";
+const OUTPUT_HEADING_PREFIX = "(?:(?:beklenen|ornek|örnek|Ã¶rnek)\\s+)?(?:konsol\\s+)?";
+const EXPECTED_OUTPUT_HEADING = new RegExp(
+  `^\\s*(?:${OUTPUT_HEADING_PREFIX}${OUTPUT_WORD}|expected\\s+output|console\\s+output|example\\s+output)\\s*:\\s*`,
+  "im",
+);
 
 export function splitAssignmentDescription(description?: string | null): SplitAssignmentDescription {
   const raw = (description || "").trim();

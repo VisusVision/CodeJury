@@ -352,22 +352,141 @@ class AgentDiagnosticsContractTests(unittest.TestCase):
 
     def test_line_evidence_ignores_out_of_range_and_duplicate_findings(self):
         evidence = _build_line_evidence(
-            {
-                "issues": [
-                    {"description": "Tekrar eden sorun", "severity": "high", "line": 1},
-                    {"description": "Tekrar eden sorun", "severity": "high", "line": 1},
-                    {"description": "Yok satir", "severity": "medium", "line": 99},
-                ]
-            },
+            {"issues": []},
             {"style_violations": []},
             {"threats": []},
-            {"validated_claims": []},
+            {
+                "validated_claims": [
+                    {"feedback": "Tekrar eden sorun", "severity": "high", "lines": [1]},
+                    {"feedback": "Tekrar eden sorun", "severity": "high", "lines": [1]},
+                    {"feedback": "Yok satir", "severity": "medium", "lines": [99]},
+                ]
+            },
             "print(1)\n",
         )
 
         self.assertEqual(len(evidence), 1)
         self.assertEqual(evidence[0]["line"], 1)
         self.assertEqual(evidence[0]["severity"], "error")
+
+    def test_line_evidence_deduplicates_punctuation_variants(self):
+        evidence = _build_line_evidence(
+            {"issues": []},
+            {"style_violations": []},
+            {"threats": []},
+            {
+                "validated_claims": [
+                    {"feedback": "Ayni bulgu", "severity": "high", "lines": [1]},
+                    {"feedback": "Ayni bulgu.", "severity": "high", "lines": [1]},
+                ]
+            },
+            "print(1)\n",
+        )
+
+        self.assertEqual(len(evidence), 1)
+
+    def test_line_evidence_deduplicates_same_semantic_issue_across_agents(self):
+        evidence = _build_line_evidence(
+            {"issues": []},
+            {"style_violations": []},
+            {"threats": []},
+            {
+                "validated_claims": [
+                    {
+                        "feedback": "Satir 2: Bare 'except:' kullanilmis.",
+                        "severity": "high",
+                        "lines": [2],
+                        "agent_source": "code_quality",
+                    },
+                    {
+                        "feedback": "Anti-pattern: Bare 'except:' kullanilmis (satir 2).",
+                        "severity": "medium",
+                        "lines": [2],
+                        "agent_source": "seniority",
+                    },
+                    {
+                        "feedback": "Satir 4: len(rows) ile bolme yapiliyor; rows bos ise ZeroDivisionError olusabilir.",
+                        "severity": "high",
+                        "lines": [4],
+                        "agent_source": "code_quality",
+                    },
+                    {
+                        "feedback": "Anti-pattern: len(rows) ile bolme yapiliyor; rows bos ise ZeroDivisionError olusabilir.",
+                        "severity": "medium",
+                        "lines": [4],
+                        "agent_source": "guideline",
+                    },
+                    {
+                        "feedback": "run_report() fonksiyonu iki ic ice dongu icerir ve O(n^2) karmasikliga sahip.",
+                        "severity": "high",
+                        "lines": [5],
+                        "agent_source": "code_quality",
+                    },
+                    {
+                        "feedback": "run_report() fonksiyonu iki ic ice dongu icerir ve O(n^2) karmasikliga sahip olabilir.",
+                        "severity": "high",
+                        "lines": [5],
+                        "agent_source": "code_quality",
+                    },
+                ]
+            },
+            "try:\nexcept:\nrows = []\nreturn total / len(rows)\ndef run_report():\n",
+        )
+
+        self.assertEqual(len(evidence), 3)
+        self.assertEqual([item["line"] for item in evidence], [2, 4, 5])
+
+    def test_line_evidence_removes_wrong_sql_tail_from_shell_and_eval_messages(self):
+        code = "os.system('cat ' + path)\nvalue = eval(expr)\n"
+        evidence = _build_line_evidence(
+            {"issues": []},
+            {"style_violations": []},
+            {"threats": []},
+            {
+                "validated_claims": [
+                    {
+                        "feedback": "Shell komutu calistiriyor. SQL injection saldirilarina acik olabilir.",
+                        "severity": "critical",
+                        "lines": [1],
+                        "agent_source": "security",
+                    },
+                    {
+                        "feedback": "Rastgele kod calistiriyor. SQL injection saldirilarina acik olabilir.",
+                        "severity": "critical",
+                        "lines": [2],
+                        "agent_source": "security",
+                    },
+                ]
+            },
+            code,
+        )
+
+        self.assertEqual(len(evidence), 2)
+        self.assertNotIn("SQL injection", evidence[0]["message"])
+        self.assertNotIn("SQL injection", evidence[1]["message"])
+
+    def test_line_evidence_excludes_unvalidated_raw_agent_findings(self):
+        evidence = _build_line_evidence(
+            {
+                "issues": [
+                    {"description": "Kanitsiz ham bulgu", "severity": "high", "line": 1},
+                ]
+            },
+            {
+                "style_violations": [
+                    {"description": "Kanitsiz stil bulgusu", "severity": "medium", "line_hint": "Satir 1"},
+                ]
+            },
+            {
+                "threats": [
+                    {"description": "Kanitsiz guvenlik bulgusu", "severity": "high", "line": 1},
+                ]
+            },
+            {"validated_claims": []},
+            "print(1)\n",
+        )
+
+        self.assertEqual(evidence, [])
 
 
 class EvidenceNormalizationContractTests(unittest.TestCase):
@@ -389,6 +508,69 @@ class EvidenceNormalizationContractTests(unittest.TestCase):
         self.assertEqual(normalized[0]["code_snippet"], "    return a + b")
         self.assertEqual(normalized[0]["feedback"], "Kodda toplama islemi var.")
         self.assertEqual(normalized[0]["severity"], "high")
+
+    def test_validated_claim_prefers_line_mentioned_in_feedback(self):
+        source = [
+            "def run_report(user_name, path):",
+            "    query = \"SELECT * FROM students WHERE name = '\" + user_name + \"'\"",
+            "    cur.execute(query)",
+            "    rows = cur.fetchall()",
+        ]
+        claims = [
+            {
+                "lines": [4],
+                "feedback": "Satir 2: SQL sorgusunda kullanıcı girdisi string olarak kullanılmıştır.",
+                "agent_source": "code_quality",
+                "severity": "high",
+            }
+        ]
+
+        normalized = _normalize_claims(claims, source)
+
+        self.assertEqual(normalized[0]["lines"], [2])
+        self.assertIn("SELECT", normalized[0]["code_snippet"])
+
+    def test_validated_claim_rejects_quoted_literal_on_wrong_mentioned_line(self):
+        source = [
+            "conn = sqlite3.connect(\"grades.db\")",
+            "cur = conn.cursor()",
+            "cur.execute(query)",
+            "return total / len(rows)",
+        ]
+        claims = [
+            {
+                "lines": [3],
+                "feedback": "Satir 3: 'grades.db' adinda sabit bir dizi kullanilmistir.",
+                "agent_source": "code_quality",
+                "severity": "low",
+            }
+        ]
+
+        normalized = _normalize_claims(claims, source)
+
+        self.assertEqual(normalized, [])
+
+    def test_validated_claim_moves_quoted_literal_to_matching_line_in_block(self):
+        source = [
+            "try:",
+            "    risky()",
+            "except:",
+            "    pass",
+        ]
+        claims = [
+            {
+                "lines": [1],
+                "line_range": [1, 4],
+                "feedback": "Bu blokta 'except:' kullanilmis.",
+                "agent_source": "code_quality",
+                "severity": "high",
+            }
+        ]
+
+        normalized = _normalize_claims(claims, source)
+
+        self.assertEqual(normalized[0]["lines"], [3])
+        self.assertIn("except:", normalized[0]["code_snippet"])
 
     def test_block_claim_lines_are_kept_inside_range(self):
         source = [
@@ -440,6 +622,19 @@ def print_report(category_revenue, invalid_rows):
         by_name = {fn.name: fn for fn in metrics.functions}
 
         self.assertEqual(by_name["print_report"].complexity, "O(n log n)")
+
+    def test_division_by_len_without_empty_guard_is_antipattern(self):
+        code = """
+def average(rows):
+    total = sum(rows)
+    return total / len(rows)
+"""
+
+        metrics = get_code_metrics(code, "python")
+        antipatterns = {item["type"]: item for item in metrics.antipatterns}
+
+        self.assertIn("division_by_len_without_empty_guard", antipatterns)
+        self.assertEqual(antipatterns["division_by_len_without_empty_guard"]["line"], 4)
 
 
 class GuidelineContractTests(unittest.TestCase):
@@ -597,6 +792,46 @@ class TestAgentContractTests(unittest.TestCase):
 
 
 class TestAgentLLMContractTests(unittest.IsolatedAsyncioTestCase):
+    async def test_passing_aligned_smoke_run_keeps_programmatic_score_floor_when_llm_is_pessimistic(self):
+        code = "def add(a, b):\n    return a + b\n\nprint(add(2, 3))\n"
+        agent = TestAgent()
+
+        with patch.object(
+            agent,
+            "_call_llm",
+            new=AsyncMock(
+                return_value={
+                    "compilation_success": True,
+                    "runs_successfully": True,
+                    "passed_tests": 1,
+                    "failed_tests": 0,
+                    "test_failures": [],
+                    "runtime_errors": [],
+                    "edge_case_handling": "poor",
+                    "edge_cases_observed": [],
+                    "performance_notes": "Calisti ancak formal test yok.",
+                    "score": 40,
+                }
+            ),
+        ):
+            result = await agent.analyze({
+                "sandbox_result": {
+                    "compilation_success": True,
+                    "exit_code": 0,
+                    "stdout": "5\n",
+                    "stderr": "",
+                    "execution_time_ms": 15,
+                    "peak_memory_mb": 12,
+                },
+                "expected_output": "",
+                "source_code": code,
+                "language": "python",
+                "assignment_description": "Python ile iki sayiyi toplayan ve sonucu yazdiran basit bir fonksiyon yazin.",
+                "task_alignment": {"factor": 1.0, "reasons": []},
+            })
+
+        self.assertGreaterEqual(result["score"], 80)
+
     async def test_service_timeout_keeps_programmatic_success_when_llm_is_pessimistic(self):
         code = "from http.server import HTTPServer, BaseHTTPRequestHandler\nHTTPServer(('127.0.0.1', 8000), BaseHTTPRequestHandler).serve_forever()\n"
         agent = TestAgent()
@@ -761,6 +996,9 @@ def run(path):
 
         self.assertEqual(result["risk_level"], "critical")
         self.assertFalse(result["safe"])
+        descriptions = "\n".join(threat["description"] for threat in result["threats"]).lower()
+        self.assertIn("os.system", descriptions)
+        self.assertNotIn("import os", descriptions)
 
     def test_expected_http_client_use_is_calibrated(self):
         code = """
@@ -854,8 +1092,41 @@ class MasterEvaluatorGuardTests(unittest.TestCase):
             faculty_mode=False,
         )
 
-        self.assertLessEqual(result["final_score"], 65)
+        self.assertLessEqual(result["final_score"], 55)
         self.assertIn("Kritik guvenlik", result["weaknesses"][0])
+
+    def test_faculty_security_floor_raises_clean_security_row(self):
+        result = {
+            "final_score": 50,
+            "rubric_breakdown": [
+                {"criterion": "criterion_0", "label": "Guvenlik", "weight": 8, "score": 1, "weighted_score": 1},
+                {"criterion": "criterion_1", "label": "Fonksiyonellik", "weight": 12, "score": 9, "weighted_score": 9},
+            ],
+        }
+
+        MasterEvaluatorAgent._apply_faculty_security_floor(
+            result,
+            {"risk_level": "safe", "critical_count": 0, "high_count": 0, "score": 100},
+        )
+
+        by_label = {row["label"]: row for row in result["rubric_breakdown"]}
+        self.assertEqual(by_label["Guvenlik"]["score"], 8)
+        self.assertEqual(result["final_score"], 85.0)
+
+    def test_faculty_security_floor_does_not_raise_high_risk_row(self):
+        result = {
+            "final_score": 50,
+            "rubric_breakdown": [
+                {"criterion": "criterion_0", "label": "Guvenlik", "weight": 8, "score": 1, "weighted_score": 1},
+            ],
+        }
+
+        MasterEvaluatorAgent._apply_faculty_security_floor(
+            result,
+            {"risk_level": "critical", "critical_count": 1, "high_count": 0, "score": 55},
+        )
+
+        self.assertEqual(result["rubric_breakdown"][0]["score"], 1)
 
     def test_faculty_rubric_output_keeps_order_and_recomputes_score(self):
         faculty = [

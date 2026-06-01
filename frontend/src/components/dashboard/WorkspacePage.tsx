@@ -933,16 +933,19 @@ const WorkspacePage = ({ sidebarTitle, sidebarSubtitle, headerTitle, assignmentD
         </div>
       </aside>
 
-      <main className="flex flex-col h-screen overflow-hidden">
-        <header className="flex items-center justify-between px-6 py-3 border-b border-border bg-card shrink-0">
-          <div className="flex items-center gap-4">
+      <main className="flex min-w-0 flex-col h-screen overflow-hidden">
+        <header className="flex items-start justify-between gap-4 px-6 py-3 border-b border-border bg-card shrink-0">
+          <div className="flex min-w-0 items-start gap-4">
             <button
               onClick={onBack}
-              className="flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground transition-colors"
+              className={cn(
+                "flex shrink-0 items-center gap-1 text-sm text-muted-foreground hover:text-foreground transition-colors",
+                description.body || description.expectedOutput ? "mt-28" : "mt-1"
+              )}
             >
               <ArrowLeft className="h-4 w-4" /> {t("workspace.backToAssignments")}
             </button>
-            <div>
+            <div className="min-w-0">
               <div className="flex items-center gap-2 relative">
                 <h1 className="text-lg font-bold tracking-tight text-foreground">{headerTitle}</h1>
                 <button
@@ -1007,13 +1010,13 @@ const WorkspacePage = ({ sidebarTitle, sidebarSubtitle, headerTitle, assignmentD
                    : `${files.length} ${language === "tr" ? "dosya yüklendi" : "files uploaded"}${isRunning ? " — " + t("workspace.running") : report ? " — " + t("workspace.analysisComplete") : ""}`}
               </p>
               {(description.body || description.expectedOutput) && (
-                <div className="mt-2 max-w-3xl space-y-2">
+                <div className="mt-2 max-w-[770px] space-y-2">
                   {description.body && (
                     <p className="text-xs leading-relaxed text-muted-foreground">{description.body}</p>
                   )}
                   {description.expectedOutput && (
                     <div className="rounded-lg border border-primary/15 bg-primary/5 px-3 py-2">
-                      <p className="text-[11px] font-semibold text-primary">Beklenen çıktı</p>
+                      <p className="text-[11px] font-semibold text-primary">Örnek çıktı</p>
                       <pre className="mt-1 max-h-28 overflow-auto whitespace-pre-wrap break-words font-mono text-[11px] leading-relaxed text-foreground">{description.expectedOutput}</pre>
                     </div>
                   )}
@@ -1021,7 +1024,12 @@ const WorkspacePage = ({ sidebarTitle, sidebarSubtitle, headerTitle, assignmentD
               )}
             </div>
           </div>
-          <div className="flex items-center gap-2">
+          <div
+            className={cn(
+              "flex shrink-0 items-center gap-2",
+              description.body || description.expectedOutput ? "pt-32" : "pt-0"
+            )}
+          >
               {evaluationButtonVisible && (
                 <button
                   type="button"
@@ -1077,7 +1085,7 @@ const WorkspacePage = ({ sidebarTitle, sidebarSubtitle, headerTitle, assignmentD
           </div>
         </header>
 
-        <div className="flex-1 grid grid-cols-[1fr_360px] overflow-hidden">
+        <div className="grid flex-1 grid-cols-[minmax(0,1fr)_360px] overflow-hidden">
           {!hasFiles ? (
             <div className="flex flex-col p-6 lg:p-8 pt-6 overflow-auto border-r border-border">
               <div className="w-full max-w-2xl">
@@ -1090,7 +1098,7 @@ const WorkspacePage = ({ sidebarTitle, sidebarSubtitle, headerTitle, assignmentD
               </div>
             </div>
           ) : (
-            <div className="flex flex-col overflow-hidden border-r border-border">
+            <div className="flex min-w-0 flex-col overflow-hidden border-r border-border">
               <div className="flex-1 min-h-0 overflow-hidden">
                 {activeFileData ? (
                   <CodeEditor
@@ -1106,10 +1114,10 @@ const WorkspacePage = ({ sidebarTitle, sidebarSubtitle, headerTitle, assignmentD
                 )}
               </div>
 
-              <div className="flex-1 min-h-[240px] shrink-0 border-t border-border overflow-auto">
-                <div className="grid grid-cols-1 xl:grid-cols-[1fr_320px] gap-0 h-full">
+              <div className="h-[min(34vh,300px)] min-h-[240px] shrink-0 border-t border-border overflow-hidden">
+                <div className="grid h-full min-h-0 grid-cols-1 gap-0 xl:grid-cols-[minmax(0,1fr)_320px]">
                   <LogPanel logs={logs} />
-                  <div className="border-l border-border space-y-0">
+                  <div className="min-h-0 overflow-auto border-l border-border space-y-0">
                     <UploadHistory records={uploadRecords} />
                     {report && (
                       <div className="border-t border-border">

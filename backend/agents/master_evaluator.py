@@ -231,6 +231,10 @@ class MasterEvaluatorAgent(BaseAgent):
                 faculty=faculty,
             )
             self._apply_faculty_reasonableness_floor(llm_result, programmatic)
+            self._apply_faculty_security_floor(
+                llm_result,
+                input_data.get("security", {}),
+            )
             self._apply_brief_alignment_guard(llm_result, programmatic, faculty_mode=True)
             self._apply_runtime_guard(
                 llm_result,
@@ -672,6 +676,65 @@ class MasterEvaluatorAgent(BaseAgent):
         llm_result["recommendations"] = recs
 
     @classmethod
+    def _apply_faculty_security_floor(
+        cls,
+        llm_result: dict[str, Any],
+        security_result: dict[str, Any],
+    ) -> None:
+        """Keep a clean security agent result from being contradicted by faculty-row LLM variance."""
+        rows = llm_result.get("rubric_breakdown")
+        if not isinstance(rows, list) or not isinstance(security_result, dict):
+            return
+        risk = str(security_result.get("risk_level", "")).lower()
+        try:
+            sec_score = float(security_result.get("score", 0) or 0)
+            critical = int(security_result.get("critical_count", 0) or 0)
+            high = int(security_result.get("high_count", 0) or 0)
+        except (TypeError, ValueError):
+            return
+        if critical > 0 or high > 0 or risk in {"critical", "high"} or sec_score < 90:
+            return
+
+        changed = False
+        note = (
+            "Deterministik guvenlik tutarlilik duzeltmesi: Guvenlik ajani temiz/dusuk risk "
+            "sonucu verdigi icin bu satir asiri dusuk birakilmadi."
+        )
+        for row in rows:
+            if not isinstance(row, dict) or not cls._is_security_row(row):
+                continue
+            try:
+                weight = int(round(float(row.get("weight", 0) or 0)))
+                score = int(round(float(row.get("score", 0) or 0)))
+            except (TypeError, ValueError):
+                continue
+            if weight <= 0:
+                continue
+            floor = max(0, min(weight, int(round(weight * min(sec_score, 100.0) / 100.0))))
+            if score < floor:
+                row["score"] = floor
+                row["weighted_score"] = float(floor)
+                just = str(row.get("justification", "") or "").strip()
+                if note not in just:
+                    row["justification"] = f"{just} {note}".strip() if just else note
+                changed = True
+
+        if not changed:
+            return
+        total_max = 0
+        total_earned = 0
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            try:
+                total_max += int(round(float(row.get("weight", 0) or 0)))
+                total_earned += int(round(float(row.get("score", 0) or 0)))
+            except (TypeError, ValueError):
+                continue
+        if total_max > 0:
+            llm_result["final_score"] = round(100.0 * total_earned / total_max, 1)
+
+    @classmethod
     def _apply_runtime_guard(
         cls,
         llm_result: dict[str, Any],
@@ -813,7 +876,7 @@ class MasterEvaluatorAgent(BaseAgent):
 
         cap: float | None = None
         if risk == "critical" or critical > 0 or sec_score <= 55:
-            cap = 65.0
+            cap = 55.0
             reason = "Kritik guvenlik riski tespit edildigi icin nihai not sinirlandi."
         elif risk == "high" or high > 0 or sec_score <= 70:
             cap = 78.0

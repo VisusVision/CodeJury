@@ -935,6 +935,9 @@ def _project_specific_rubric_description(name: str, title: str, description: str
     context_note = f" Baglam: {context}." if context else ""
     key = _rubric_name_key(name)
     scope_blob = _rubric_scope_blob(title, description)
+    csv_files = re.findall(r"\b[\w.-]+\.csv\b", scope_blob)
+    csv_files = list(dict.fromkeys(csv_files))
+    csv_phrase = ", ".join(csv_files) if csv_files else "odevde verilen CSV dosyalari"
     has_csv = "csv" in scope_blob
     has_report = "rapor" in scope_blob
     has_error_rows = "hatali" in scope_blob or "hata" in scope_blob
@@ -943,7 +946,7 @@ def _project_specific_rubric_description(name: str, title: str, description: str
     if any(token in key for token in ("csv", "dosya isleme", "dosya")):
         if has_csv:
             return (
-                "CSV dosya isleme icin books.csv, loans.csv veya odevde verilen CSV dosyalari dogru okunur; "
+                f"CSV dosya isleme icin {csv_phrase} dogru okunur; "
                 "zorunlu kolonlar, bos degerler ve sayi/tarih formatlari denetlenir, gecersiz satirlar "
                 f"ana raporu bozmadan acik uyariyla ayrilir.{context_note}"
             )
@@ -976,7 +979,7 @@ def _project_specific_rubric_description(name: str, title: str, description: str
     if "metot" in key or "fonksiyon" in key:
         details = ["okuma", "hesaplama", "raporlama"]
         if has_csv:
-            details.insert(0, "books.csv/loans.csv ayristirma")
+            details.insert(0, f"{csv_phrase} ayristirma")
         if has_error_rows:
             details.append("hatali satir ayirma")
         return (
@@ -985,7 +988,7 @@ def _project_specific_rubric_description(name: str, title: str, description: str
         )
     if "veri modeli" in key:
         return (
-            "Kitap, kayit, kategori, tarih veya odevdeki temel varliklar tutarli veri "
+            "Odevdeki temel varliklar, alanlar ve iliskiler tutarli veri "
             f"temsilleriyle tutulur; alan adlari ve tipleri hesaplama/raporlama akisini destekler.{context_note}"
         )
     if "calisabilirlik" in key:
@@ -1123,6 +1126,17 @@ def _polish_turkish_instruction_text(text: str) -> str:
     return cleaned.strip()
 
 
+def _has_assignment_example_output_heading(text: str) -> bool:
+    if _ASSIGNMENT_EXAMPLE_OUTPUT_HEADING_RE.search(text):
+        return True
+    return bool(
+        re.search(
+            r"(?im)(?:beklenen\s+)?(?:konsol\s+|rapor\s+)?(?:cikti|ciktisi|\u00e7\u0131kt\u0131|\u00e7\u0131kt\u0131s\u0131)\s*:",
+            str(text or ""),
+        )
+    )
+
+
 def _rubric_description_is_template_noise(description: str) -> bool:
     blob = _rubric_name_key(description)
     return (
@@ -1130,6 +1144,21 @@ def _rubric_description_is_template_noise(description: str) -> bool:
         and "somut girdi" in blob
         and "olculebilir kanit" in blob
     )
+
+
+def _rubric_description_has_stale_domain_leak(description: str, title: str, assignment_description: str) -> bool:
+    desc = _rubric_scope_blob("", description)
+    scope = _rubric_scope_blob(title, assignment_description)
+    stale_domains: tuple[tuple[tuple[str, ...], tuple[str, ...]], ...] = (
+        (
+            ("books.csv", "loans.csv", "odunc", "iade", "stok", "kutuphane"),
+            ("books.csv", "loans.csv", "kitap", "odunc", "iade", "stok", "kutuphane"),
+        ),
+    )
+    for leaked_markers, allowed_markers in stale_domains:
+        if any(marker in desc for marker in leaked_markers) and not any(marker in scope for marker in allowed_markers):
+            return True
+    return False
 
 
 def _polish_rubric_criteria(
@@ -1143,10 +1172,14 @@ def _polish_rubric_criteria(
         item = dict(row)
         item["name"] = _polish_turkish_instruction_text(str(item.get("name", "")))
         item["description"] = _polish_turkish_instruction_text(str(item.get("description", "")))
-        if _rubric_description_is_template_noise(item["description"]) or not _rubric_description_has_project_context(
+        if (
+            _rubric_description_is_template_noise(item["description"])
+            or _rubric_description_has_stale_domain_leak(item["description"], assignment_title, assignment_description)
+            or not _rubric_description_has_project_context(
             item["description"],
             assignment_title,
             assignment_description,
+            )
         ):
             item["description"] = _project_specific_rubric_description(
                 item["name"],
@@ -1527,6 +1560,9 @@ Rules:
   APIs, inputs, required reports, formulas, classes, or edge cases from the teacher text.
 - Include a tiny input/sample scenario and the expected output/result format.
 - If the homework is API based, include endpoint calls and JSON responses.
+- Never use generic placeholder resources such as /items, "Ornek Kayit", or unrelated
+  sample nouns. If the teacher text says randevu, use /randevular; if it says fatura,
+  use /faturalar; if no resource is clear, use neutral Turkish /kayitlar.
 - If it is file/report based, include a sample file snippet and expected report lines.
 - If it is OOP/data-structure/algorithm based, include object/input setup and expected
   method/console results.
@@ -1545,10 +1581,28 @@ def _clean_assignment_example(raw: Any, title: str, description: str) -> str:
     text = re.sub(r"```(?:json|text|python|ts|js)?", "", text, flags=re.IGNORECASE).replace("```", "")
     text = _polish_turkish_instruction_text(text)
     text = _ASSIGNMENT_EXAMPLE_OUTPUT_HEADING_RE.sub("Beklenen cikti: ", text, count=1)
+    text = re.sub(
+        r"(?im)((?:beklenen\s+)?(?:konsol\s+|rapor\s+)?(?:\u00e7\u0131kt\u0131|\u00e7\u0131kt\u0131s\u0131))\s*:\s*",
+        "Beklenen cikti: ",
+        text,
+        count=1,
+    )
+    text = re.sub(
+        r"(?im)((?:beklenen\s+)?(?:konsol\s+|rapor\s+)?(?:cikti|ciktisi))\s*:\s*",
+        "Beklenen cikti: ",
+        text,
+        count=1,
+    )
+    text = re.sub(
+        r"(?im)(beklenen\s+(?:rapor|sonuc|sonu\u00e7|format|yanit|yan\u0131t))\s*:\s*",
+        "Beklenen cikti: ",
+        text,
+        count=1,
+    )
     text = text.strip()
     if not re.match(r"^(Ornek|Örnek)\s*:", text, flags=re.IGNORECASE):
         text = f"Örnek: {text}"
-    if not _ASSIGNMENT_EXAMPLE_OUTPUT_HEADING_RE.search(text):
+    if not _has_assignment_example_output_heading(text):
         text += "\nBeklenen cikti: Odev aciklamasinda istenen rapor veya sonuc alanlari bu formatta gosterilir."
     edge_blob = _rubric_scope_blob(title, description)
     edge_required = any(token in edge_blob for token in ("hata", "hatali", "gecersiz", "test", "kenar", "robust"))
@@ -1565,6 +1619,39 @@ def _fallback_assignment_example(title: str, description: str) -> str:
     def has_any(*tokens: str) -> bool:
         return any(token in blob for token in tokens)
 
+    def api_domain() -> tuple[str, str, str, str, str]:
+        if has_any("randevu", "doktor", "hasta"):
+            return (
+                "randevular",
+                "randevu",
+                '{"id":1,"hasta":"Ayse Yilmaz","doktor":"Dr. Kaya","saat":"10:30"}',
+                "Randevu bulunamadi",
+                "Secilen saat uygun degil",
+            )
+        if has_any("sikayet", "mahalle", "oncelik"):
+            return (
+                "sikayetler",
+                "sikayet",
+                '{"id":1,"mahalle":"Merkez","kategori":"yol","oncelik":"yuksek"}',
+                "Sikayet bulunamadi",
+                "Kategori zorunludur",
+            )
+        if has_any("fatura", "kdv", "kalem"):
+            return (
+                "faturalar",
+                "fatura",
+                '{"id":1,"ara_toplam":250.0,"kdv":50.0,"genel_toplam":300.0}',
+                "Fatura bulunamadi",
+                "Tutar sifirdan buyuk olmalidir",
+            )
+        return (
+            "kayitlar",
+            "kayit",
+            '{"id":1,"durum":"olusturuldu"}',
+            "Kayit bulunamadi",
+            "Zorunlu alan eksik",
+        )
+
     if has_any("log", "gunluk"):
         return (
             "Örnek: Girdi `ornek_log.txt`:\n"
@@ -1572,10 +1659,15 @@ def _fallback_assignment_example(title: str, description: str) -> str:
             "Beklenen cikti:\nINFO: 1\nWARNING: 1\nERROR: 1\nBozuk satir: 1\nHata satirlari: 2"
         )
     if has_any("api", "endpoint", "fastapi", "rest"):
+        collection, entity, sample, missing, invalid = api_domain()
         return (
-            "Örnek: POST /items -> 201 {\"id\":1,\"name\":\"Ornek Kayit\",\"status\":\"active\"}\n"
-            "GET /items -> 200 [{\"id\":1,\"name\":\"Ornek Kayit\",\"status\":\"active\"}]\n"
-            "GET /items/999 -> 404 {\"detail\":\"Kayit bulunamadi\"}"
+            "Ornek: Kucuk API deneme senaryosu:\n"
+            f"POST /{collection} -> 201 {sample}\n"
+            f"GET /{collection} -> 200 [{sample}]\n"
+            f"GET /{collection}/1 -> 200 {sample}\n\n"
+            "Hata durumu:\n"
+            f"GET /{collection}/999 -> 404 {{\"detail\":\"{missing}\"}}\n"
+            f"POST /{collection} gecersiz {entity} -> 400 {{\"detail\":\"{invalid}\"}}"
         )
     if has_any("csv", "json", "dosya", "rapor") or re.search(r"(^|[^a-z0-9])ph([^a-z0-9]|$)", blob):
         return (
@@ -1655,6 +1747,10 @@ def _title_from_assignment_hint(raw: str) -> str:
     if not text:
         return "Yeni Programlama Odevi"
     first_line = next((line.strip() for line in re.split(r"[\r\n]+", text) if line.strip()), text)
+    if ":" in first_line:
+        prefix, suffix = first_line.split(":", 1)
+        if re.search(r"\b(odev|tasarla|olustur|verilecek|dersi|icin)\b", prefix, flags=re.IGNORECASE):
+            first_line = suffix.strip() or first_line
     heading_match = re.match(
         r"^(?:baslik|başlık|odev|ödev)\s*[:\-]\s*(.+)$",
         first_line,
@@ -1669,6 +1765,19 @@ def _title_from_assignment_hint(raw: str) -> str:
         first_sentence,
         flags=re.IGNORECASE,
     )
+    title = re.sub(
+        r"\b(yazsin|yazin|gelistirsin|gelistirin|tasarlasin|tasarlayin)\b",
+        "",
+        title,
+        flags=re.IGNORECASE,
+    )
+    title = re.sub(
+        r"\b(?:odevi|odev|Ã¶devi|Ã¶dev)\s+(?:istiyorum|lazim|hazirla|hazÄ±rla|oner|Ã¶ner)\b\.?$",
+        "",
+        title,
+        flags=re.IGNORECASE,
+    )
+    title = re.split(r"\s*[;,]\s*", title, maxsplit=1)[0].strip()
     title = re.sub(r"\s+", " ", title).strip(" -:;")
     if len(title) > 90:
         title = title[:87].rstrip(" ,;:-") + "..."
@@ -1909,6 +2018,118 @@ def _long_brief_anchor_terms(direct_suggestion: dict[str, str] | None) -> list[s
     return out[:4]
 
 
+def _assignment_hint_anchor_terms(raw: str, *, limit: int = 5) -> list[str]:
+    generic = {
+        "odev", "odevi", "proje", "projesi", "sistem", "sistemi", "arac", "araci",
+        "uygulama", "uygulamasi", "veri", "dosya", "dosyasi", "mini", "basit",
+        "yazilim",
+        "orta", "zor", "kolay", "ders", "dersi", "icin", "ogrenci", "ogrenciler",
+        "istiyorum", "lazim", "hazirla", "oner", "tasarla", "yaz", "yazma",
+        "gelistir", "gelistirin", "olsun", "konu", "temel", "uygun", "guzel",
+        "cok", "olmayan", "bir", "ile", "ve", "veya", "olan", "iceren",
+    }
+    folded = _fold_for_match(raw)
+    priority = (
+        "c++", "cpp", "react", "pytest", "html", "css", "bst", "api", "rest",
+        "sqlite", "csv", "cli", "todo", "vector", "sort", "portfolio", "randevu",
+        "fatura", "kdv", "titrasyon", "bagaj", "playlist", "ulasim", "ulaÅŸÄ±m",
+        "sikayet", "ÅŸikayet", "phishing", "sunum",
+    )
+    out: list[str] = []
+    seen: set[str] = set()
+    for term in priority:
+        folded_term = _fold_for_match(term)
+        if folded_term in folded and folded_term not in seen:
+            seen.add(folded_term)
+            out.append(folded_term)
+            if len(out) >= limit:
+                return out
+    for term in re.findall(r"[a-z0-9_+#]+", folded):
+        if len(term) < 3 or term in generic or term in seen:
+            continue
+        seen.add(term)
+        out.append(term)
+        if len(out) >= limit:
+            break
+    return out
+
+
+def _assignment_seed_suggestion_from_hint(raw: str) -> dict[str, str] | None:
+    text = _strip_course_context_from_hint(raw)
+    if not text:
+        return None
+    title = _title_from_assignment_hint(text)
+    desc = _strip_md_leaks(text)
+    if len(desc) > 1200:
+        desc = desc[:1190].rstrip(" ,;:-") + "..."
+    return {
+        "title": title,
+        "summary": f"{title} icin ogretim uyesinin konu ipucuna sadik odev taslagi.",
+        "description": desc,
+    }
+
+
+def _safe_assignment_suggestions_for_unsafe_hint(raw: str, count: int) -> list[dict[str, str]]:
+    folded = _fold_for_match(raw)
+    if "phishing" in folded or "oltalama" in folded:
+        base = {
+            "title": "Phishing Farkindalik Siniflandirici",
+            "summary": "Oyuncak veriyle riskli e-postalari tespit eden savunmaci Python odevi.",
+            "description": (
+                "Ogrenciler yalnizca sentetik e-posta ornekleriyle phishing belirtilerini siniflandiran "
+                "savunmaci bir analiz araci gelistirir. Gercek kimlik bilgisi toplanmaz, sahte site "
+                "kurulmaz ve operasyonel saldiri adimi verilmez; raporda risk gerekceleri ve yanlis "
+                "pozitif/negatif ornekleri aciklanir."
+            ),
+        }
+    else:
+        base = {
+            "title": "Guvenli Yazilim Farkindalik Analizi",
+            "summary": "Riskli istekleri tespit edip guvenli alternatifler oneren savunmaci odev.",
+            "description": (
+                "Ogrenciler zarara yol acabilecek istekleri siniflandiran ve guvenli egitim alternatifleri "
+                "oneren bir analiz araci gelistirir. Cozum gercek zarar, suistimal veya operasyonel talimat "
+                "uretmez; yalnizca farkindalik, tespit ve raporlama amaclidir."
+            ),
+        }
+    return _direct_assignment_variants(base, max(1, count))
+
+
+def _long_brief_required_term_groups(direct_suggestion: dict[str, str] | None) -> list[tuple[str, ...]]:
+    if not direct_suggestion:
+        return []
+    source = f"{direct_suggestion.get('title', '')} {direct_suggestion.get('description', '')}"
+    folded = _fold_for_match(source)
+    groups: list[tuple[str, ...]] = []
+    if "cli" in folded or "komut satir" in folded:
+        groups.append(("cli", "komut satir", "komut satiri", "komut"))
+    if "api" in folded or "endpoint" in folded or "rest" in folded:
+        groups.append(("api", "endpoint", "rest"))
+    if "react" in folded:
+        groups.append(("react",))
+    if "html" in folded:
+        groups.append(("html",))
+    if "css" in folded:
+        groups.append(("css",))
+    if "portfolio" in folded or "portfolyo" in folded:
+        groups.append(("portfolio", "portfolyo"))
+    if "pytest" in folded:
+        groups.append(("pytest",))
+    if "bst" in folded:
+        groups.append(("bst",))
+    if "c++" in folded or "cpp" in folded:
+        groups.append(("c++", "cpp"))
+    if "vector" in folded or "vektor" in folded:
+        groups.append(("vector", "vektor"))
+    if "csv" in folded:
+        groups.append(("csv",))
+    if "sqlite" in folded:
+        groups.append(("sqlite",))
+    if "critical" in folded:
+        groups.append(("critical",))
+    return groups
+
+
 def _matches_long_brief_anchor(text: str, anchor_terms: list[str]) -> bool:
     if not anchor_terms:
         return True
@@ -1917,10 +2138,32 @@ def _matches_long_brief_anchor(text: str, anchor_terms: list[str]) -> bool:
     return hits >= min(2, len(anchor_terms))
 
 
+def _matches_required_term_groups(text: str, required_groups: list[tuple[str, ...]]) -> bool:
+    if not required_groups:
+        return True
+    folded = _fold_for_match(text)
+    return all(any(term in folded for term in group) for group in required_groups)
+
+
+def _matches_heading_anchor(text: str, anchor_terms: list[str]) -> bool:
+    if not anchor_terms:
+        return True
+    folded = _fold_for_match(text)
+    return any(term in folded for term in anchor_terms)
+
+
+def _matches_title_anchor(title: str, anchor_terms: list[str]) -> bool:
+    if not anchor_terms:
+        return True
+    folded = _fold_for_match(title)
+    return any(term in folded for term in anchor_terms)
+
+
 def _clean_assignment_suggestion_items(
     raw_list: list[Any],
     n: int,
     anchor_terms: list[str] | None = None,
+    required_groups: list[tuple[str, ...]] | None = None,
 ) -> list[dict[str, str]]:
     cleaned: list[dict[str, str]] = []
     seen_lower: set[str] = set()
@@ -1945,6 +2188,17 @@ def _clean_assignment_suggestion_items(
         if _looks_garbled_llm_text(combined_text):
             continue
         if anchor_terms and not _matches_long_brief_anchor(combined_text, anchor_terms):
+            continue
+        heading_text = f"{title} {summary}"
+        if anchor_terms and not _matches_title_anchor(title, anchor_terms):
+            continue
+        if anchor_terms and not _matches_heading_anchor(heading_text, anchor_terms):
+            continue
+        if required_groups and not _matches_required_term_groups(combined_text, required_groups):
+            continue
+        if required_groups and not _matches_required_term_groups(title, required_groups):
+            continue
+        if required_groups and not _matches_required_term_groups(heading_text, required_groups):
             continue
         tl = title.lower()
         if tl in seen_lower:
@@ -3013,11 +3267,37 @@ async def run_analysis_pipeline(
         _rubric_criteria_text,
         compute_brief_code_alignment,
     )
-    from backend.agents.task_relevance import assess_task_relevance_llm, merge_task_alignment
+    from backend.agents.task_relevance import (
+        assess_task_relevance_llm,
+        deterministic_task_capability_match,
+        merge_task_alignment,
+    )
 
     prog_f, prog_rs = compute_brief_code_alignment(
         brief, file_content, rubric_criteria=fac if fac else None
     )
+    capability_f = deterministic_task_capability_match(
+        brief,
+        fac if fac else None,
+        file_content,
+    )
+    brief_capability_f = deterministic_task_capability_match(brief, None, file_content)
+    if brief_capability_f <= 0.24 and len(brief) >= BRIEF_MIN_LEN:
+        prog_f = min(prog_f, 0.20)
+        if "deterministic_capability_mismatch" not in prog_rs:
+            prog_rs.append("deterministic_capability_mismatch")
+    elif capability_f <= 0.24 and len(brief) >= BRIEF_MIN_LEN:
+        prog_f = min(prog_f, 0.20)
+        if "deterministic_capability_mismatch" not in prog_rs:
+            prog_rs.append("deterministic_capability_mismatch")
+    elif capability_f < 0.45 and len(brief) >= BRIEF_MIN_LEN:
+        prog_f = min(prog_f, 0.30)
+        if "deterministic_low_capability_match" not in prog_rs:
+            prog_rs.append("deterministic_low_capability_match")
+    elif capability_f < 0.55 and len(brief) >= BRIEF_MIN_LEN:
+        prog_f = min(prog_f, 0.55)
+        if "deterministic_low_capability_match" not in prog_rs:
+            prog_rs.append("deterministic_low_capability_match")
     llm_rel = await assess_task_relevance_llm(
         assignment_description=brief,
         source_code=file_content,
@@ -3258,6 +3538,15 @@ def _build_agent_diagnostics(
     }
 
 
+def _agent_report_metadata(output: dict[str, Any]) -> dict[str, Any]:
+    flags = output.get("guardrail_flags") if isinstance(output, dict) else []
+    return {
+        "llm_status": output.get("llm_status", "unknown") if isinstance(output, dict) else "unknown",
+        "confidence": output.get("confidence") if isinstance(output, dict) else None,
+        "guardrail_flags": flags if isinstance(flags, list) else [],
+    }
+
+
 def _build_agents_list(cq, sn, gl, sc, ta, ev) -> list[dict]:
     """Her ajan icin frontend'in beklegi formatta rapor olustur."""
     agents = []
@@ -3312,6 +3601,7 @@ def _build_agents_list(cq, sn, gl, sc, ta, ev) -> list[dict]:
         "score": ta.get("score", 0),
         "maxScore": 100,
         "findings": test_findings,
+        **_agent_report_metadata(ta),
     })
 
     # Code Quality Agent
@@ -3331,6 +3621,7 @@ def _build_agents_list(cq, sn, gl, sc, ta, ev) -> list[dict]:
         "score": cq.get("score", 0),
         "maxScore": 100,
         "findings": cq_findings,
+        **_agent_report_metadata(cq),
     })
 
     # Seniority Agent
@@ -3352,6 +3643,7 @@ def _build_agents_list(cq, sn, gl, sc, ta, ev) -> list[dict]:
         "score": sn.get("score", 0),
         "maxScore": 100,
         "findings": sn_findings,
+        **_agent_report_metadata(sn),
     })
 
     # Guideline Agent
@@ -3370,6 +3662,7 @@ def _build_agents_list(cq, sn, gl, sc, ta, ev) -> list[dict]:
         "score": gl.get("score", 0),
         "maxScore": 100,
         "findings": gl_findings,
+        **_agent_report_metadata(gl),
     })
 
     # Security Agent
@@ -3391,6 +3684,7 @@ def _build_agents_list(cq, sn, gl, sc, ta, ev) -> list[dict]:
         "score": sc.get("score", 0),
         "maxScore": 100,
         "findings": sc_findings,
+        **_agent_report_metadata(sc),
     })
 
     # Evidence Agent
@@ -3481,7 +3775,9 @@ def _build_line_evidence(cq, gl, sc, ev, source_code: str) -> list[dict]:
     """Satir bazli evidence listesi olustur (frontend code editor icin)."""
     evidence = []
     seen: set[tuple[int, str]] = set()
-    max_line = max(1, len((source_code or "").splitlines()))
+    seen_semantic: set[tuple[int, str]] = set()
+    source_lines = (source_code or "").splitlines()
+    max_line = max(1, len(source_lines))
 
     _AGENT_LABEL = {
         "code_quality": "Kod Kalitesi",
@@ -3492,7 +3788,39 @@ def _build_line_evidence(cq, gl, sc, ev, source_code: str) -> list[dict]:
     }
 
     def _norm_msg(m: str) -> str:
-        return re.sub(r"\s+", " ", (m or "").strip())
+        text = re.sub(r"\s+", " ", (m or "").strip()).lower()
+        return re.sub(r"[.!?;:]+$", "", text).strip()
+
+    def _sanitize_security_msg(line: int | None, msg: str) -> str:
+        if not line or line < 1 or line > len(source_lines):
+            return msg
+        code_line = source_lines[line - 1].lower()
+        if "sql injection" not in msg.lower():
+            return msg
+        if any(token in code_line for token in ("os.system", "os.popen", "eval(", "exec(")):
+            return re.sub(
+                r"\s*(?:sql injection)[^.?!]*(?:[.?!]|$)",
+                "",
+                msg,
+                flags=re.IGNORECASE,
+            ).strip()
+        return msg
+
+    def _semantic_key(line: int, msg: str) -> tuple[int, str] | None:
+        text = _norm_msg(msg)
+        if "bare 'except:'" in text or "bare except" in text or "except:" in text:
+            return (line, "bare_except")
+        if "zerodivisionerror" in text or ("len(" in text and ("bolme" in text or "bölme" in text or "bolun" in text or "bölün" in text)):
+            return (line, "division_by_len_without_empty_guard")
+        if "o(n^2)" in text or "o(n2)" in text or (("ic ice" in text or "iç içe" in text) and ("dongu" in text or "döngü" in text)):
+            return (line, "quadratic_complexity")
+        if "os.system" in text or "os.popen" in text:
+            return (line, "command_injection")
+        if "eval()" in text or "eval(" in text:
+            return (line, "code_injection")
+        if "sql" in text and ("select" in text or "sorgu" in text or "query" in text):
+            return (line, "sql_injection")
+        return None
 
     def _add(line: int | None, agent: str, msg: str, sev: str):
         if not line or line < 1 or line > max_line:
@@ -3500,33 +3828,21 @@ def _build_line_evidence(cq, gl, sc, ev, source_code: str) -> list[dict]:
         msg = (msg or "").strip()
         if not msg:
             return
+        semantic_key = _semantic_key(line, msg)
+        if semantic_key and semantic_key in seen_semantic:
+            return
         key = (line, _norm_msg(msg))
         if key in seen:
             return
         seen.add(key)
+        if semantic_key:
+            seen_semantic.add(semantic_key)
         evidence.append({
             "line": line,
             "agent": agent,
             "message": msg,
             "severity": _map_severity(sev),
         })
-
-    for issue in cq.get("issues", []):
-        desc = issue.get("description", "")
-        if not desc:
-            desc = issue.get("type", "")
-        line_nums = re.findall(r"satir\s*(\d+)", desc, re.IGNORECASE)
-        line = int(line_nums[0]) if line_nums else issue.get("line")
-        _add(line, "Kod Kalitesi", desc, issue.get("severity", "info"))
-
-    for viol in gl.get("style_violations", []):
-        line_hint = viol.get("line_hint", "")
-        nums = re.findall(r"(\d+)", line_hint)
-        if nums:
-            _add(int(nums[0]), "Standartlar", viol.get("description", viol.get("rule", "")), viol.get("severity", "info"))
-
-    for threat in sc.get("threats", []):
-        _add(threat.get("line"), "Güvenlik", threat.get("description", ""), threat.get("severity", "high"))
 
     _NODE_TYPE_LABEL = {
         "function": "Fonksiyon",
@@ -3554,6 +3870,8 @@ def _build_line_evidence(cq, gl, sc, ev, source_code: str) -> list[dict]:
             sym_part = f" {symbol}" if symbol else ""
             prefix = f"[{type_label}{sym_part} • satır {line_range[0]}-{line_range[1]}] "
         msg = f"{prefix}{feedback}" if prefix else feedback
+        if src == "security":
+            msg = _sanitize_security_msg(lines[0], msg)
         _add(lines[0], label, msg, claim.get("severity", "info"))
 
     evidence.sort(key=lambda x: x["line"])
@@ -4370,7 +4688,28 @@ async def assignment_assistant_suggestions(req: AssignmentAssistantSuggestionsRe
     focus = _assignment_focus_extra(hint)
     tier = _normalize_assignment_difficulty(req.difficulty)
     direct_suggestion = _direct_assignment_suggestion_from_hint(hint)
-    anchor_terms = _long_brief_anchor_terms(direct_suggestion)
+    seed_suggestion = direct_suggestion or _assignment_seed_suggestion_from_hint(hint)
+    anchor_terms = _long_brief_anchor_terms(direct_suggestion) or _assignment_hint_anchor_terms(hint)
+    required_groups = _long_brief_required_term_groups(seed_suggestion)
+
+    safety = _ASSIGNMENT_SAFETY_AGENT.analyze(
+        title="Odev onerisi",
+        description=hint,
+        course_context="",
+    )
+    if not safety.allowed:
+        safe_suggestions = _safe_assignment_suggestions_for_unsafe_hint(hint, n)
+        return {
+            "suggestions": [
+                {
+                    "id": str(i + 1),
+                    "title": row["title"],
+                    "summary": row["summary"],
+                    "description": row["description"],
+                }
+                for i, row in enumerate(safe_suggestions[:n])
+            ],
+        }
 
     user_prompt = (
         f"Uretilecek oneri sayisi: {n}.\n"
@@ -4412,6 +4751,18 @@ async def assignment_assistant_suggestions(req: AssignmentAssistantSuggestionsRe
                         "summary": direct_suggestion["summary"],
                         "description": direct_suggestion["description"],
                     }
+                ],
+            }
+        if seed_suggestion:
+            return {
+                "suggestions": [
+                    {
+                        "id": str(i + 1),
+                        "title": row["title"],
+                        "summary": row["summary"],
+                        "description": row["description"],
+                    }
+                    for i, row in enumerate(_direct_assignment_variants(seed_suggestion, n)[:n])
                 ],
             }
         raise HTTPException(
@@ -4458,7 +4809,12 @@ async def assignment_assistant_suggestions(req: AssignmentAssistantSuggestionsRe
     else:
         logger.warning("assignment-assistant: LLM sonuc bos (Ollama yanit/timeout/parse)")
 
-    cleaned = _clean_assignment_suggestion_items(raw_list or [], n, anchor_terms=anchor_terms)
+    cleaned = _clean_assignment_suggestion_items(
+        raw_list or [],
+        n,
+        anchor_terms=anchor_terms,
+        required_groups=required_groups,
+    )
     min_expected = min(n, 3)
     if len(cleaned) < min_expected:
         retry_prompt = (
@@ -4480,7 +4836,12 @@ async def assignment_assistant_suggestions(req: AssignmentAssistantSuggestionsRe
                 use_cache=False,
             )
             retry_list = _suggestions_list_from_llm(retry_result) if isinstance(retry_result, dict) else None
-            retry_cleaned = _clean_assignment_suggestion_items(retry_list or [], n, anchor_terms=anchor_terms)
+            retry_cleaned = _clean_assignment_suggestion_items(
+                retry_list or [],
+                n,
+                anchor_terms=anchor_terms,
+                required_groups=required_groups,
+            )
             if retry_cleaned:
                 combined: list[dict[str, str]] = []
                 seen_retry_titles: set[str] = set()
@@ -4517,6 +4878,20 @@ async def assignment_assistant_suggestions(req: AssignmentAssistantSuggestionsRe
                 break
             key = row["title"].strip().lower()
             if key in seen_titles:
+                continue
+            merged.append(dict(row))
+            seen_titles.add(key)
+    if seed_suggestion and len(merged) < n:
+        for row in _direct_assignment_variants(seed_suggestion, n):
+            if len(merged) >= n:
+                break
+            key = row["title"].strip().lower()
+            if key in seen_titles:
+                continue
+            if anchor_terms and not _matches_long_brief_anchor(
+                f"{row['title']} {row['summary']} {row['description']}",
+                anchor_terms,
+            ):
                 continue
             merged.append(dict(row))
             seen_titles.add(key)

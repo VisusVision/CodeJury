@@ -419,7 +419,7 @@ async def chat_json(
                 "temperature": temperature,
                 "num_predict": predict,
             },
-            "format": schema_hint if schema_hint else "json",
+            "format": "json",
             "keep_alive": "30m",
         }
         result = await _do_request(payload)

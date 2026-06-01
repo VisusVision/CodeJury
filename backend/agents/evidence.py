@@ -272,6 +272,23 @@ def _coerce_int(value) -> Optional[int]:
         return None
 
 
+def _line_mentioned_in_feedback(feedback: str, source_lines: list[str]) -> Optional[int]:
+    for match in re.finditer(r"\b(?:satir|satır|line)\s*[:#]?\s*(\d+)\b", feedback or "", flags=re.IGNORECASE):
+        line_no = _coerce_int(match.group(1))
+        if line_no and 1 <= line_no <= len(source_lines):
+            return line_no
+    return None
+
+
+def _quoted_literals(text: str) -> list[str]:
+    literals: list[str] = []
+    for match in re.finditer(r"['\"]([^'\"\n]{3,80})['\"]", text or ""):
+        value = match.group(1).strip()
+        if value:
+            literals.append(value)
+    return literals
+
+
 def _normalize_claims(
     claims: list,
     source_lines: list[str],
@@ -301,6 +318,14 @@ def _normalize_claims(
         )
         if not feedback:
             continue
+
+        mentioned_line = _line_mentioned_in_feedback(feedback, source_lines)
+        if mentioned_line:
+            mentioned_source = source_lines[mentioned_line - 1]
+            literals = _quoted_literals(feedback)
+            if literals and not any(lit in mentioned_source for lit in literals):
+                continue
+            lines_v = [mentioned_line]
 
         agent_source = str(
             claim.get("agent_source", claim.get("agent", claim.get("source", "unknown")))
@@ -366,6 +391,26 @@ def _normalize_claims(
                     cap = min(end, start + 5)
                     in_range = list(range(start, cap + 1))
                 lines_v = in_range
+
+        literals = _quoted_literals(feedback)
+        if literals and lines_v:
+            matching_lines = [
+                n
+                for n in lines_v
+                if 1 <= n <= len(source_lines)
+                and any(lit in source_lines[n - 1] for lit in literals)
+            ]
+            if not matching_lines and line_range:
+                start, end = line_range
+                matching_lines = [
+                    n
+                    for n in range(start, end + 1)
+                    if any(lit in source_lines[n - 1] for lit in literals)
+                ]
+            if matching_lines:
+                lines_v = matching_lines[:4]
+            elif not line_range:
+                continue
 
         # ---- Snippet ----
         code_snippet = ""

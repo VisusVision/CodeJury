@@ -33,15 +33,15 @@ const LogPanel = ({ logs }: LogPanelProps) => {
   }, [logs]);
 
   return (
-    <div className="flex flex-col rounded-xl overflow-hidden shadow-card">
-      <div className="flex items-center gap-2 px-4 py-2.5 bg-card border-b border-border">
+    <div className="flex h-full min-h-0 flex-col rounded-xl overflow-hidden shadow-card">
+      <div className="flex shrink-0 items-center gap-2 px-4 py-2.5 bg-card border-b border-border">
         <Terminal className="h-4 w-4 text-muted-foreground" />
         <span className="text-sm font-medium text-foreground">{t("logs.title")}</span>
         <span className="ml-auto text-xs text-muted-foreground tabular-nums">{logs.length} {t("logs.records")}</span>
       </div>
       <div
         ref={scrollRef}
-        className="terminal-bg p-4 max-h-[300px] overflow-auto font-mono-code text-xs leading-relaxed space-y-1"
+        className="terminal-bg min-h-0 flex-1 overflow-auto p-4 font-mono-code text-xs leading-relaxed space-y-1"
       >
         {logs.length === 0 && (
           <p className="text-muted-foreground/60 italic">{t("logs.noLogs")}</p>
@@ -53,11 +53,11 @@ const LogPanel = ({ logs }: LogPanelProps) => {
               initial={{ opacity: 0, x: -8 }}
               animate={{ opacity: 1, x: 0 }}
               transition={{ duration: 0.1, delay: i > logs.length - 5 ? (i - (logs.length - 5)) * 0.05 : 0 }}
-              className="flex gap-3"
+              className="flex min-w-0 gap-3"
             >
               <span className="text-muted-foreground/50 tabular-nums shrink-0">{log.timestamp}</span>
               <span className={`shrink-0 font-medium ${typeColorMap[log.type]}`}>[{log.agent}]</span>
-              <span className="text-terminal-foreground">{log.message}</span>
+              <span className="min-w-0 text-terminal-foreground break-words">{log.message}</span>
             </motion.div>
           ))}
         </AnimatePresence>

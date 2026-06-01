@@ -97,6 +97,7 @@ const FacultyDashboard = () => {
   const [newAssignmentDesc, setNewAssignmentDesc] = useState("");
   const [manualAssignmentExample, setManualAssignmentExample] = useState("");
   const [manualAssignmentExampleLoading, setManualAssignmentExampleLoading] = useState(false);
+  const [manualAssignmentExampleTouched, setManualAssignmentExampleTouched] = useState(false);
   const [selectedCourseId, setSelectedCourseId] = useState("");
   const [dueDate, setDueDate] = useState<Date | undefined>(undefined);
   const [dueTime, setDueTime] = useState("23:59");
@@ -121,6 +122,12 @@ const FacultyDashboard = () => {
     const description = newAssignmentDesc.trim();
     if (!title && !description) {
       setManualAssignmentExample("");
+      setManualAssignmentExampleLoading(false);
+      setManualAssignmentExampleTouched(false);
+      return;
+    }
+
+    if (manualAssignmentExampleTouched) {
       setManualAssignmentExampleLoading(false);
       return;
     }
@@ -160,7 +167,7 @@ const FacultyDashboard = () => {
       cancelled = true;
       window.clearTimeout(timer);
     };
-  }, [newAssignmentName, newAssignmentDesc]);
+  }, [newAssignmentName, newAssignmentDesc, manualAssignmentExampleTouched]);
 
   const fetchAll = async () => {
     const [departmentsData, coursesData, assignmentsData, rubricsData, evaluationsData] = await Promise.all([
@@ -252,8 +259,9 @@ const FacultyDashboard = () => {
     }
     const normalizedName = newAssignmentName.trim().replace(/\b\w+/g, (word) => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase());
     const trimmedDescription = newAssignmentDesc.trim();
-    const description = trimmedDescription
-      ? descriptionWithExample(trimmedDescription, manualAssignmentExample || buildAssignmentExample(normalizedName, trimmedDescription))
+    const trimmedExample = exampleBody(manualAssignmentExample).trim();
+    const description = trimmedDescription || trimmedExample
+      ? descriptionWithExample(trimmedDescription, trimmedExample || buildAssignmentExample(normalizedName, trimmedDescription))
       : null;
     setAssignmentSubmitting(true);
     try {
@@ -266,6 +274,8 @@ const FacultyDashboard = () => {
       toast.success("Ödev eklendi");
       setNewAssignmentName("");
       setNewAssignmentDesc("");
+      setManualAssignmentExample("");
+      setManualAssignmentExampleTouched(false);
       setDueDate(undefined);
       setDueTime("23:59");
       if (created && typeof (created as Assignment).id === "string" && (created as Assignment).id.trim()) {
@@ -545,17 +555,22 @@ const FacultyDashboard = () => {
                     rows={4}
                     className="px-3 py-2 rounded-lg border border-input bg-background text-foreground text-sm placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring resize-none"
                   />
-                  {manualAssignmentExample && (
-                    <div className="rounded-lg border border-primary/20 bg-primary/5 px-3 py-2">
-                      <div className="flex items-center gap-2">
-                        <p className="text-[10px] font-semibold uppercase tracking-wider text-primary">Örnek Çıktı</p>
-                        {manualAssignmentExampleLoading && <Loader2 className="h-3 w-3 animate-spin text-primary" />}
-                      </div>
-                      <p className="mt-1 whitespace-pre-wrap text-xs leading-relaxed text-foreground">
-                        {exampleBody(manualAssignmentExample)}
-                      </p>
+                  <div className="rounded-lg border border-primary/20 bg-primary/5 px-3 py-2">
+                    <div className="mb-1.5 flex items-center gap-2">
+                      <p className="text-[10px] font-semibold uppercase tracking-wider text-primary">Örnek Çıktı</p>
+                      {manualAssignmentExampleLoading && <Loader2 className="h-3 w-3 animate-spin text-primary" />}
                     </div>
-                  )}
+                    <textarea
+                      value={exampleBody(manualAssignmentExample)}
+                      onChange={(e) => {
+                        setManualAssignmentExampleTouched(true);
+                        setManualAssignmentExample(e.target.value);
+                      }}
+                      placeholder={language === "tr" ? "Programın üretmesi beklenen konsol çıktısı, dosya raporu veya API yanıt örneği..." : "Expected console output, file report, or API response example..."}
+                      rows={5}
+                      className="w-full resize-y rounded-md border border-primary/20 bg-background px-2.5 py-2 text-xs leading-relaxed text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring"
+                    />
+                  </div>
                   {/* Due date & time */}
                   <div className="flex gap-2">
                     <Popover>
