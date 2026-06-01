@@ -244,7 +244,7 @@ const Assignments = () => {
                         )}
                         {description.expectedOutput && (
                           <div className="mt-2 rounded-lg border border-primary/15 bg-primary/5 px-3 py-2">
-                            <p className="text-[11px] font-semibold text-primary">Beklenen çıktı</p>
+                            <p className="text-[11px] font-semibold text-primary">Örnek çıktı</p>
                             <pre className="mt-1 whitespace-pre-wrap break-words font-mono text-[11px] leading-relaxed text-foreground">{description.expectedOutput}</pre>
                           </div>
                         )}

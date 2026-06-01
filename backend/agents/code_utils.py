@@ -247,9 +247,76 @@ def _is_string_var(tree: ast.AST, var_name: str) -> bool:
     return False
 
 
+def _len_denominator_var(node: ast.AST) -> str | None:
+    if not isinstance(node, ast.BinOp) or not isinstance(node.op, ast.Div):
+        return None
+    right = node.right
+    if not isinstance(right, ast.Call):
+        return None
+    if not isinstance(right.func, ast.Name) or right.func.id != "len":
+        return None
+    if len(right.args) != 1 or not isinstance(right.args[0], ast.Name):
+        return None
+    return right.args[0].id
+
+
+def _is_empty_guard_for_var(test: ast.AST, var_name: str) -> bool:
+    if isinstance(test, ast.UnaryOp) and isinstance(test.op, ast.Not):
+        return isinstance(test.operand, ast.Name) and test.operand.id == var_name
+
+    if not isinstance(test, ast.Compare):
+        return False
+    left = test.left
+    if not (
+        isinstance(left, ast.Call)
+        and isinstance(left.func, ast.Name)
+        and left.func.id == "len"
+        and len(left.args) == 1
+        and isinstance(left.args[0], ast.Name)
+        and left.args[0].id == var_name
+    ):
+        return False
+    return any(
+        isinstance(op, (ast.Eq, ast.LtE))
+        and isinstance(comp, ast.Constant)
+        and comp.value == 0
+        for op, comp in zip(test.ops, test.comparators)
+    )
+
+
+def _function_has_prior_empty_guard(fn: ast.AST, var_name: str, before_line: int) -> bool:
+    for node in ast.walk(fn):
+        if not isinstance(node, ast.If):
+            continue
+        if getattr(node, "lineno", before_line + 1) >= before_line:
+            continue
+        if not _is_empty_guard_for_var(node.test, var_name):
+            continue
+        if any(isinstance(child, (ast.Return, ast.Raise)) for child in ast.walk(node)):
+            return True
+    return False
+
+
 def _detect_antipatterns(tree: ast.AST, source: str) -> list[dict]:
     """Anti-pattern'leri tespit eder."""
     antipatterns = []
+
+    for fn in [node for node in ast.walk(tree) if _is_function_like(node)]:
+        for node in ast.walk(fn):
+            var_name = _len_denominator_var(node)
+            if not var_name:
+                continue
+            if _function_has_prior_empty_guard(fn, var_name, getattr(node, "lineno", 0)):
+                continue
+            antipatterns.append({
+                "type": "division_by_len_without_empty_guard",
+                "line": node.lineno,
+                "description": (
+                    f"len({var_name}) ile bolme yapiliyor; {var_name} bos ise "
+                    "ZeroDivisionError olusabilir"
+                ),
+                "severity": "high",
+            })
 
     for node in ast.walk(tree):
         # range(len(x)) -- stil onerisi, yanlis degil

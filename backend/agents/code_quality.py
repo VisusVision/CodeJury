@@ -372,6 +372,7 @@ def _get_fix_suggestion(ap_type: str) -> str:
         "syntax_error": "Syntax hatasini duzeltin.",
         "eq_true_false": "'== True' yerine direkt kosul, '== False' yerine 'not' kullanin.",
         "string_concat_loop": "Liste olusturup ''.join(lst) kullanin.",
+        "division_by_len_without_empty_guard": "Bolmeden once koleksiyonun bos olmadigini kontrol edin veya bos sonuc icin anlamli bir varsayilan donun.",
     }
     return suggestions.get(ap_type, "Kodu refactor edin.")
 

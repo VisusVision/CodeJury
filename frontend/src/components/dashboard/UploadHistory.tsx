@@ -88,7 +88,7 @@ const UploadHistory = ({ records }: UploadHistoryProps) => {
       )}
 
       {/* Upload list */}
-      <div className="max-h-[220px] overflow-auto divide-y divide-border/50">
+      <div className="max-h-[170px] overflow-auto divide-y divide-border/50">
         {records.length === 0 ? (
           <div className="px-4 py-4 text-center">
             <Upload className="h-5 w-5 text-muted-foreground/40 mx-auto mb-2" />

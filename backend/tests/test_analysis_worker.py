@@ -2,6 +2,7 @@ import unittest
 from unittest.mock import patch
 
 from backend.queue.analysis_jobs import AnalysisJobStore, create_analysis_job, get_analysis_job
+from backend.agents.base import LLMInferenceError
 from backend.workers import analysis_worker
 from backend.tests.test_analysis_jobs import FakeRedis
 from backend.workers.analysis_worker import process_analysis_job
@@ -54,6 +55,20 @@ class AnalysisWorkerTests(unittest.IsolatedAsyncioTestCase):
         job = await get_analysis_job(self.store, "job-123")
         self.assertEqual(job["status"], "failed")
         self.assertEqual(job["error"], "Analiz tamamlanamadi. Lutfen tekrar deneyin.")
+
+    async def test_process_analysis_job_returns_actionable_message_when_llm_unavailable(self):
+        await create_analysis_job(self.store, {"file_name": "main.py", "file_content": "print('ok')"})
+
+        async def pipeline(**kwargs):
+            raise LLMInferenceError("[code_quality] Ollama is disabled (ollama_enabled=false); LLM is required.")
+
+        with patch.object(analysis_worker.logger, "exception"):
+            await process_analysis_job(self.store, "job-123", pipeline=pipeline)
+
+        job = await get_analysis_job(self.store, "job-123")
+        self.assertEqual(job["status"], "failed")
+        self.assertIn("Ollama", job["error"])
+        self.assertIn("AI", job["error"])
 
 
 if __name__ == "__main__":

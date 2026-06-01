@@ -25,6 +25,13 @@ describe("splitAssignmentDescription", () => {
     expect(result.expectedOutput).toBe("OK: 2 rows");
   });
 
+  test("supports example output headings", () => {
+    const result = splitAssignmentDescription("Rapor API'si yazin.\n\nOrnek Cikti:\nGET /rapor -> 200");
+
+    expect(result.body).toBe("Rapor API'si yazin.");
+    expect(result.expectedOutput).toBe("GET /rapor -> 200");
+  });
+
   test("supports Turkish expected output headings with dotted characters", () => {
     const result = splitAssignmentDescription("CLI olusturun.\n\nBeklenen çıktı:\nTamam: 2 satir");
 

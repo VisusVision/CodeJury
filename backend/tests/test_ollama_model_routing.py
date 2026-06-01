@@ -38,6 +38,27 @@ class OllamaModelRoutingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(meta["result_status"], "ok")
         self.assertNotIn("user_prompt", meta)
 
+    async def test_chat_json_uses_json_format_for_ollama_schema_hint(self):
+        schema_hint = {"ok": True}
+        with (
+            patch.object(settings, "llm_provider", "ollama"),
+            patch(
+                "backend.llm.ollama_client._do_request",
+                new=AsyncMock(return_value={"ok": True}),
+            ) as request,
+        ):
+            result = await chat_json(
+                system_prompt="Return JSON.",
+                user_prompt="{}",
+                schema_hint=schema_hint,
+                model="qwen2.5-coder:7b",
+                use_cache=False,
+            )
+
+        self.assertEqual(result, {"ok": True})
+        payload = request.await_args.args[0]
+        self.assertEqual(payload["format"], "json")
+
     async def test_base_agent_routes_llm_calls_to_coder_model_by_default(self):
         agent = _DummyAgent()
 

@@ -191,7 +191,7 @@ const RightPanel = ({
   }, [rubricPage, rubricTotalPages]);
 
   return (
-    <div className="flex flex-col h-full rounded-xl bg-card shadow-card overflow-hidden">
+    <div className="flex h-full min-w-0 flex-col rounded-xl bg-card shadow-card overflow-hidden">
       {/* Tab bar */}
       <div className="flex border-b border-border shrink-0">
         {tabs.map((tab) => {
@@ -230,7 +230,7 @@ const RightPanel = ({
       </div>
 
       {/* Tab content */}
-      <div className="flex-1 overflow-auto">
+      <div className="min-h-0 flex-1 overflow-auto">
         {/* Süreç Tab */}
         {activeTab === "process" && (
           <div className="p-3 space-y-2">
@@ -263,7 +263,7 @@ const RightPanel = ({
                     <AlertTriangle className="h-3 w-3" /> {warningCount} {t("rightPanel.warning")}
                   </span>
                 )}
-                <span className="text-muted-foreground ml-auto">{findings.length} {t("rightPanel.finding")}</span>
+                <span className="ml-auto shrink-0 text-muted-foreground">{findings.length} {t("rightPanel.finding")}</span>
               </div>
             )}
 
@@ -279,19 +279,19 @@ const RightPanel = ({
                   <button
                     key={i}
                     onClick={() => onFindingClick(f.line)}
-                    className={`w-full flex items-start gap-2 rounded-lg px-3 py-2.5 text-left transition-colors hover:ring-1 hover:ring-primary/30 ${severityBg[f.severity]}`}
+                    className={`w-full min-w-0 flex items-start gap-2 rounded-lg px-3 py-2.5 text-left transition-colors hover:ring-1 hover:ring-primary/30 ${severityBg[f.severity]}`}
                   >
                     <Icon className={`h-3.5 w-3.5 mt-0.5 shrink-0 ${severityColor[f.severity]}`} />
                     <div className="flex-1 min-w-0">
-                      <div className="flex items-center gap-1.5 mb-0.5">
+                      <div className="mb-0.5 flex min-w-0 items-center gap-1.5">
                         <span className={`text-[10px] font-semibold uppercase ${severityColor[f.severity]}`}>
                           {t(`rightPanel.${f.severity}`)}
                         </span>
                         {f.agent && (
-                          <span className="text-[10px] text-muted-foreground">• {f.agent}</span>
+                          <span className="min-w-0 truncate text-[10px] text-muted-foreground">• {f.agent}</span>
                         )}
                       </div>
-                      <p className="text-xs text-foreground leading-relaxed">{f.message}</p>
+                      <p className="break-words text-xs leading-relaxed text-foreground">{f.message}</p>
                     </div>
                     <span className="text-[10px] text-muted-foreground font-mono-code shrink-0 mt-0.5">
                       :{f.line}

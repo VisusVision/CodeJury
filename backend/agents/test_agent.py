@@ -156,6 +156,16 @@ class TestAgent(BaseAgent):
         if (
             programmatic["runs_successfully"]
             and programmatic.get("failed_tests", 0) == 0
+            and not programmatic.get("runtime_errors")
+            and af >= 0.7
+        ):
+            # LLM may pessimistically over-penalize smoke-only student submissions for
+            # missing advanced edge-case scaffolding. Factual successful execution and
+            # task alignment should keep the runtime score in a reasonable band.
+            llm_result["score"] = max(int(llm_result["score"]), min(int(prog_s), 80))
+        if (
+            programmatic["runs_successfully"]
+            and programmatic.get("failed_tests", 0) == 0
             and (
                 (
                     sandbox.get("timed_out", sandbox.get("timeout", False))

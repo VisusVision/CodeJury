@@ -222,6 +222,41 @@ class RubricSuggestionConstraintTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("kriteri", desc)
         self.assertNotIn("somut girdi", desc)
 
+    def test_rubric_polish_replaces_stale_library_csv_domain_leaks(self):
+        polished = _polish_rubric_criteria(
+            [
+                {
+                    "name": "Metot Kapsami",
+                    "description": (
+                        "Fonksiyonlar books.csv/loans.csv ayristirma, okuma, hesaplama, raporlama "
+                        "sorumluluklarina ayrilir. Baglam: belediye, sikayet, csv, sqlite."
+                    ),
+                    "max_score": 10,
+                }
+            ],
+            assignment_title="Belediye Sikayet Takip Sistemi",
+            assignment_description=(
+                "Belediye sikayetlerini CSV import, SQLite ve endpointlerle yoneten uygulama gelistirin."
+            ),
+        )
+
+        desc = polished[0]["description"].lower()
+        self.assertIn("csv", desc)
+        self.assertIn("belediye", desc)
+        self.assertNotIn("books.csv", desc)
+        self.assertNotIn("loans.csv", desc)
+
+    def test_project_specific_data_model_does_not_invent_library_domain(self):
+        desc = _project_specific_rubric_description(
+            "Veri Modeli",
+            "Belediye Sikayet Takip Sistemi",
+            "Belediye sikayetlerini CSV import, SQLite ve endpointlerle yoneten uygulama gelistirin.",
+        ).lower()
+
+        self.assertIn("belediye", desc)
+        self.assertIn("sikayet", desc)
+        self.assertNotIn("kitap", desc)
+
     async def test_log_cli_rubric_does_not_invent_oop_or_endpoint_scope(self):
         payload = {
             "criteria": [

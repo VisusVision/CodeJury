@@ -1,5 +1,6 @@
 import { describe, expect, test } from "vitest";
 import { buildAssignmentExample, descriptionWithExample, exampleBody } from "./assignmentExample";
+import { splitAssignmentDescription } from "@/lib/assignmentDescription";
 
 describe("buildAssignmentExample", () => {
   test("creates a log-specific example instead of a generic file note", () => {
@@ -24,6 +25,18 @@ describe("buildAssignmentExample", () => {
     expect(example).toContain("404");
   });
 
+  test("does not use generic items placeholders for API examples", () => {
+    const example = buildAssignmentExample(
+      "Randevu Takip API",
+      "Doktor, hasta ve randevu kayitlari icin REST endpointleri yazin. Uygun olmayan saatlerde acik hata donsun.",
+    );
+
+    expect(example).not.toContain("/items");
+    expect(example).not.toContain("Ornek Kayit");
+    expect(example).toContain("/randevular");
+    expect(example).toContain("hasta");
+  });
+
   test("creates an OOP example with concrete objects", () => {
     const example = buildAssignmentExample(
       "Kitap Kutuphanesi Sistemi",
@@ -46,13 +59,39 @@ describe("buildAssignmentExample", () => {
     expect(example).toContain("Beklenen rapor");
   });
 
-  test("does not append a duplicate example section", () => {
+  test("stores edited example output under a dedicated example output heading", () => {
+    const description = descriptionWithExample(
+      "Log dosyasini analiz eden CLI yazin.",
+      "INFO: 1\nERROR: 2",
+    );
+
+    expect(description).toBe("Log dosyasini analiz eden CLI yazin.\n\nOrnek Cikti:\nINFO: 1\nERROR: 2");
+  });
+
+  test("does not append a duplicate generic example section", () => {
     const description = "Kisa odev.\n\nOrnek: Var olan ornek.";
 
     expect(descriptionWithExample(description, "Ornek: Yeni ornek.")).toBe(description);
   });
 
-  test("strips example heading for display", () => {
+  test("does not duplicate an existing example output section", () => {
+    const description = descriptionWithExample(
+      "CSV raporu uretin.\n\nOrnek Cikti:\nToplam: 3",
+      "Toplam: 4",
+    );
+
+    expect(description).toBe("CSV raporu uretin.\n\nOrnek Cikti:\nToplam: 3");
+  });
+
+  test("student assignment split recognizes example output headings", () => {
+    const result = splitAssignmentDescription("API olusturun.\n\nOrnek Cikti:\nGET /items -> 200 []");
+
+    expect(result.body).toBe("API olusturun.");
+    expect(result.expectedOutput).toBe("GET /items -> 200 []");
+  });
+
+  test("strips example headings for display", () => {
     expect(exampleBody("Örnek: Beklenen cikti:\nSonuc: basarili")).toBe("Beklenen cikti:\nSonuc: basarili");
+    expect(exampleBody("Ornek Cikti:\nSonuc: basarili")).toBe("Sonuc: basarili");
   });
 });

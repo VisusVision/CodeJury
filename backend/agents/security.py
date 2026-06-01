@@ -330,6 +330,17 @@ class SecurityAgent(BaseAgent):
                 "shutil.rmtree",
             )
         )
+        has_specific_os_command_threat = any(
+            isinstance(raw, dict)
+            and (
+                str(raw.get("type", "")).lower() == "command_inject"
+                or "os.system" in str(raw.get("description", "")).lower()
+                or "os.system" in str(raw.get("detail", "")).lower()
+                or "os.popen" in str(raw.get("description", "")).lower()
+                or "os.popen" in str(raw.get("detail", "")).lower()
+            )
+            for raw in threats
+        )
 
         for raw in threats:
             if not isinstance(raw, dict):
@@ -339,6 +350,9 @@ class SecurityAgent(BaseAgent):
             detail = str(t.get("detail", "")).lower()
             t_type = str(t.get("type", "")).lower()
             sev = str(t.get("severity", "medium")).lower()
+
+            if has_specific_os_command_threat and t_type == "system_access" and "import os" in detail:
+                continue
 
             # Coursework API/server projects frequently and legitimately use HTTP modules.
             if api_context and t_type == "network_access":

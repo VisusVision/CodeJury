@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 import { Badge } from "@/components/ui/badge";
 import {
@@ -112,7 +112,7 @@ const StudentsPanel = ({ departments }: StudentsPanelProps) => {
   const [sortKey, setSortKey] = useState<SortKey>("student_no");
   const [sortDirection, setSortDirection] = useState<"asc" | "desc">("asc");
 
-  const loadStudents = async () => {
+  const loadStudents = useCallback(async () => {
     try {
       setRefreshing(true);
       const rows = await getStudents();
@@ -123,11 +123,11 @@ const StudentsPanel = ({ departments }: StudentsPanelProps) => {
       setLoading(false);
       setRefreshing(false);
     }
-  };
+  }, [t]);
 
   useEffect(() => {
     void loadStudents();
-  }, []);
+  }, [loadStudents]);
 
   useEffect(() => {
     if (!editingStudent) {

@@ -147,6 +147,7 @@ const AssignmentChatbot = ({ open, onClose, courses, teacherId, onCreated }: Pro
   const [description, setDescription] = useState("");
   const [assignmentExample, setAssignmentExample] = useState("");
   const [assignmentExampleLoading, setAssignmentExampleLoading] = useState(false);
+  const [assignmentExampleTouched, setAssignmentExampleTouched] = useState(false);
   const [editingDesc, setEditingDesc] = useState(false);
   const [date, setDate] = useState<Date | undefined>();
   const [time, setTime] = useState("23:59");
@@ -195,6 +196,7 @@ const AssignmentChatbot = ({ open, onClose, courses, teacherId, onCreated }: Pro
         setDescription("");
         setAssignmentExample("");
         setAssignmentExampleLoading(false);
+        setAssignmentExampleTouched(false);
         setEditingDesc(false);
         setDate(undefined);
         setTime("23:59");
@@ -209,7 +211,14 @@ const AssignmentChatbot = ({ open, onClose, courses, teacherId, onCreated }: Pro
 
   useEffect(() => {
     if (!open || !title.trim() || !description.trim()) {
-      setAssignmentExample("");
+      if (!assignmentExampleTouched) {
+        setAssignmentExample("");
+      }
+      setAssignmentExampleLoading(false);
+      return;
+    }
+
+    if (assignmentExampleTouched) {
       setAssignmentExampleLoading(false);
       return;
     }
@@ -244,7 +253,7 @@ const AssignmentChatbot = ({ open, onClose, courses, teacherId, onCreated }: Pro
       cancelled = true;
       window.clearTimeout(timer);
     };
-  }, [open, title, description]);
+  }, [open, title, description, assignmentExampleTouched]);
 
   const handleCourseSelect = (c: Course) => {
     setCourse(c);
@@ -336,6 +345,7 @@ const AssignmentChatbot = ({ open, onClose, courses, teacherId, onCreated }: Pro
 
   const handlePickSuggestion = (s: AssignmentSuggestion) => {
     setSelectedSuggestionId(s.id);
+    setAssignmentExampleTouched(false);
     setTitle(s.title);
     setDescription(s.description);
     addMsg({ from: "user", text: `${language === "tr" ? "Seçtim" : "Selected"}: ${s.title}` });
@@ -408,7 +418,7 @@ const AssignmentChatbot = ({ open, onClose, courses, teacherId, onCreated }: Pro
       const normalizedTitle = (title || "Yeni Ödev").replace(/\b\w+/g, (word) => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase());
       await createAssignment({
         name: normalizedTitle,
-        description: descriptionWithExample(description, assignmentExample || buildAssignmentExample(normalizedTitle, description)),
+        description: descriptionWithExample(description, exampleBody(assignmentExample).trim() || buildAssignmentExample(normalizedTitle, description)),
         course_id: course.id,
         due_date: d.toISOString(),
       });
@@ -568,7 +578,7 @@ const AssignmentChatbot = ({ open, onClose, courses, teacherId, onCreated }: Pro
                 )}
               </div>
               {editingDesc ? (
-                <div className="px-3 pt-2">
+                <div className="space-y-2 px-3 pt-2">
                   <textarea
                     value={description}
                     onChange={(e) => setDescription(e.target.value)}
@@ -576,6 +586,22 @@ const AssignmentChatbot = ({ open, onClose, courses, teacherId, onCreated }: Pro
                     placeholder={t("chatbot.assignmentDesc")}
                     className="w-full px-2 py-2 text-xs rounded border border-primary/40 bg-background text-foreground focus:outline-none focus:ring-2 focus:ring-ring resize-y"
                   />
+                  <div className="rounded-lg border border-primary/20 bg-primary/5 px-2.5 py-2">
+                    <div className="mb-1.5 flex items-center gap-2">
+                      <p className="text-[10px] font-semibold uppercase tracking-wider text-primary">Örnek Çıktı</p>
+                      {assignmentExampleLoading && <Loader2 className="h-3 w-3 animate-spin text-primary" />}
+                    </div>
+                    <textarea
+                      value={exampleBody(assignmentExample)}
+                      onChange={(e) => {
+                        setAssignmentExampleTouched(true);
+                        setAssignmentExample(e.target.value);
+                      }}
+                      rows={5}
+                      placeholder={language === "tr" ? "Programın üretmesi beklenen konsol çıktısı, dosya raporu veya API yanıt örneği..." : "Expected console output, file report, or API response example..."}
+                      className="w-full resize-y rounded-md border border-primary/20 bg-background px-2 py-2 text-xs leading-relaxed text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring"
+                    />
+                  </div>
                 </div>
               ) : (
                 <div className="px-3 py-2 space-y-2">

@@ -61,7 +61,7 @@ const CodeEditor = ({ fileName, content, annotations = [], highlightedLine }: Co
   }, [highlightedLine]);
 
   return (
-    <div className="flex flex-col h-full rounded-xl overflow-hidden shadow-card">
+    <div className="flex h-full min-w-0 flex-col rounded-xl overflow-hidden shadow-card">
       <div className="flex items-center gap-2 px-4 py-2.5 bg-card border-b border-border shrink-0">
         <FileCode className="h-4 w-4 text-primary" />
         <span className="text-sm font-medium text-foreground">{fileName}</span>
@@ -69,7 +69,7 @@ const CodeEditor = ({ fileName, content, annotations = [], highlightedLine }: Co
       </div>
       <div
         ref={containerRef}
-        className="terminal-bg flex-1 overflow-auto font-mono-code text-xs leading-relaxed"
+        className="terminal-bg min-h-0 flex-1 overflow-auto font-mono-code text-xs leading-relaxed"
       >
         {lines.map((line, i) => {
           const lineNum = i + 1;
@@ -90,10 +90,10 @@ const CodeEditor = ({ fileName, content, annotations = [], highlightedLine }: Co
                 <span className="select-none text-muted-foreground/30 w-10 text-right pr-4 shrink-0 tabular-nums">
                   {lineNum}
                 </span>
-                <span className="text-terminal-foreground whitespace-pre">{line || " "}</span>
+                <span className="min-w-max text-terminal-foreground whitespace-pre">{line || " "}</span>
               </div>
               {lineAnns?.map((a, j) => (
-                <div key={j} className="flex pl-14 pr-4 py-0.5 border-l-2 border-primary/20">
+                <div key={j} className="flex min-w-max pl-14 pr-4 py-0.5 border-l-2 border-primary/20">
                   <span className={`text-[11px] ${
                     a.severity === "error" ? "text-destructive" :
                     a.severity === "warning" ? "text-warning" :

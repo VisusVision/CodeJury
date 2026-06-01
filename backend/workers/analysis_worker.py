@@ -11,6 +11,7 @@ _PROJECT_ROOT = str(Path(__file__).resolve().parent.parent.parent)
 if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
+from backend.agents.base import LLMInferenceError
 from backend.core.config import settings
 from backend.queue.analysis_jobs import (
     AnalysisJobNotFound,
@@ -26,6 +27,10 @@ logger = logging.getLogger(__name__)
 
 PipelineCallable = Callable[..., Awaitable[dict[str, Any]]]
 SAFE_ANALYSIS_ERROR = "Analiz tamamlanamadi. Lutfen tekrar deneyin."
+LLM_UNAVAILABLE_ERROR = (
+    "AI analiz servisi kullanilamiyor. Ollama acik ve model kurulu oldugundan emin olun, "
+    "sonra analizi tekrar baslatin."
+)
 
 
 async def _default_pipeline(**kwargs: Any) -> dict[str, Any]:
@@ -51,6 +56,9 @@ async def process_analysis_job(
             report_language=str(request.get("report_language") or "tr"),
         )
         return await mark_analysis_job_completed(store, job_id, result)
+    except LLMInferenceError:
+        logger.exception("analysis job failed because LLM is unavailable: %s", job_id)
+        return await fail_analysis_job(store, job_id, LLM_UNAVAILABLE_ERROR)
     except Exception:
         logger.exception("analysis job failed: %s", job_id)
         return await fail_analysis_job(store, job_id, SAFE_ANALYSIS_ERROR)

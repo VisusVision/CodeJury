@@ -16,12 +16,53 @@ const fold = (raw: string) =>
 
 const hasAny = (blob: string, tokens: string[]) => tokens.some((token) => blob.includes(token));
 const hasStandalonePh = (blob: string) => /(^|[^a-z0-9])ph([^a-z0-9]|$)/.test(blob);
+const apiDomain = (blob: string) => {
+  if (hasAny(blob, ["randevu", "doktor", "hasta"])) {
+    return {
+      collection: "randevular",
+      entity: "randevu",
+      sample: "{\"id\": 1, \"hasta\": \"Ayse Yilmaz\", \"doktor\": \"Dr. Kaya\", \"saat\": \"10:30\"}",
+      missing: "Randevu bulunamadi",
+      invalid: "Secilen saat uygun degil",
+    };
+  }
+  if (hasAny(blob, ["sikayet", "mahalle", "oncelik"])) {
+    return {
+      collection: "sikayetler",
+      entity: "sikayet",
+      sample: "{\"id\": 1, \"mahalle\": \"Merkez\", \"kategori\": \"yol\", \"oncelik\": \"yuksek\"}",
+      missing: "Sikayet bulunamadi",
+      invalid: "Kategori zorunludur",
+    };
+  }
+  if (hasAny(blob, ["fatura", "kdv", "kalem"])) {
+    return {
+      collection: "faturalar",
+      entity: "fatura",
+      sample: "{\"id\": 1, \"ara_toplam\": 250.0, \"kdv\": 50.0, \"genel_toplam\": 300.0}",
+      missing: "Fatura bulunamadi",
+      invalid: "Tutar sifirdan buyuk olmalidir",
+    };
+  }
+  return {
+    collection: "kayitlar",
+    entity: "kayit",
+    sample: "{\"id\": 1, \"durum\": \"olusturuldu\"}",
+    missing: "Kayit bulunamadi",
+    invalid: "Zorunlu alan eksik",
+  };
+};
 
-const stripExampleHeading = (example: string) => example.replace(/^(Ornek|Örnek)\s*:\s*/i, "").trim();
+const EXAMPLE_OUTPUT_HEADING = /^\s*(?:Ornek|Örnek|Ã–rnek)\s+(?:Cikti|Çıktı|Ã‡Ä±ktÄ±)\s*:\s*/i;
+const GENERIC_EXAMPLE_HEADING = /^\s*(?:Ornek|Örnek|Ã–rnek)\s*:\s*/i;
 
 const exampleBlock = (body: string) => `Örnek: ${body.trim()}`;
 
-export const exampleBody = (example: string) => stripExampleHeading(example);
+export const exampleBody = (example: string) =>
+  example
+    .replace(EXAMPLE_OUTPUT_HEADING, "")
+    .replace(GENERIC_EXAMPLE_HEADING, "")
+    .trim();
 
 export const buildAssignmentExample = (assignmentTitle: string, assignmentDescription: string) => {
   const source = `${assignmentTitle} ${assignmentDescription}`;
@@ -62,16 +103,17 @@ export const buildAssignmentExample = (assignmentTitle: string, assignmentDescri
   }
 
   if (hasAny(blob, ["api", "endpoint", "rest", "fastapi", "flask", "django"])) {
+    const domain = apiDomain(blob);
     return exampleBlock(
       [
-        "Basarili API akisi:",
-        "POST /items -> 201 {\"id\": 1, \"name\": \"Ornek Kayit\", \"status\": \"active\"}",
-        "GET /items -> 200 [{\"id\": 1, \"name\": \"Ornek Kayit\", \"status\": \"active\"}]",
-        "GET /items/1 -> 200 {\"id\": 1, \"name\": \"Ornek Kayit\"}",
+        "Kucuk API deneme senaryosu:",
+        `POST /${domain.collection} -> 201 ${domain.sample}`,
+        `GET /${domain.collection} -> 200 [${domain.sample}]`,
+        `GET /${domain.collection}/1 -> 200 ${domain.sample}`,
         "",
-        "Beklenen hata akisi:",
-        "GET /items/999 -> 404 {\"detail\": \"Kayit bulunamadi\"}",
-        "POST /items name bos -> 400 {\"detail\": \"name zorunludur\"}",
+        "Hata durumu:",
+        `GET /${domain.collection}/999 -> 404 {"detail": "${domain.missing}"}`,
+        `POST /${domain.collection} gecersiz ${domain.entity} -> 400 {"detail": "${domain.invalid}"}`,
       ].join("\n"),
     );
   }
@@ -188,8 +230,16 @@ export const buildAssignmentExample = (assignmentTitle: string, assignmentDescri
 };
 
 export const descriptionWithExample = (assignmentDescription: string, example: string) => {
-  if (/(^|\n)\s*(Ornek|Örnek)\s*:/i.test(assignmentDescription)) {
-    return assignmentDescription;
+  const description = assignmentDescription.trim();
+  const cleanedExample = exampleBody(example);
+  if (
+    /(^|\n)\s*(Ornek|Örnek|Ã–rnek)\s+(Cikti|Çıktı|Ã‡Ä±ktÄ±)\s*:/i.test(description)
+    || /(^|\n)\s*(Ornek|Örnek|Ã–rnek)\s*:/i.test(description)
+  ) {
+    return description;
   }
-  return `${assignmentDescription.trim()}\n\n${example}`.trim();
+  if (!cleanedExample) {
+    return description;
+  }
+  return [description, `Ornek Cikti:\n${cleanedExample}`].filter(Boolean).join("\n\n").trim();
 };

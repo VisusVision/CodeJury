@@ -47,7 +47,9 @@ const RUBRIC_MIN_POINTS = 5;
 const RUBRIC_MAX_POINTS = 10;
 const RUBRIC_TOTAL_POINTS = 100;
 
-const getRubricValidationMessage = (criteria: RubricCriterion[], t: any = (key: string) => key) => {
+type Translate = (key: string) => string;
+
+const getRubricValidationMessage = (criteria: RubricCriterion[], t: Translate = (key) => key) => {
   if (criteria.length < RUBRIC_MIN_CRITERIA || criteria.length > RUBRIC_MAX_CRITERIA) {
     return t("faculty.rubricModal.validationMinMax");
   }
@@ -130,7 +132,7 @@ const RubricModal = ({ assignment, teacherId, open, onClose }: RubricModalProps)
     };
 
     loadData();
-  }, [assignment.id, open]);
+  }, [assignment.id, open, t]);
 
   const requestAiSuggestion = async () => {
     setAiLoading(true);
