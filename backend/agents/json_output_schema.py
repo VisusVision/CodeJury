@@ -341,7 +341,6 @@ EVIDENCE_OUTPUT_SCHEMA: dict[str, Any] = {
                 "type": "object",
                 "required": [
                     "lines",
-                    "code_snippet",
                     "feedback",
                     "agent_source",
                     "severity",
@@ -358,7 +357,6 @@ EVIDENCE_OUTPUT_SCHEMA: dict[str, Any] = {
                             {"type": "integer", "minimum": 1},
                             {"type": "integer", "minimum": 1},
                         ],
-                        "minItems": 2,
                         "maxItems": 2,
                     },
                     "block_id": {"type": ["string", "null"]},
