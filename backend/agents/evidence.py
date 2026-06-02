@@ -622,28 +622,25 @@ class EvidenceAgent(BaseAgent):
                 "llm_status": "skipped_no_claims",
             }
 
-        try:
-            llm_result = await self._call_llm(
-                system_prompt=_EVIDENCE_SYSTEM_PROMPT,
-                user_prompt=user_prompt,
-                required_keys=[
-                    "validated_claims",
-                    "rejected_claims",
-                    "total_claims_received",
-                    "total_claims_validated",
-                ],
-                output_json_schema=EVIDENCE_OUTPUT_SCHEMA,
-                temperature=_EVIDENCE_LLM_TEMPERATURE,
-                num_predict=_EVIDENCE_NUM_PREDICT,
-            )
-            llm_status = "ok"
-        except LLMInferenceError:
-            # Evidence is supportive metadata; a malformed LLM response should not fail
-            # the whole grading pipeline. Use deterministic pre-validation instead.
-            llm_result = {}
-            llm_status = "fallback_programmatic"
+        # Tam LLM tabanli: kanit eslestirme yalnizca LLM ciktisindan gelir. LLM cagrisi
+        # basarisizsa (sema/parse) `LLMInferenceError` yukari iletilir; diger ajanlarda
+        # oldugu gibi programatik ikame YOKTUR. Programatik on-harita yalnizca prompt ipucu
+        # (pre_validated) ve gelen iddia sayisi (total_in) icin kullanilir.
+        llm_result = await self._call_llm(
+            system_prompt=_EVIDENCE_SYSTEM_PROMPT,
+            user_prompt=user_prompt,
+            required_keys=[
+                "validated_claims",
+                "rejected_claims",
+                "total_claims_received",
+                "total_claims_validated",
+            ],
+            output_json_schema=EVIDENCE_OUTPUT_SCHEMA,
+            temperature=_EVIDENCE_LLM_TEMPERATURE,
+            num_predict=_EVIDENCE_NUM_PREDICT,
+        )
         if not isinstance(llm_result, dict):
-            llm_result = {}
+            raise LLMInferenceError("[evidence] LLM yaniti gecersiz (JSON nesnesi bekleniyordu).")
 
         llm_result["total_claims_received"] = total_in
         vclaims = _first_list(
@@ -656,32 +653,20 @@ class EvidenceAgent(BaseAgent):
             "evidence",
         )
         if not isinstance(vclaims, list):
-            vclaims = programmatic.get("validated_claims", [])
+            vclaims = []
         source_lines = source_code.splitlines()
-        llm_norm = _normalize_claims(vclaims, source_lines, ast_blocks=ast_blocks)
-        programmatic_norm = _normalize_claims(
-            programmatic.get("validated_claims", []),
-            source_lines,
-            ast_blocks=ast_blocks,
-        )
-        # LLM remains the primary mapper, but it sometimes drops valid structural claims.
-        # Merge deterministic pre-map afterward to keep evidence recall high.
-        max_items = total_in if total_in > 0 else None
-        norm = _merge_claim_lists(llm_norm, programmatic_norm, max_items=max_items)
+        # Kaynak satirlari yalnizca snippet/satir bicimlendirmesi icin kullanilir
+        # (sunum); kanit secimi tamamen LLM'e aittir.
+        norm = _normalize_claims(vclaims, source_lines, ast_blocks=ast_blocks)
+        if total_in > 0:
+            norm = norm[:total_in]
         llm_result["validated_claims"] = norm
         llm_result["total_claims_validated"] = len(norm)
         rejected = _first_list(llm_result, "rejected_claims", "rejectedClaims", "rejections")
         if not isinstance(rejected, list):
-            rejected = programmatic.get("rejected_claims", [])
-        else:
-            seen_rejected = {json.dumps(item, ensure_ascii=False, sort_keys=True) for item in rejected}
-            for item in programmatic.get("rejected_claims", []):
-                key = json.dumps(item, ensure_ascii=False, sort_keys=True)
-                if key not in seen_rejected:
-                    rejected.append(item)
-                    seen_rejected.add(key)
+            rejected = []
         llm_result["rejected_claims"] = _normalize_rejected_claims(rejected, source_lines)
-        llm_result["llm_status"] = llm_status
+        llm_result.setdefault("llm_status", "ok")
         llm_result["ast_block_count"] = len(ast_blocks)
         if ast_map.get("syntax_error"):
             llm_result["ast_syntax_error"] = ast_map.get("error", "")
