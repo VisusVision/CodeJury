@@ -117,7 +117,7 @@ const isDetailedAssignmentBrief = (raw: string) => {
   return words.length >= 22 && hits >= 2;
 };
 
-const titleFromLongBrief = (raw: string) => {
+const titleFromLongBrief = (raw: string, language: string = "tr") => {
   const firstLine = raw
     .split(/\r?\n/)
     .map((line) => line.trim())
@@ -231,6 +231,7 @@ const AssignmentChatbot = ({ open, onClose, courses, teacherId, onCreated }: Pro
       generateAssignmentExample({
         assignment_title: title,
         assignment_description: description,
+        course_hint: formatCourseHint(course, ""),
       })
         .then((result) => {
           if (!cancelled && result.example?.trim()) {

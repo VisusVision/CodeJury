@@ -296,8 +296,15 @@ class BaseAgent(ABC):
             if flag not in flags:
                 flags.append(flag)
         out["guardrail_flags"] = flags
-        if "confidence" not in out:
-            out["confidence"] = 0.0
+        # Confidence: yalnizca LLM gercekten 0-1 araliginda bir deger verdiyse koru.
+        # Aksi halde yaniltici sahte 0.0 yerine None birak (UI gizler, JSON dururst kalir).
+        conf = out.get("confidence")
+        valid_conf: float | None = None
+        if isinstance(conf, (int, float)) and not isinstance(conf, bool):
+            c = float(conf)
+            if 0.0 <= c <= 1.0:
+                valid_conf = c
+        out["confidence"] = valid_conf
         return out
 
     @staticmethod

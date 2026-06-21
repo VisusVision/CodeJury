@@ -292,5 +292,126 @@ class AssignmentSuggestionDiversityTests(unittest.TestCase):
         self.assertNotIn("CSV Not Analizi B", titles)
 
 
+class RelevanceWarningTests(unittest.TestCase):
+    def test_partial_fulfillment_does_not_emit_off_topic_warning(self):
+        from frontend.backend.main import (
+            _compute_relevance_warning,
+            _RELEVANCE_WARNING_OFF_TOPIC,
+            _RELEVANCE_WARNING_PARTIAL,
+        )
+
+        warning = _compute_relevance_warning(
+            ctx_len=200,
+            align_factor=0.55,
+            llm_off_topic=False,
+            reasons=["llm_task_not_fulfilled"],
+            total_score=0,
+        )
+
+        self.assertEqual(warning, _RELEVANCE_WARNING_PARTIAL)
+        self.assertNotEqual(warning, _RELEVANCE_WARNING_OFF_TOPIC)
+        self.assertNotIn("alakasiz", warning.split(".")[0])
+
+    def test_true_off_topic_emits_off_topic_warning(self):
+        from frontend.backend.main import (
+            _compute_relevance_warning,
+            _RELEVANCE_WARNING_OFF_TOPIC,
+        )
+
+        warning = _compute_relevance_warning(
+            ctx_len=200,
+            align_factor=0.05,
+            llm_off_topic=True,
+            reasons=["llm_task_relevance_off_topic"],
+            total_score=8,
+        )
+
+        self.assertEqual(warning, _RELEVANCE_WARNING_OFF_TOPIC)
+
+    def test_aligned_submission_has_no_warning(self):
+        from frontend.backend.main import _compute_relevance_warning
+
+        warning = _compute_relevance_warning(
+            ctx_len=200,
+            align_factor=0.85,
+            llm_off_topic=False,
+            reasons=[],
+            total_score=90,
+        )
+
+        self.assertIsNone(warning)
+
+    def test_short_brief_suppresses_warning(self):
+        from frontend.backend.main import _compute_relevance_warning
+
+        warning = _compute_relevance_warning(
+            ctx_len=5,
+            align_factor=0.05,
+            llm_off_topic=True,
+            reasons=["llm_task_relevance_off_topic"],
+            total_score=0,
+        )
+
+        self.assertIsNone(warning)
+
+
+class AssignmentLanguageDetectionTests(unittest.TestCase):
+    def test_detects_python_from_course_hint(self):
+        from frontend.backend.main import _detect_assignment_language
+
+        lang = _detect_assignment_language(
+            "Python programlama (PRO101), 3.sinif",
+            "CSV not analizi",
+            "Ogrenci notlarini okuyup gecme durumunu hesapla.",
+        )
+
+        self.assertEqual(lang, "Python")
+
+    def test_detects_java(self):
+        from frontend.backend.main import _detect_assignment_language
+
+        self.assertEqual(
+            _detect_assignment_language("Java ile Nesne Tabanli Programlama"),
+            "Java",
+        )
+
+    def test_unknown_language_returns_empty(self):
+        from frontend.backend.main import _detect_assignment_language
+
+        self.assertEqual(_detect_assignment_language("Genel algoritma odevi"), "")
+
+    async def _run_example_prompt_capture(self):
+        from frontend.backend.main import (
+            AssignmentExampleRequest,
+            assignment_assistant_example,
+        )
+
+        captured: dict[str, str] = {}
+
+        async def fake_chat_json(*, system_prompt, user_prompt, **kwargs):
+            captured["system"] = system_prompt
+            captured["user"] = user_prompt
+            return {"example": "Örnek: python main.py ogrenciler.csv"}
+
+        with patch("frontend.backend.main.chat_json", new=fake_chat_json):
+            await assignment_assistant_example(
+                AssignmentExampleRequest(
+                    assignment_title="CSV Not Analizi",
+                    assignment_description=(
+                        "CSV dosyasindan ogrenci adi ve not okuyup gecme/kalma durumunu hesaplayan "
+                        "ve sonucu yeni bir CSV rapor dosyasina yazan program."
+                    ),
+                    course_hint="Python programlama (PRO101), 3.sinif",
+                )
+            )
+        return captured
+
+    def test_example_prompt_includes_detected_language(self):
+        import asyncio
+
+        captured = asyncio.run(self._run_example_prompt_capture())
+        self.assertIn("Programming language: Python", captured["user"])
+
+
 if __name__ == "__main__":
     unittest.main()

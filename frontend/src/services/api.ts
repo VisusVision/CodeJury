@@ -805,6 +805,7 @@ export async function fetchAssignmentSuggestions(
 export async function generateAssignmentExample(payload: {
   assignment_title: string;
   assignment_description: string;
+  course_hint?: string;
 }): Promise<{ example: string; source?: string }> {
   const response = await fetch(`${API_BASE_URL}/api/faculty/assignment-assistant/example`, {
     method: "POST",

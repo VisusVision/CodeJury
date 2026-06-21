@@ -212,22 +212,33 @@ Yerel Ollama yerine NVIDIA NIM kullanmak icin `.env` dosyasinda:
 ```env
 LLM_PROVIDER=nvidia_nim
 NVIDIA_NIM_API_KEY=
-NVIDIA_NIM_GENERAL_MODEL=qwen/qwen2.5-coder-32b-instruct
-NVIDIA_NIM_CODER_MODEL=qwen/qwen2.5-coder-32b-instruct
+NVIDIA_NIM_GENERAL_MODEL=deepseek-ai/deepseek-v4-flash
+NVIDIA_NIM_CODER_MODEL=deepseek-ai/deepseek-v4-flash
+NVIDIA_NIM_MAX_CONCURRENT=2
+NVIDIA_NIM_RPM_LIMIT=40
+NVIDIA_NIM_TIMEOUT=180.0
+NVIDIA_NIM_NUM_PREDICT=8192
 ```
+
+> **Not:** `qwen/qwen2.5-coder-32b-instruct` NIM uzerinde EOL (410 Gone) durumundadir.
+> Guncel oneri: `deepseek-ai/deepseek-v4-flash`.
 
 Bu modda ajanlar, rubrik onerisi ve assignment chatbot ayni merkezi LLM
 istemcisi uzerinden NIM API'ye gider. Modu kapatmak icin
 `LLM_PROVIDER=ollama` yapmaniz yeterlidir.
 
 NIM chatbot/rubrik icin iyi ama tam kod degerlendirme pipeline'i yavas
-kalirsa hibrit mod kullanin:
+kalirsa veya 429 rate limit aliyorsaniz hibrit mod kullanin (onerilen demo ayari):
 
 ```env
 LLM_PROVIDER=nvidia_nim
 LLM_GENERAL_PROVIDER=nvidia_nim
 LLM_CODER_PROVIDER=ollama
+OLLAMA_CODER_MODEL=qwen2.5-coder:7b
 ```
+
+> **Not:** `qwen3.5:9b` coder modeli Ollama `format:json` ile bos yanit verebilir;
+> kod analizi icin `qwen2.5-coder:7b` kullanin.
 
 ### 4.6 Uygulamayı Başlatma
 

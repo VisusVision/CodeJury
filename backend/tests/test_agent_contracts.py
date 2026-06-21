@@ -728,6 +728,193 @@ class GuidelineContractTests(unittest.TestCase):
 
         rules = [v["rule"] for v in merged["style_violations"]]
         self.assertEqual(rules, ["PEP8"])
+
+    def test_filters_camelcase_recommendation_for_python_snake_case_function(self):
+        merged = GuidelineAgent._merge_llm_with_programmatic(
+            {
+                "naming_quality": "poor",
+                "documentation_quality": "poor",
+                "clean_code_score": 40,
+                "style_guide_compliance": "PEP8",
+                "style_violations": [
+                    {
+                        "rule": "Naming",
+                        "description": "Fonksiyon 'export_report' camelCase kullanmalidir.",
+                        "line_hint": "10",
+                        "severity": "warning",
+                    },
+                    {
+                        "rule": "PEP257",
+                        "description": "Fonksiyon 'export_report' icin docstring yaziniz.",
+                        "line_hint": "10",
+                        "severity": "warning",
+                    },
+                ],
+                "has_docstrings": False,
+                "has_type_hints": False,
+                "function_length_ok": True,
+                "nesting_depth_ok": True,
+                "dry_violations": [],
+                "score": 40,
+            },
+            {
+                "naming_quality": "good",
+                "documentation_quality": "poor",
+                "clean_code_score": 70,
+                "style_guide_compliance": "PEP8",
+                "style_violations": [],
+                "has_docstrings": False,
+                "has_type_hints": False,
+                "function_length_ok": True,
+                "nesting_depth_ok": True,
+                "dry_violations": [],
+                "score": 70,
+            },
+            language="python",
+        )
+
+        rules = [v["rule"] for v in merged["style_violations"]]
+        self.assertEqual(rules, ["PEP257"])
+
+    def test_filters_false_uppercase_claim_for_snake_case_function(self):
+        merged = GuidelineAgent._merge_llm_with_programmatic(
+            {
+                "naming_quality": "poor",
+                "documentation_quality": "poor",
+                "clean_code_score": 30,
+                "style_guide_compliance": "PEP8",
+                "style_violations": [
+                    {
+                        "rule": "Naming",
+                        "description": (
+                            "Fonksiyon 'count_words' büyük harfle başlıyor. Bunun yerine "
+                            "'count_words' gibi küçük harfle başlayan isimler kullanilmalidir."
+                        ),
+                        "line_hint": "10",
+                        "severity": "warning",
+                    },
+                    {
+                        "rule": "PEP257",
+                        "description": "Fonksiyon 'count_words' icin docstring yok.",
+                        "line_hint": "10",
+                        "severity": "error",
+                    },
+                ],
+                "has_docstrings": False,
+                "has_type_hints": False,
+                "function_length_ok": True,
+                "nesting_depth_ok": True,
+                "dry_violations": [],
+                "score": 30,
+            },
+            {
+                "naming_quality": "good",
+                "documentation_quality": "poor",
+                "clean_code_score": 60,
+                "style_guide_compliance": "PEP8",
+                "style_violations": [],
+                "has_docstrings": False,
+                "has_type_hints": False,
+                "function_length_ok": True,
+                "nesting_depth_ok": True,
+                "dry_violations": [],
+                "score": 60,
+            },
+            language="python",
+        )
+
+        rules = [v["rule"] for v in merged["style_violations"]]
+        self.assertEqual(rules, ["PEP257"])
+
+    def test_filters_source_file_name_casing_warning(self):
+        merged = GuidelineAgent._merge_llm_with_programmatic(
+            {
+                "naming_quality": "fair",
+                "documentation_quality": "fair",
+                "clean_code_score": 50,
+                "style_guide_compliance": "PEP8",
+                "style_violations": [
+                    {
+                        "rule": "Naming",
+                        "description": "Dosya 'main.py' PascalCase olarak yazilmistir. Bu PEP 8 onerisine aykiridir.",
+                        "line_hint": "1",
+                        "severity": "warning",
+                    },
+                    {
+                        "rule": "PEP257",
+                        "description": "Fonksiyon 'export_report' icin docstring yaziniz.",
+                        "line_hint": "10",
+                        "severity": "warning",
+                    },
+                ],
+                "has_docstrings": False,
+                "has_type_hints": False,
+                "function_length_ok": True,
+                "nesting_depth_ok": True,
+                "dry_violations": [],
+                "score": 50,
+            },
+            {
+                "naming_quality": "good",
+                "documentation_quality": "poor",
+                "clean_code_score": 70,
+                "style_guide_compliance": "PEP8",
+                "style_violations": [],
+                "has_docstrings": False,
+                "has_type_hints": False,
+                "function_length_ok": True,
+                "nesting_depth_ok": True,
+                "dry_violations": [],
+                "score": 70,
+            },
+            language="python",
+        )
+
+        rules = [v["rule"] for v in merged["style_violations"]]
+        self.assertEqual(rules, ["PEP257"])
+
+    def test_keeps_camelcase_recommendation_for_javascript(self):
+        merged = GuidelineAgent._merge_llm_with_programmatic(
+            {
+                "naming_quality": "poor",
+                "documentation_quality": "fair",
+                "clean_code_score": 60,
+                "style_guide_compliance": "Airbnb",
+                "style_violations": [
+                    {
+                        "rule": "Naming",
+                        "description": "Function 'export_report' should use camelCase.",
+                        "line_hint": "10",
+                        "severity": "warning",
+                    }
+                ],
+                "has_docstrings": False,
+                "has_type_hints": False,
+                "function_length_ok": True,
+                "nesting_depth_ok": True,
+                "dry_violations": [],
+                "score": 60,
+            },
+            {
+                "naming_quality": "fair",
+                "documentation_quality": "fair",
+                "clean_code_score": 65,
+                "style_guide_compliance": "Airbnb",
+                "style_violations": [],
+                "has_docstrings": False,
+                "has_type_hints": False,
+                "function_length_ok": True,
+                "nesting_depth_ok": True,
+                "dry_violations": [],
+                "score": 65,
+            },
+            language="javascript",
+        )
+
+        rules = [v["rule"] for v in merged["style_violations"]]
+        self.assertEqual(rules, ["Naming"])
+
+    def test_capability_match_keeps_unsafe_file_export_relevant(self):
         brief = "Ogrenci skorlarini CSV rapor dosyasina yazan CLI export araci gelistirin."
         code = """
 import os

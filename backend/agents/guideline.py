@@ -102,7 +102,7 @@ Reply with ONLY this JSON shape:
 
 _ALLOWED_Q = frozenset({"poor", "fair", "good", "excellent"})
 _FILE_EXT_PATTERN = re.compile(
-    r"""['"][^'"]+\.(csv|txt|json|log|xml|yaml|yml)['"]""",
+    r"""['"][^'"]+\.(csv|txt|json|log|xml|yaml|yml|py|js|ts|java|cpp|c|cs|go|rs|rb|php)['"]""",
     re.IGNORECASE,
 )
 _QUOTED_IDENTIFIER = re.compile(r"""['"`]([A-Za-z_]\w*)['"`]""")
@@ -167,7 +167,7 @@ class GuidelineAgent(BaseAgent):
         if not isinstance(llm_result, dict):
             llm_result = {}
 
-        merged = self._merge_llm_with_programmatic(llm_result, programmatic)
+        merged = self._merge_llm_with_programmatic(llm_result, programmatic, language=language)
 
         merged["score"] = self._safe_int(merged.get("score"), programmatic["score"])
         if "clean_code_score" in merged:
@@ -189,7 +189,9 @@ class GuidelineAgent(BaseAgent):
         return fallback if fallback in _ALLOWED_Q else "fair"
 
     @classmethod
-    def _merge_llm_with_programmatic(cls, llm: dict[str, Any], prog: dict[str, Any]) -> dict[str, Any]:
+    def _merge_llm_with_programmatic(
+        cls, llm: dict[str, Any], prog: dict[str, Any], language: str = "python"
+    ) -> dict[str, Any]:
         """LLM alanlari eksik / yanlis formatta olabilir; programatik ipucu ile tamamla."""
         out: dict[str, Any] = {**llm}
         out["naming_quality"] = cls._coerce_quality(out.get("naming_quality"), prog["naming_quality"])
@@ -224,13 +226,16 @@ class GuidelineAgent(BaseAgent):
                 out[key] = bool(prog.get(key, False))
         if not isinstance(out.get("dry_violations"), list):
             out["dry_violations"] = list(prog.get("dry_violations") or [])
-        out["style_violations"] = cls._filter_style_violations(out.get("style_violations"))
+        out["style_violations"] = cls._filter_style_violations(
+            out.get("style_violations"), language=language
+        )
         return out
 
     @staticmethod
-    def _filter_style_violations(raw: Any) -> list[dict[str, Any]]:
+    def _filter_style_violations(raw: Any, language: str = "python") -> list[dict[str, Any]]:
         if not isinstance(raw, list):
             return []
+        is_python = (language or "python").lower() in ("python", "py")
         filtered: list[dict[str, Any]] = []
         for item in raw:
             if not isinstance(item, dict):
@@ -240,6 +245,20 @@ class GuidelineAgent(BaseAgent):
             # LLMs occasionally praise snake_case while emitting it as a warning.
             if "snake_case kullan" in desc_l and "yerine" in desc_l:
                 continue
+            # Python: zaten snake_case olan bir tanimlayici icin yanlis buyuk/kucuk harf
+            # iddiasi yanlis pozitiftir (PEP8 fonksiyon/degisken icin snake_case ister).
+            # Ornekler: "camelCase kullanmali", "PascalCase olmali",
+            # "buyuk harfle basliyor" (snake_case isim icin yanlis oncul).
+            casing_false_premise = (
+                "camelcase" in desc_l
+                or "pascalcase" in desc_l
+                or "büyük harfle başl" in desc_l
+                or "buyuk harfle basl" in desc_l
+            )
+            if is_python and casing_false_premise:
+                quoted = _QUOTED_IDENTIFIER.findall(desc)
+                if quoted and all(_looks_like_snake_case(name) for name in quoted):
+                    continue
             if _FILE_EXT_PATTERN.search(desc) and any(
                 token in desc_l
                 for token in ("pascalcase", "camelcase", "snake_case", "naming", "isimlendirme")
