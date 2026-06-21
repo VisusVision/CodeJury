@@ -141,6 +141,9 @@ Rules:
   task**. Treat the submission as irrelevant / wrong-topic when the code clearly implements a different
   domain; say so in summary and in justifications for scope or correctness rows (do not praise unrelated work).
 - When llm_task_relevance_skipped is false and llm_task_relevance_factor is low, echo topic mismatch in summary.
+- If core_weighted_suggestion >= 65 and the code runs successfully, do **not** award 0 on every non-security row;
+  partial credit is required when the submission clearly implements the assignment domain.
+- Zero points on a row require explicit evidence that this criterion is unmet — not merely cautious LLM variance.
 
 Reply with ONLY this JSON shape:
 {
@@ -236,6 +239,7 @@ class MasterEvaluatorAgent(BaseAgent):
                 input_data.get("security", {}),
             )
             self._apply_brief_alignment_guard(llm_result, programmatic, faculty_mode=True)
+            self._apply_faculty_consensus_rescue(llm_result, programmatic, input_data)
             self._apply_runtime_guard(
                 llm_result,
                 input_data.get("sandbox_result", {}),
@@ -462,6 +466,68 @@ class MasterEvaluatorAgent(BaseAgent):
         label = str(row.get("label", row.get("criterion", ""))).lower()
         return any(token in label for token in ("security", "güven", "guven"))
 
+    @staticmethod
+    def _sandbox_runs_ok(sandbox_result: dict[str, Any] | None) -> bool:
+        if not isinstance(sandbox_result, dict) or not sandbox_result:
+            return False
+        if not sandbox_result.get("compilation_success", True):
+            return False
+        if sandbox_result.get("timed_out") or sandbox_result.get("timeout"):
+            return False
+        try:
+            return int(sandbox_result.get("exit_code", 0) or 0) == 0
+        except (TypeError, ValueError):
+            return False
+
+    @classmethod
+    def _effective_alignment_for_grading(cls, programmatic: dict[str, Any]) -> float:
+        """Avoid crushing relevant submissions when LLM task relevance false-positives."""
+        try:
+            merged = float(programmatic.get("brief_alignment_factor", 1.0) or 1.0)
+            prog = float(programmatic.get("programmatic_alignment_factor", merged) or merged)
+            core = float(programmatic.get("final_score", 0) or 0)
+            capability = float(programmatic.get("capability_match", 0) or 0)
+        except (TypeError, ValueError):
+            return float(programmatic.get("brief_alignment_factor", 1.0) or 1.0)
+
+        reasons = programmatic.get("brief_alignment_reasons", [])
+        if not isinstance(reasons, list):
+            reasons = []
+        hard_mismatch = (
+            "deterministic_capability_mismatch" in reasons
+            and prog < 0.30
+            and capability < 0.30
+        )
+        if hard_mismatch:
+            return min(merged, prog)
+
+        runs_ok = bool(programmatic.get("sandbox_runs_ok"))
+        if runs_ok and prog >= 0.95 and core >= 60:
+            return max(merged, 0.88 if capability >= 0.55 else 0.82)
+        if runs_ok and prog >= 0.85 and core >= 65 and capability >= 0.55:
+            return max(merged, 0.78)
+        if runs_ok and capability >= 0.72 and core >= 65:
+            return max(merged, 0.75)
+        return merged
+
+    @classmethod
+    def _recompute_faculty_final_score(cls, llm_result: dict[str, Any]) -> None:
+        raw_bd = llm_result.get("rubric_breakdown")
+        if not isinstance(raw_bd, list):
+            return
+        total_max = 0
+        total_earned = 0
+        for row in raw_bd:
+            if not isinstance(row, dict):
+                continue
+            try:
+                total_max += int(round(float(row.get("weight", 0) or 0)))
+                total_earned += int(round(float(row.get("score", 0) or 0)))
+            except (TypeError, ValueError):
+                continue
+        if total_max > 0:
+            llm_result["final_score"] = round(100.0 * total_earned / total_max, 1)
+
     @classmethod
     def _apply_brief_alignment_guard(
         cls,
@@ -471,10 +537,7 @@ class MasterEvaluatorAgent(BaseAgent):
         faculty_mode: bool,
     ) -> None:
         """Rubric/brief mismatch is a grading invariant, not just a prompt suggestion."""
-        try:
-            align_f = float(programmatic.get("brief_alignment_factor", 1.0))
-        except (TypeError, ValueError):
-            align_f = 1.0
+        align_f = cls._effective_alignment_for_grading(programmatic)
         if align_f >= 0.70:
             return
 
@@ -563,8 +626,9 @@ class MasterEvaluatorAgent(BaseAgent):
             weaknesses.insert(0, reason_text)
         llm_result["weaknesses"] = weaknesses
 
-    @staticmethod
+    @classmethod
     def _apply_faculty_reasonableness_floor(
+        cls,
         llm_result: dict[str, Any],
         programmatic: dict[str, Any],
     ) -> None:
@@ -580,7 +644,7 @@ class MasterEvaluatorAgent(BaseAgent):
         try:
             current = float(llm_result.get("final_score", 0) or 0)
             core = float(programmatic.get("final_score", 0) or 0)
-            align_f = float(programmatic.get("brief_alignment_factor", 1.0) or 1.0)
+            align_f = cls._effective_alignment_for_grading(programmatic)
         except (TypeError, ValueError):
             return
 
@@ -591,7 +655,23 @@ class MasterEvaluatorAgent(BaseAgent):
             reason in {"llm_task_relevance_off_topic", "llm_low_task_fit"}
             for reason in reasons
         )
-        if align_f < 0.70 or has_topic_warning or core < 60 or current >= core - 18:
+        runs_ok = bool(programmatic.get("sandbox_runs_ok"))
+        prog_align = float(programmatic.get("programmatic_alignment_factor", align_f) or align_f)
+        capability = float(programmatic.get("capability_match", 0) or 0)
+
+        # Rescue path: LLM marked off-topic but deterministic signals say relevant.
+        force_rescue = (
+            runs_ok
+            and core >= 65
+            and current < 35
+            and (
+                (prog_align >= 0.95 and capability >= 0.55)
+                or (align_f >= 0.75 and capability >= 0.72)
+            )
+        )
+        if not force_rescue and (
+            align_f < 0.70 or has_topic_warning or core < 60 or current >= core - 18
+        ):
             return
 
         target = max(current, min(core, core - 12))
@@ -675,6 +755,114 @@ class MasterEvaluatorAgent(BaseAgent):
         )
         if msg not in recs:
             recs.append(msg)
+        llm_result["recommendations"] = recs
+
+    @classmethod
+    def _apply_faculty_consensus_rescue(
+        cls,
+        llm_result: dict[str, Any],
+        programmatic: dict[str, Any],
+        input_data: dict[str, Any],
+    ) -> None:
+        """Recover from faculty rubric collapse (e.g. only security row scored)."""
+        raw_bd = llm_result.get("rubric_breakdown")
+        if not isinstance(raw_bd, list) or not raw_bd:
+            return
+        try:
+            current = float(llm_result.get("final_score", 0) or 0)
+            core = float(programmatic.get("final_score", 0) or 0)
+        except (TypeError, ValueError):
+            return
+
+        sandbox = input_data.get("sandbox_result")
+        runs_ok = cls._sandbox_runs_ok(sandbox if isinstance(sandbox, dict) else None)
+        if not runs_ok or core < 55:
+            return
+
+        align_f = cls._effective_alignment_for_grading(programmatic)
+        prog_align = float(programmatic.get("programmatic_alignment_factor", align_f) or align_f)
+        capability = float(programmatic.get("capability_match", 0) or 0)
+        if align_f < 0.55 and prog_align < 0.55 and capability < 0.55:
+            return
+
+        total_max = 0
+        total_earned = 0
+        non_security_earned = 0
+        adjustable: list[dict[str, Any]] = []
+        for row in raw_bd:
+            if not isinstance(row, dict):
+                continue
+            try:
+                weight = int(round(float(row.get("weight", 0) or 0)))
+                score = int(round(float(row.get("score", 0) or 0)))
+            except (TypeError, ValueError):
+                continue
+            if weight <= 0:
+                continue
+            score = max(0, min(weight, score))
+            row["score"] = score
+            row["weighted_score"] = float(score)
+            total_max += weight
+            total_earned += score
+            if cls._is_security_row(row):
+                continue
+            non_security_earned += score
+            if score < weight:
+                adjustable.append(row)
+
+        if total_max <= 0:
+            return
+
+        collapsed = current < 35 and non_security_earned <= max(1, int(round(total_max * 0.12)))
+        if not collapsed:
+            return
+
+        target_pct = max(current, min(core - 8, 85.0))
+        if prog_align >= 0.95 and capability >= 0.55:
+            target_pct = max(target_pct, min(core - 6, 88.0))
+        target_earned = int(round(total_max * target_pct / 100.0))
+        missing = max(0, target_earned - total_earned)
+        if missing <= 0:
+            return
+
+        note = (
+            "Agent konsensusu duzeltmesi: kod calisiyor ve gorev sinyalleri guclu oldugu halde "
+            "rubrik satirlari asiri dusuk kalmisti; alt ajan ozetine gore taban uygulandi."
+        )
+        while missing > 0 and adjustable:
+            progressed = False
+            for row in adjustable:
+                if missing <= 0:
+                    break
+                try:
+                    weight = int(round(float(row.get("weight", 0) or 0)))
+                    score = int(round(float(row.get("score", 0) or 0)))
+                except (TypeError, ValueError):
+                    continue
+                if score >= weight:
+                    continue
+                row["score"] = score + 1
+                row["weighted_score"] = float(row["score"])
+                just = str(row.get("justification", "")).strip()
+                if note not in just:
+                    row["justification"] = f"{just} {note}".strip() if just else note
+                missing -= 1
+                progressed = True
+            adjustable = [
+                row
+                for row in adjustable
+                if int(round(float(row.get("score", 0) or 0)))
+                < int(round(float(row.get("weight", 0) or 0)))
+            ]
+            if not progressed:
+                break
+
+        cls._recompute_faculty_final_score(llm_result)
+        recs = llm_result.get("recommendations")
+        if not isinstance(recs, list):
+            recs = []
+        if note not in recs:
+            recs.append(note)
         llm_result["recommendations"] = recs
 
     @classmethod
@@ -1092,15 +1280,26 @@ class MasterEvaluatorAgent(BaseAgent):
         brief_txt = str(input_data.get("assignment_description") or "").strip()
         source_txt = str(input_data.get("source_code") or "")
         task_meta = input_data.get("task_alignment")
+        capability_match = 0.0
+        prog_align_f = 1.0
         if isinstance(task_meta, dict) and "factor" in task_meta:
             align_f = float(task_meta["factor"])
             align_rs = list(task_meta.get("reasons", []))
+            try:
+                prog_align_f = float(task_meta.get("programmatic_factor", align_f))
+            except (TypeError, ValueError):
+                prog_align_f = align_f
+            try:
+                capability_match = float(task_meta.get("capability_match", 0) or 0)
+            except (TypeError, ValueError):
+                capability_match = 0.0
         else:
             align_f, align_rs = compute_brief_code_alignment(
                 brief_txt,
                 source_txt,
                 rubric_criteria=faculty_rubric,
             )
+            prog_align_f = align_f
         if not rubric or not isinstance(rubric, dict):
             rubric = dict(_DEFAULT_WEIGHTS)
         else:
@@ -1262,6 +1461,11 @@ class MasterEvaluatorAgent(BaseAgent):
             "weaknesses": weaknesses,
             "recommendations": recommendations,
             "brief_alignment_factor": align_f,
+            "programmatic_alignment_factor": prog_align_f,
+            "capability_match": capability_match,
+            "sandbox_runs_ok": self._sandbox_runs_ok(
+                sandbox_result if isinstance(sandbox_result, dict) else None
+            ),
             "brief_alignment_reasons": list(align_rs),
             "llm_relevance_explanation": expl_out,
         }

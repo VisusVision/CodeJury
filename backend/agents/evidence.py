@@ -54,6 +54,8 @@ Rules:
 - Reject claims that are false, unrelated, unsupported by this file, or reference
   APIs/behavior that do not exist in this code.
 - One validated_claim per distinct finding; do not summarize away valid items.
+- severity: use "info" or "low" for neutral/positive validations (code is correct, requirement met).
+  Reserve "medium"/"high"/"critical" only for genuine problems (bugs, missing requirements, risks).
 - total_claims_received MUST equal TOTAL_CLAIMS in the user message.
 - total_claims_validated MUST equal len(validated_claims).
 - Required top-level keys: validated_claims, rejected_claims,
@@ -126,6 +128,32 @@ def _normalize_severity(value) -> str:
     }
     sev = mapping.get(sev, sev)
     return sev if sev in ("low", "medium", "high", "critical", "info") else "medium"
+
+
+def _adjust_severity_from_feedback(feedback: str, severity: str) -> str:
+    """Downgrade severity when feedback text describes correct/successful behavior."""
+    text = (feedback or "").strip()
+    if not text:
+        return severity
+    lower = text.lower()
+    negative = (
+        "eksik", "yok", "hata", "yanlis", "yanlış", "sorun", "magic number",
+        "docstring yok", "tehdit", "anti-pattern", "sql injection", "eval(",
+    )
+    if any(term in lower for term in negative):
+        return severity
+    positive = (
+        "doğru bir şekilde", "dogru bir sekilde", "doğru şekilde", "dogru sekilde",
+        "uyumlu", "basariyla", "başarıyla", "correctly", "successfully",
+        "tanımlanmış", "tanimlanmis", "reddiyor", "baslatiyor", "başlatıyor",
+        "donduruyor", "döndürüyor",
+    )
+    if any(term in lower for term in positive):
+        if severity in ("high", "critical"):
+            return "info"
+        if severity == "medium":
+            return "low"
+    return severity
 
 
 def _clean_evidence_text(value) -> str:
@@ -369,7 +397,10 @@ def _normalize_claims(
         agent_source = str(
             claim.get("agent_source", claim.get("agent", claim.get("source", "unknown")))
         )
-        severity = _normalize_severity(claim.get("severity", "medium"))
+        severity = _adjust_severity_from_feedback(
+            feedback,
+            _normalize_severity(claim.get("severity", "medium")),
+        )
 
         # ---- Block-level evidence ----
         line_range: Optional[list[int]] = None

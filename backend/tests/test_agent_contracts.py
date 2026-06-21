@@ -350,6 +350,44 @@ class AgentDiagnosticsContractTests(unittest.TestCase):
         self.assertEqual(messages, ["Somut bulgu"])
         self.assertIn("reddedilen: 1", evidence["summary"])
 
+    def test_line_evidence_positive_validation_not_marked_as_error(self):
+        code = (
+            "class BankAccount:\n"
+            "    def deposit(self, amount: float) -> None:\n"
+            "        self._balance += amount\n"
+        )
+        evidence = _build_line_evidence(
+            {"issues": []},
+            {"style_violations": []},
+            {"threats": []},
+            {
+                "validated_claims": [
+                    {
+                        "feedback": "deposit fonksiyonu doğru bir şekilde negatif/sıfır tutarları reddiyor.",
+                        "severity": "high",
+                        "lines": [2],
+                        "agent_source": "code_quality",
+                        "line_range": [2, 3],
+                        "node_type": "function",
+                        "symbol": "deposit",
+                    },
+                    {
+                        "feedback": "BankAccount sınıfı doğru bir şekilde tanımlanmış ve belirttiği işlevsellikle uyumlu.",
+                        "severity": "critical",
+                        "lines": [1],
+                        "agent_source": "code_quality",
+                        "line_range": [1, 3],
+                        "node_type": "class",
+                        "symbol": "BankAccount",
+                    },
+                ]
+            },
+            code,
+        )
+
+        self.assertEqual(len(evidence), 2)
+        self.assertTrue(all(item["severity"] in {"success", "info"} for item in evidence))
+
     def test_line_evidence_ignores_out_of_range_and_duplicate_findings(self):
         evidence = _build_line_evidence(
             {"issues": []},

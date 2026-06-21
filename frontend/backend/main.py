@@ -2631,11 +2631,47 @@ _SEVERITY_MAP = {
     "low": "info",
     "suggestion": "info",
     "info": "info",
+    "success": "success",
 }
+
+_POSITIVE_FEEDBACK_RE = re.compile(
+    r"(?i)(doğru bir şekilde|dogru bir sekilde|doğru şekilde|dogru sekilde|"
+    r"basarili|başarılı|basariyla|başarıyla|uyumlu|gecerli|geçerli|"
+    r"dogru calis|doğru çalış|correctly|successfully|properly defined|"
+    r"works as expected|uygun sekilde|uygun şekilde|"
+    r"reddediyor|reject(?:s|ing)? (?:zero|negative|invalid)|"
+    r"baslatiyor|başlatıyor|donduruyor|döndürüyor|tanımlanmış|tanimlanmis)"
+)
+
+_NEGATIVE_FEEDBACK_RE = re.compile(
+    r"(?i)(eksik|yok\b|hata|yanlis|yanlış|sorun|problem|"
+    r"magic number|docstring yok|uygun degil|uygun değil|"
+    r"tehdit|risk:|guvenlik acigi|güvenlik açığı|"
+    r"missing|incorrect|failed|failure|should not|must not|"
+    r"onerilir|önerilir|iyilestir|iyileştir|kacin|kaçın|"
+    r"anti-pattern|bare 'except|zerodivision|sql injection|eval\(|exec\()"
+)
 
 
 def _map_severity(sev: str) -> str:
     return _SEVERITY_MAP.get(str(sev or "").strip().lower(), "info")
+
+
+def _map_severity_for_message(sev: str, message: str = "") -> str:
+    """Map backend severity to UI severity; infer success/info from feedback text."""
+    mapped = _map_severity(sev)
+    msg = re.sub(r"\s+", " ", (message or "").strip())
+    if not msg:
+        return mapped
+    if _NEGATIVE_FEEDBACK_RE.search(msg):
+        return mapped if mapped in {"error", "warning"} else "warning"
+    if _POSITIVE_FEEDBACK_RE.search(msg):
+        if mapped == "error":
+            return "success"
+        if mapped == "warning":
+            return "info"
+        return "success"
+    return mapped
 
 
 def _line_from_text(raw: Any) -> int | None:
@@ -2671,13 +2707,13 @@ def _normalize_agent_findings(findings: Any) -> list[dict[str, Any]]:
             continue
         seen.add(key)
         normalized.append({
-            "severity": _map_severity(str(item.get("severity", "info"))),
+            "severity": _map_severity_for_message(str(item.get("severity", "info")), message),
             "message": message,
             "line": line,
             "agent": agent,
             "code": item.get("code"),
         })
-    severity_rank = {"error": 0, "warning": 1, "info": 2}
+    severity_rank = {"error": 0, "warning": 1, "info": 2, "success": 3}
     normalized.sort(key=lambda row: (severity_rank.get(row["severity"], 2), row["line"] or 10**9, row["message"]))
     return normalized
 
@@ -3410,6 +3446,11 @@ async def run_analysis_pipeline(
         report_language=report_language,
     )
     task_alignment = merge_task_alignment(prog_f, prog_rs, llm_rel)
+    task_alignment["capability_match"] = max(
+        float(task_alignment.get("capability_match", 0) or 0),
+        float(capability_f),
+        float(brief_capability_f),
+    )
     if not task_alignment.get("llm_skipped"):
         print(
             f"[pipeline] Gorev uyumu: programatik={task_alignment['programmatic_factor']:.3f} "
@@ -3708,9 +3749,10 @@ def _build_agents_list(cq, sn, gl, sc, ta, ev) -> list[dict]:
     # Code Quality Agent
     cq_findings = []
     for issue in cq.get("issues", []):
+        desc = issue.get("description", "")
         cq_findings.append({
-            "severity": _map_severity(issue.get("severity", "info")),
-            "message": issue.get("description", ""),
+            "severity": _map_severity_for_message(issue.get("severity", "info"), desc),
+            "message": desc,
             "line": issue.get("line"),
             "agent": "Kod Kalitesi Ajanı",
             "code": None,
@@ -3734,7 +3776,8 @@ def _build_agents_list(cq, sn, gl, sc, ta, ev) -> list[dict]:
         })
     for ind in sn.get("maturity_indicators", []):
         sn_findings.append({
-            "severity": "info", "message": ind,
+            "severity": _map_severity_for_message("info", ind),
+            "message": ind,
             "line": None, "agent": "Kıdem Ajanı", "code": None,
         })
     agents.append({
@@ -3751,9 +3794,10 @@ def _build_agents_list(cq, sn, gl, sc, ta, ev) -> list[dict]:
     gl_findings = []
     for viol in gl.get("style_violations", []):
         line_hint = viol.get("line_hint", "")
+        viol_msg = viol.get("description", viol.get("rule", ""))
         gl_findings.append({
-            "severity": _map_severity(viol.get("severity", "info")),
-            "message": viol.get("description", viol.get("rule", "")),
+            "severity": _map_severity_for_message(viol.get("severity", "info"), viol_msg),
+            "message": viol_msg,
             "line": _line_from_text(line_hint), "agent": "Standartlar Ajanı", "code": None,
         })
     agents.append({
@@ -3769,9 +3813,10 @@ def _build_agents_list(cq, sn, gl, sc, ta, ev) -> list[dict]:
     # Security Agent
     sc_findings = []
     for threat in sc.get("threats", []):
+        threat_msg = threat.get("description", "")
         sc_findings.append({
-            "severity": _map_severity(threat.get("severity", "high")),
-            "message": threat.get("description", ""),
+            "severity": _map_severity_for_message(threat.get("severity", "high"), threat_msg),
+            "message": threat_msg,
             "line": threat.get("line"),
             "agent": "Güvenlik Ajanı",
             "code": None,
@@ -3811,7 +3856,7 @@ def _build_agents_list(cq, sn, gl, sc, ta, ev) -> list[dict]:
                 f"[{type_label}{sym_part} • satır {line_range[0]}-{line_range[1]}] {feedback}"
             )
         ev_findings.append({
-            "severity": _map_severity(claim.get("severity", "info")),
+            "severity": _map_severity_for_message(claim.get("severity", "info"), feedback),
             "message": feedback,
             "line": claim.get("lines", [None])[0] if claim.get("lines") else None,
             "agent": "Kanıtlandırma Ajanı",
@@ -3915,7 +3960,7 @@ def _build_line_evidence(cq, gl, sc, ev, source_code: str) -> list[dict]:
             "scope": "file",
             "agent": agent,
             "message": msg,
-            "severity": _map_severity(sev),
+            "severity": _map_severity_for_message(sev, msg),
         })
 
     def _add(line: int | None, agent: str, msg: str, sev: str):
@@ -3937,7 +3982,7 @@ def _build_line_evidence(cq, gl, sc, ev, source_code: str) -> list[dict]:
             "line": line,
             "agent": agent,
             "message": msg,
-            "severity": _map_severity(sev),
+            "severity": _map_severity_for_message(sev, msg),
         })
 
     _NODE_TYPE_LABEL = {
