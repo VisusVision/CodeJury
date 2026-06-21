@@ -53,7 +53,7 @@ interface AgentReport {
   findings: Finding[];
 }
 
-interface LineEvidence extends EvidenceItem {}
+type LineEvidence = EvidenceItem;
 
 export interface ReportData {
   totalScore: number;
