@@ -1,11 +1,13 @@
 """
-Security Agent -- tam LLM: guvenlik yorumu Ollama ile.
+Security Agent -- LLM birincil; kritik/high tehditlerde kural tavanı (min).
 
-AST/regex ozeti yalnizca prompt ipucu; threats, risk ve skor LLM ciktisindan (LLM zorunlu).
+AST/regex hem prompt ipucu hem birlesik tehdit listesine katilir. Skor once LLM'den gelir;
+critical/high varsa score = min(llm_score, rule_score) — skoru yukari ceken harman yok.
 
 Girdi:  {"source_code": str, "language": str}
 Cikti:  {"threats": list, "risk_level": str, "safe": bool,
-         "blocked_imports": list, "score": int (0-100)}
+         "blocked_imports": list, "score": int, "score_model": int, "score_rule": int,
+         "score_rule_capped": bool (opsiyonel)}
 """
 
 import ast
@@ -224,8 +226,9 @@ class SecurityAgent(BaseAgent):
             source_code=source_code,
             assignment_description=str(input_data.get("assignment_description") or ""),
         )
-        llm_result["threats"] = llm_th
-        rsum = _risk_summary_from_threats(llm_th)
+        merged_th = _merge_threat_lists(llm_th, programmatic["threats"])
+        llm_result["threats"] = merged_th
+        rsum = _risk_summary_from_threats(merged_th)
         llm_result["risk_level"] = rsum["risk_level"]
         llm_result["safe"] = rsum["safe"]
         llm_result["critical_count"] = rsum["critical_count"]
@@ -233,13 +236,20 @@ class SecurityAgent(BaseAgent):
         llm_result["total_threats"] = rsum["total_threats"]
 
         lbi = llm_result.get("blocked_imports")
-        llm_result["blocked_imports"] = list(lbi) if isinstance(lbi, list) else []
+        prog_blocked = programmatic.get("blocked_imports") or []
+        merged_blocked = list(dict.fromkeys(
+            [x for x in (list(lbi) if isinstance(lbi, list) else []) + list(prog_blocked) if x]
+        ))
+        llm_result["blocked_imports"] = merged_blocked
 
         llm_score = self._safe_int(llm_result.get("score"), 50)
-        rule_score = _score_from_threats(llm_th)
-        # Blend model score with deterministic risk math to reduce outlier penalties.
-        llm_result["score"] = int(round(0.45 * llm_score + 0.55 * rule_score))
-        llm_result["score"] = max(0, min(100, llm_result["score"]))
+        rule_score = _score_from_threats(merged_th)
+        final_score, capped = _final_security_score(llm_score, rule_score, merged_th)
+        llm_result["score"] = final_score
+        llm_result["score_model"] = max(0, min(100, llm_score))
+        llm_result["score_rule"] = rule_score
+        if capped:
+            llm_result["score_rule_capped"] = True
 
         return llm_result
 
@@ -618,6 +628,14 @@ def _check_dangerous_patterns(source_code: str) -> list[dict]:
          "Hardcoded secret tespit edildi"),
         (r'token\s*=\s*["\'][A-Za-z0-9+/=]{20,}["\']', "info_leak", "critical",
          "Hardcoded token tespit edildi"),
+        (r'hashlib\.(md5|sha1)\s*\(', "weak_crypto", "high",
+         "MD5/SHA1 sifre hash -- zayif kriptografi"),
+        (r'\.run\s*\(\s*[^)]*debug\s*=\s*True', "debug_enabled", "high",
+         "debug=True -- bilgi sizintisi riski"),
+        (r'debug\s*=\s*True', "debug_enabled", "high",
+         "debug=True -- bilgi sizintisi riski"),
+        (r'random\.(random|randint|choice)\s*\(', "weak_random", "medium",
+         "random modulu guvenlik tokeni icin uygun degil"),
         (r'\\x[0-9a-f]{2}.*\\x[0-9a-f]{2}.*\\x[0-9a-f]{2}', "obfuscation", "high",
          "Hex-encoded string -- kod gizleme girisimi"),
         (r'base64\.(b64decode|decodebytes)', "obfuscation", "medium",
@@ -644,6 +662,54 @@ def _check_dangerous_patterns(source_code: str) -> list[dict]:
                 })
 
     return threats
+
+
+def _merge_threat_lists(*threat_lists: list) -> list[dict]:
+    """LLM + AST tehditlerini satir/tip bazinda birlestir."""
+    seen: set[tuple] = set()
+    out: list[dict] = []
+    for threats in threat_lists:
+        if not isinstance(threats, list):
+            continue
+        for raw in threats:
+            if not isinstance(raw, dict):
+                continue
+            t = dict(raw)
+            key = (
+                t.get("line"),
+                str(t.get("type", "")).lower(),
+                str(t.get("description", ""))[:72],
+            )
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(t)
+    return out
+
+
+def _has_severe_threats(threats: list[dict]) -> bool:
+    for t in threats:
+        if not isinstance(t, dict):
+            continue
+        if str(t.get("severity", "")).lower() in ("critical", "high"):
+            return True
+    return False
+
+
+def _final_security_score(
+    llm_score: int,
+    rule_score: int,
+    threats: list[dict],
+) -> tuple[int, bool]:
+    """
+    Birincil skor LLM. critical/high tehdit varsa skoru yukari cekmeyen tavan: min(llm, rule).
+    """
+    llm_score = max(0, min(100, int(llm_score)))
+    rule_score = max(0, min(100, int(rule_score)))
+    if _has_severe_threats(threats):
+        final = min(llm_score, rule_score)
+        return final, final < llm_score
+    return llm_score, False
 
 
 def _score_from_threats(threats: list[dict]) -> int:
