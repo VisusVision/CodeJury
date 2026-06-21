@@ -93,6 +93,14 @@ def _contains_marker(text: str, marker: str) -> bool:
     return marker_l in text
 
 
+def _capability_task_marker_matches(task_text: str, marker: str) -> bool:
+    """Avoid bank-account false positives such as 'hesap makinesi' (calculator)."""
+    marker_l = marker.lower()
+    if marker_l == "hesap" and re.search(r"hesap\s+mak", task_text):
+        return False
+    return _contains_marker(task_text, marker)
+
+
 def _has_code_deliverable_intent(text: str) -> bool:
     non_code_deliverables = ("makale", "rapor", "poster", "sunum", "slayt", "essay")
     explicit_tech_markers = (
@@ -173,6 +181,17 @@ def _has_recognized_capability_requirement(text: str) -> bool:
         ("sqlite", "sql", "database", "db", "tablo"),
         ("log", "dosya", "file", "cli", "arguman", "komut", "satir", "rapor", "export", "cikti dosyasi"),
         ("sinif", "class", "oop", "nesne", "kalitim", "encapsulation"),
+        (
+            "banka",
+            "hesap",
+            "yatir",
+            "yatır",
+            "cek",
+            "çek",
+            "bakiye",
+            "deposit",
+            "withdraw",
+        ),
         ("agac", "tree", "bst", "dugum", "node", "traversal", "inorder", "preorder", "postorder"),
         ("liste", "list", "veri", "data", "istatistik", "ortalama", "average", "flatten", "donustur", "dönüştür"),
         (
@@ -578,6 +597,34 @@ def _capability_match_signal(
             {"class ", "__init__", "self.", "super("},
         ),
         (
+            {
+                "banka",
+                "hesap",
+                "yatir",
+                "yatır",
+                "cek",
+                "çek",
+                "bakiye",
+                "deposit",
+                "withdraw",
+                "para",
+            },
+            {
+                "class ",
+                "__init__",
+                "self.",
+                "deposit",
+                "withdraw",
+                "balance",
+                "yatir",
+                "yatır",
+                "cek",
+                "çek",
+                "bakiye",
+                "insufficientfunds",
+            },
+        ),
+        (
             {"agac", "tree", "bst", "dugum", "node", "traversal", "inorder", "preorder", "postorder"},
             {"class ", "node", "dugum", "inorder", "preorder", "postorder", "left", "right", "sol", "sag"},
         ),
@@ -642,7 +689,7 @@ def _capability_match_signal(
     for task_markers, code_markers in groups:
         if client_context and task_markers == {"api", "endpoint", "http", "server", "post", "put", "get", "route"}:
             continue
-        if any(_contains_marker(task_text, marker) for marker in task_markers):
+        if any(_capability_task_marker_matches(task_text, marker) for marker in task_markers):
             required += 1
             if any(marker in code_text for marker in code_markers):
                 matched += 1
@@ -805,4 +852,11 @@ def merge_task_alignment(
             reasons.append("llm_low_task_fit")
 
     out["reasons"] = reasons
+    try:
+        out["capability_match"] = max(
+            float(out.get("capability_match", 0) or 0),
+            float(capability_signal),
+        )
+    except (TypeError, ValueError):
+        out["capability_match"] = capability_signal if capability_signal else 0.0
     return out

@@ -1,0 +1,1 @@
+Python ile Stack (LIFO) veri yapısı tasarlayın: push, pop, peek ve is_empty metodları olsun; sınıf tabanlı (OOP) tasarım kullanın; boş stack üzerinde pop/peek çağrıldığında anlamlı bir hata fırlatsın.

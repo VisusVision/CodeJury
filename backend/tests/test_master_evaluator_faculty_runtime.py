@@ -49,6 +49,51 @@ class MasterEvaluatorFacultyRuntimeGuardTests(unittest.IsolatedAsyncioTestCase):
             )
         self.assertIn("final_score", result)
 
+    def test_consensus_rescue_recovers_security_only_collapse(self):
+        llm_result = {
+            "final_score": 7.0,
+            "rubric_breakdown": [
+                {"label": "Sinif Tasarimi", "weight": 7, "score": 0, "weighted_score": 0.0, "justification": ""},
+                {"label": "Guvenlik", "weight": 7, "score": 7, "weighted_score": 7.0, "justification": ""},
+                {"label": "Kodlama Stili", "weight": 7, "score": 0, "weighted_score": 0.0, "justification": ""},
+                {"label": "Mantiksal Dogruluk", "weight": 7, "score": 0, "weighted_score": 0.0, "justification": ""},
+            ],
+            "weaknesses": [],
+            "recommendations": [],
+        }
+        programmatic = {
+            "final_score": 86.0,
+            "brief_alignment_factor": 0.12,
+            "programmatic_alignment_factor": 1.0,
+            "capability_match": 0.86,
+            "sandbox_runs_ok": True,
+            "brief_alignment_reasons": ["llm_task_relevance_off_topic"],
+        }
+        input_data = {
+            "sandbox_result": {"compilation_success": True, "exit_code": 0},
+        }
+        MasterEvaluatorAgent._apply_brief_alignment_guard(llm_result, programmatic, faculty_mode=True)
+        MasterEvaluatorAgent._apply_faculty_consensus_rescue(llm_result, programmatic, input_data)
+        self.assertGreaterEqual(float(llm_result["final_score"]), 65.0)
+        non_security = [
+            int(row["score"])
+            for row in llm_result["rubric_breakdown"]
+            if "guven" not in str(row.get("label", "")).lower()
+        ]
+        self.assertGreater(sum(non_security), 0)
+
+    def test_effective_alignment_boosts_relevant_submission(self):
+        programmatic = {
+            "brief_alignment_factor": 0.12,
+            "programmatic_alignment_factor": 1.0,
+            "capability_match": 0.86,
+            "final_score": 86.0,
+            "sandbox_runs_ok": True,
+            "brief_alignment_reasons": ["llm_task_relevance_off_topic"],
+        }
+        effective = MasterEvaluatorAgent._effective_alignment_for_grading(programmatic)
+        self.assertGreaterEqual(effective, 0.82)
+
 
 if __name__ == "__main__":
     unittest.main()
