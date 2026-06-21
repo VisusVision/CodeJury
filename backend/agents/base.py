@@ -121,6 +121,10 @@ class BaseAgent(ABC):
         """
         ...
 
+    def _pre_schema_normalize(self, result: dict, output_json_schema: dict | None) -> dict:
+        """Optional hook: coerce LLM JSON before schema validation."""
+        return result
+
     async def _call_llm(
         self,
         system_prompt: str,
@@ -211,6 +215,7 @@ class BaseAgent(ABC):
                 )
 
         if output_json_schema:
+            result = self._pre_schema_normalize(result, output_json_schema)
             max_schema_repair_attempts = 3
             for attempt in range(max_schema_repair_attempts + 1):
                 result = normalize_instance_for_schema(result, output_json_schema)

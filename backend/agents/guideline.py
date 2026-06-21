@@ -101,6 +101,15 @@ Reply with ONLY this JSON shape:
 
 
 _ALLOWED_Q = frozenset({"poor", "fair", "good", "excellent"})
+_FILE_EXT_PATTERN = re.compile(
+    r"""['"][^'"]+\.(csv|txt|json|log|xml|yaml|yml)['"]""",
+    re.IGNORECASE,
+)
+_QUOTED_IDENTIFIER = re.compile(r"""['"`]([A-Za-z_]\w*)['"`]""")
+
+
+def _looks_like_snake_case(name: str) -> bool:
+    return bool(re.match(r"^[a-z][a-z0-9_]*$", name or ""))
 
 
 class GuidelineAgent(BaseAgent):
@@ -231,6 +240,22 @@ class GuidelineAgent(BaseAgent):
             # LLMs occasionally praise snake_case while emitting it as a warning.
             if "snake_case kullan" in desc_l and "yerine" in desc_l:
                 continue
+            if _FILE_EXT_PATTERN.search(desc) and any(
+                token in desc_l
+                for token in ("pascalcase", "camelcase", "snake_case", "naming", "isimlendirme")
+            ):
+                continue
+            quoted = _QUOTED_IDENTIFIER.findall(desc)
+            if quoted and "snake_case" in desc_l and all(_looks_like_snake_case(name) for name in quoted):
+                continue
+            if "snake_case" in desc_l:
+                snake_refs = [
+                    token
+                    for token in re.findall(r"\b([a-z][a-z0-9_]{2,})\b", desc_l)
+                    if token not in {"snake_case", "fonksiyon", "degisken", "kullan", "kullanin", "tercih"}
+                ]
+                if snake_refs and all(_looks_like_snake_case(name) for name in snake_refs):
+                    continue
             filtered.append(item)
         return filtered
 

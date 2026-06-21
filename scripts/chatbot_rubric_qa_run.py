@@ -36,6 +36,34 @@ STUDENT_NO = "230501013"
 STUDENT_TC = "11111111111"
 
 
+def _qa_student_no() -> str:
+    return f"qa{int(time.time()) % 1_000_000:06d}"
+
+
+def _format_http_error(resp: httpx.Response) -> str:
+    try:
+        body = resp.json()
+        detail = body.get("detail") if isinstance(body, dict) else body
+    except Exception:
+        detail = resp.text[:500]
+    return f"HTTP {resp.status_code}: {detail or resp.reason_phrase}"
+
+
+async def _wait_for_api(client: httpx.AsyncClient, timeout_s: int = 90) -> None:
+    deadline = time.time() + timeout_s
+    last_error = "API health check timed out"
+    while time.time() < deadline:
+        try:
+            resp = await client.get(f"{API_BASE}/api/health")
+            if resp.status_code == 200:
+                return
+            last_error = _format_http_error(resp)
+        except httpx.HTTPError as exc:
+            last_error = str(exc) or repr(exc)
+        await asyncio.sleep(2)
+    raise RuntimeError(f"API not ready at {API_BASE}: {last_error}")
+
+
 def _score_suggestion(item: dict[str, Any]) -> int:
     text = " ".join(
         str(item.get(k, "")) for k in ("title", "summary", "description")
@@ -94,16 +122,6 @@ def export_report(rows: list[dict[str, str]], output_path: Path) -> None:
 def main() -> None:
     input_path = Path("scores.csv")
     output_path = Path("report.csv")
-    if not input_path.exists():
-        with input_path.open("w", encoding="utf-8", newline="") as handle:
-            writer = csv.DictWriter(handle, fieldnames=["name", "score"])
-            writer.writeheader()
-            writer.writerows(
-                [
-                    {"name": "Ayse", "score": "88"},
-                    {"name": "Mehmet", "score": "42"},
-                ]
-            )
     rows = read_scores(input_path)
     export_report(summarize(rows), output_path)
     print(f"{output_path} yazildi")
@@ -206,12 +224,15 @@ async def run_qa(*, include_guvensiz: bool = True) -> dict[str, Any]:
     started = datetime.now(timezone.utc).isoformat()
 
     async with httpx.AsyncClient(timeout=httpx.Timeout(600.0, connect=30.0)) as client:
+        await _wait_for_api(client)
+
         # Teacher login (sanity)
         login = await client.post(
             f"{API_BASE}/api/teacher/login",
             json={"email": TEACHER_EMAIL, "password": TEACHER_PASSWORD},
         )
-        login.raise_for_status()
+        if login.is_error:
+            raise RuntimeError(f"Teacher login failed: {_format_http_error(login)}")
 
         course_hint = (
             f"{COURSE_NAME} ({COURSE_CODE}), {COURSE_YEAR}.sinif, {CHATBOT_HINT}"
@@ -225,7 +246,8 @@ async def run_qa(*, include_guvensiz: bool = True) -> dict[str, Any]:
                 "prefer_fresh": True,
             },
         )
-        sug_resp.raise_for_status()
+        if sug_resp.is_error:
+            raise RuntimeError(f"Chatbot suggestions failed: {_format_http_error(sug_resp)}")
         suggestions = sug_resp.json().get("suggestions", [])
         if not suggestions:
             raise RuntimeError("Chatbot oneri donmedi")
@@ -322,6 +344,7 @@ async def run_qa(*, include_guvensiz: bool = True) -> dict[str, Any]:
             )
 
         analysis_results: list[dict[str, Any]] = []
+        student_no = _qa_student_no()
         for label, file_name, code, expected_relevant, expected_security_risky in cases:
             analyze_resp = await client.post(
                 f"{API_BASE}/api/analyze",
@@ -330,10 +353,13 @@ async def run_qa(*, include_guvensiz: bool = True) -> dict[str, Any]:
                     "file_content": code,
                     "assignment_id": assignment_id,
                     "report_language": "tr",
-                    "student_no": STUDENT_NO,
+                    "student_no": student_no,
                 },
             )
-            analyze_resp.raise_for_status()
+            if analyze_resp.is_error:
+                raise RuntimeError(
+                    f"Analyze request failed for {label}: {_format_http_error(analyze_resp)}"
+                )
             job_id = analyze_resp.json()["job_id"]
             report = await _poll_job(client, job_id)
             evaluation = _evaluate_case(
@@ -429,7 +455,8 @@ async def main() -> int:
         print(json.dumps(summary, ensure_ascii=False, indent=2))
         return 0 if summary["all_passed"] else 1
     except Exception as exc:
-        print(f"QA run failed: {exc}", file=sys.stderr)
+        detail = str(exc).strip() or repr(exc)
+        print(f"QA run failed: {type(exc).__name__}: {detail}", file=sys.stderr)
         return 2
 
 

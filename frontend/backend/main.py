@@ -2159,6 +2159,27 @@ def _matches_title_anchor(title: str, anchor_terms: list[str]) -> bool:
     return any(term in folded for term in anchor_terms)
 
 
+def _suggestion_token_set(text: str) -> set[str]:
+    return {token for token in re.findall(r"\w+", (text or "").lower()) if len(token) > 2}
+
+
+def _suggestion_jaccard(left: set[str], right: set[str]) -> float:
+    if not left and not right:
+        return 1.0
+    union = len(left | right)
+    if union == 0:
+        return 0.0
+    return len(left & right) / union
+
+
+def _is_near_duplicate_suggestion(text: str, seen_texts: list[str], *, threshold: float = 0.78) -> bool:
+    tokens = _suggestion_token_set(text)
+    for previous in seen_texts:
+        if _suggestion_jaccard(tokens, _suggestion_token_set(previous)) >= threshold:
+            return True
+    return False
+
+
 def _clean_assignment_suggestion_items(
     raw_list: list[Any],
     n: int,
@@ -2167,6 +2188,7 @@ def _clean_assignment_suggestion_items(
 ) -> list[dict[str, str]]:
     cleaned: list[dict[str, str]] = []
     seen_lower: set[str] = set()
+    seen_content: list[str] = []
     for item in raw_list:
         if len(cleaned) >= n:
             break
@@ -2203,7 +2225,10 @@ def _clean_assignment_suggestion_items(
         tl = title.lower()
         if tl in seen_lower:
             continue
+        if _is_near_duplicate_suggestion(combined_text, seen_content):
+            continue
         seen_lower.add(tl)
+        seen_content.append(combined_text)
         cleaned.append({
             "title": title,
             "summary": summary[:200],
@@ -3335,6 +3360,9 @@ async def run_analysis_pipeline(
 
     loop = asyncio.get_running_loop()
     from backend.sandbox.executor import run_in_sandbox
+    from backend.sandbox.fixtures import infer_sandbox_files
+
+    sandbox_files = infer_sandbox_files(assignment_brief=brief, source_code=file_content)
 
     # 1) Tum bagimsiz isler PARALEL: statik ajanlar + (sandbox -> TestAgent)
     print("[pipeline] Paralel katman basliyor (statik + sandbox->test)...", flush=True)
@@ -3349,7 +3377,10 @@ async def run_analysis_pipeline(
         return cq, sn, gl, sc
 
     async def _run_sandbox_then_test():
-        sb = await loop.run_in_executor(None, run_in_sandbox, file_content, language)
+        sb = await loop.run_in_executor(
+            None,
+            lambda: run_in_sandbox(file_content, language, files=sandbox_files),
+        )
         ta = await TestAgent().analyze({
             "sandbox_result": sb,
             "expected_output": "",
@@ -3437,6 +3468,7 @@ async def run_analysis_pipeline(
 
     # Line evidence
     evidence_lines = _build_line_evidence(cq, gl, sc, ev, file_content)
+    rejected_claims = _build_rejected_claims_response(ev)
 
     total_score = final.get("final_score", 0)
     total_score_rounded = int(round(float(total_score or 0)))
@@ -3485,6 +3517,7 @@ async def run_analysis_pipeline(
         "rubric": rubric,
         "agents": agents_list,
         "evidence": evidence_lines,
+        "rejectedClaims": rejected_claims,
         "fileName": file_name,
         "executionTimeMs": elapsed_ms,
         "memoryUsageMb": round(current_mem / 1024 / 1024, 1),
@@ -3716,27 +3749,6 @@ def _build_agents_list(cq, sn, gl, sc, ta, ev) -> list[dict]:
             "agent": "Kanıtlandırma Ajanı",
             "code": claim.get("code_snippet"),
         })
-    for rejected in []:
-        if isinstance(rejected, dict):
-            text = str(
-                rejected.get("reason")
-                or rejected.get("claim")
-                or rejected.get("feedback")
-                or rejected.get("description")
-                or rejected
-            )
-        else:
-            text = str(rejected)
-        text = text.strip()
-        if not text:
-            continue
-        ev_findings.append({
-            "severity": "info",
-            "message": f"KanÄ±tlanamayan iddia reddedildi: {text}",
-            "line": None,
-            "agent": "KanÄ±tlandÄ±rma AjanÄ±",
-            "code": None,
-        })
     total_claims = ev.get("total_claims_received", 0)
     validated = ev.get("total_claims_validated", 0)
     rejected_count = len(ev.get("rejected_claims", []) or [])
@@ -3822,6 +3834,22 @@ def _build_line_evidence(cq, gl, sc, ev, source_code: str) -> list[dict]:
             return (line, "sql_injection")
         return None
 
+    def _add_file(agent: str, msg: str, sev: str):
+        msg = (msg or "").strip()
+        if not msg:
+            return
+        key = (0, _norm_msg(msg))
+        if key in seen:
+            return
+        seen.add(key)
+        evidence.append({
+            "line": 0,
+            "scope": "file",
+            "agent": agent,
+            "message": msg,
+            "severity": _map_severity(sev),
+        })
+
     def _add(line: int | None, agent: str, msg: str, sev: str):
         if not line or line < 1 or line > max_line:
             return
@@ -3857,10 +3885,12 @@ def _build_line_evidence(cq, gl, sc, ev, source_code: str) -> list[dict]:
     for claim in ev.get("validated_claims", []):
         feedback = claim.get("feedback", "")
         lines = claim.get("lines", [])
-        if not lines:
-            continue
         src = claim.get("agent_source", "Evidence")
         label = _AGENT_LABEL.get(src, src)
+        if not lines:
+            if claim.get("node_type") == "file" or src in {"security", "test_agent"}:
+                _add_file(label, feedback, claim.get("severity", "info"))
+            continue
         line_range = claim.get("line_range") or []
         node_type = claim.get("node_type")
         symbol = claim.get("symbol")
@@ -3874,8 +3904,42 @@ def _build_line_evidence(cq, gl, sc, ev, source_code: str) -> list[dict]:
             msg = _sanitize_security_msg(lines[0], msg)
         _add(lines[0], label, msg, claim.get("severity", "info"))
 
-    evidence.sort(key=lambda x: x["line"])
+    evidence.sort(key=lambda x: (x["line"], x.get("agent", "")))
     return evidence
+
+
+def _build_rejected_claims_response(ev: dict) -> list[dict]:
+    """Structured rejected claims for API/UI (not mixed into student findings)."""
+    _AGENT_LABEL = {
+        "code_quality": "Kod Kalitesi",
+        "guideline": "Standartlar",
+        "seniority": "Kıdem",
+        "security": "Güvenlik",
+        "test_agent": "Test",
+        "evidence": "Kanıt",
+    }
+    rows: list[dict] = []
+    for item in ev.get("rejected_claims", []) or []:
+        if isinstance(item, dict):
+            agent_source = str(
+                item.get("agent_source") or item.get("agent") or item.get("source") or "unknown"
+            ).strip()
+            claim = str(item.get("claim") or item.get("feedback") or item.get("description") or "").strip()
+            reason = str(item.get("reason") or "Somut kanit bulunamadi.").strip()
+        else:
+            agent_source = "unknown"
+            text = str(item).strip()
+            claim = text
+            reason = "Somut kanit bulunamadi."
+        if not claim and not reason:
+            continue
+        rows.append({
+            "agent": _AGENT_LABEL.get(agent_source, agent_source),
+            "agentSource": agent_source,
+            "claim": claim[:240],
+            "reason": reason[:240],
+        })
+    return rows
 
 
 # ---- Endpoints ----
@@ -4892,6 +4956,16 @@ async def assignment_assistant_suggestions(req: AssignmentAssistantSuggestionsRe
                 f"{row['title']} {row['summary']} {row['description']}",
                 anchor_terms,
             ):
+                continue
+            merged.append(dict(row))
+            seen_titles.add(key)
+
+    if not merged:
+        for row in _fallback_assignment_suggestions(hint, tier):
+            if len(merged) >= n:
+                break
+            key = row["title"].strip().lower()
+            if key in seen_titles:
                 continue
             merged.append(dict(row))
             seen_titles.add(key)

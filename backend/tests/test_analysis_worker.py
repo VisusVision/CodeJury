@@ -1,5 +1,5 @@
 import unittest
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 from backend.queue.analysis_jobs import AnalysisJobStore, create_analysis_job, get_analysis_job
 from backend.agents.base import LLMInferenceError
@@ -69,6 +69,30 @@ class AnalysisWorkerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(job["status"], "failed")
         self.assertIn("Ollama", job["error"])
         self.assertIn("AI", job["error"])
+
+    async def test_default_pipeline_reloads_modules_when_enabled(self):
+        with patch.dict("os.environ", {"ANALYSIS_WORKER_RELOAD": "1"}, clear=False):
+            with patch("backend.workers.analysis_worker._reload_pipeline_modules") as reload_mock:
+                with patch(
+                    "frontend.backend.main.run_analysis_pipeline",
+                    new=AsyncMock(return_value={"totalScore": 88}),
+                ) as pipeline_mock:
+                    result = await analysis_worker._default_pipeline(file_name="main.py")
+
+        reload_mock.assert_called_once()
+        pipeline_mock.assert_awaited_once()
+        self.assertEqual(result["totalScore"], 88)
+
+    async def test_default_pipeline_skips_reload_when_disabled(self):
+        with patch.dict("os.environ", {"ANALYSIS_WORKER_RELOAD": "0"}, clear=False):
+            with patch("backend.workers.analysis_worker._reload_pipeline_modules") as reload_mock:
+                with patch(
+                    "frontend.backend.main.run_analysis_pipeline",
+                    new=AsyncMock(return_value={"totalScore": 77}),
+                ):
+                    await analysis_worker._default_pipeline(file_name="main.py")
+
+        reload_mock.assert_not_called()
 
 
 if __name__ == "__main__":

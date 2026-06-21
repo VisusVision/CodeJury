@@ -201,7 +201,7 @@ class OllamaModelRoutingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(payload["model"], "qwen/qwen2.5-coder-32b-instruct")
         self.assertEqual(payload["messages"][0]["content"], "Kisa cevap ver.")
 
-    async def test_nvidia_nim_mode_without_api_key_returns_none(self):
+    async def test_nvidia_nim_mode_without_api_key_falls_back_to_ollama(self):
         with (
             patch.object(settings, "llm_provider", "nvidia_nim", create=True),
             patch.object(settings, "llm_general_provider", "", create=True),
@@ -212,6 +212,10 @@ class OllamaModelRoutingTests(unittest.IsolatedAsyncioTestCase):
                 new=AsyncMock(return_value={"ok": True}),
                 create=True,
             ) as request,
+            patch(
+                "backend.llm.ollama_client._do_request",
+                new=AsyncMock(return_value={"fallback": True}),
+            ) as ollama_request,
         ):
             result = await chat_json(
                 system_prompt="Return JSON.",
@@ -219,12 +223,67 @@ class OllamaModelRoutingTests(unittest.IsolatedAsyncioTestCase):
                 use_cache=False,
             )
 
-        self.assertIsNone(result)
+        self.assertEqual(result, {"fallback": True})
         request.assert_not_awaited()
+        ollama_request.assert_awaited_once()
         meta = get_llm_diagnostics_snapshot()
-        self.assertEqual(meta["provider"], "nvidia_nim")
-        self.assertEqual(meta["result_status"], "skipped")
+        self.assertEqual(meta["provider"], "ollama")
+        self.assertEqual(meta["result_status"], "ok")
         self.assertEqual(meta["fallback_reason"], "missing_api_key")
+
+    async def test_chat_json_falls_back_to_ollama_when_nim_returns_none(self):
+        with (
+            patch.object(settings, "llm_provider", "nvidia_nim", create=True),
+            patch.object(settings, "llm_general_provider", "nvidia_nim", create=True),
+            patch.object(settings, "nvidia_nim_api_key", "secret-key", create=True),
+            patch(
+                "backend.llm.ollama_client._do_nvidia_nim_request",
+                new=AsyncMock(return_value=None),
+                create=True,
+            ) as nim_request,
+            patch(
+                "backend.llm.ollama_client._do_request",
+                new=AsyncMock(return_value={"from_ollama": True}),
+            ) as ollama_request,
+        ):
+            result = await chat_json(
+                system_prompt="Return JSON.",
+                user_prompt="{}",
+                use_cache=False,
+            )
+
+        self.assertEqual(result, {"from_ollama": True})
+        nim_request.assert_awaited_once()
+        ollama_request.assert_awaited_once()
+        meta = get_llm_diagnostics_snapshot()
+        self.assertEqual(meta["provider"], "ollama")
+        self.assertEqual(meta["fallback_reason"], "nim_failed_ollama_fallback")
+
+    async def test_chat_text_falls_back_to_ollama_when_nim_returns_none(self):
+        with (
+            patch.object(settings, "llm_provider", "nvidia_nim", create=True),
+            patch.object(settings, "llm_general_provider", "nvidia_nim", create=True),
+            patch.object(settings, "nvidia_nim_api_key", "secret-key", create=True),
+            patch(
+                "backend.llm.ollama_client._do_nvidia_nim_text_request",
+                new=AsyncMock(return_value=None),
+                create=True,
+            ) as nim_request,
+            patch(
+                "backend.llm.ollama_client._do_ollama_text_request",
+                new=AsyncMock(return_value="local answer"),
+            ) as ollama_request,
+        ):
+            result = await chat_text(
+                messages=[{"role": "user", "content": "hello"}],
+            )
+
+        self.assertEqual(result, "local answer")
+        nim_request.assert_awaited_once()
+        ollama_request.assert_awaited_once()
+        meta = get_llm_diagnostics_snapshot()
+        self.assertEqual(meta["provider"], "ollama")
+        self.assertEqual(meta["fallback_reason"], "nim_failed_ollama_fallback")
 
     async def test_hybrid_provider_routes_general_to_nim_and_coder_to_ollama(self):
         with (

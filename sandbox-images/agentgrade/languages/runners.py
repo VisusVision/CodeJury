@@ -45,12 +45,23 @@ class PythonRunner:
         self.limits = limits or ResourceLimits()
         self.executor = SandboxExecutor(self.limits)
 
-    def run(self, code, stdin_data=None):
+    def run(self, code, stdin_data=None, extra_files=None, argv=None):
         with IsolatedWorkdir("py_") as workdir:
+            for item in extra_files or []:
+                if not isinstance(item, dict):
+                    continue
+                name = str(item.get("name", "")).strip()
+                if not name:
+                    continue
+                path = os.path.join(workdir, name)
+                os.makedirs(os.path.dirname(path) or workdir, exist_ok=True)
+                with open(path, "w", encoding="utf-8") as handle:
+                    handle.write(str(item.get("content", "")))
             with open(os.path.join(workdir, "solution.py"), "w") as f:
                 f.write(code)
+            command = ["python3", "-u", "solution.py", *list(argv or [])]
             return self.executor.run(
-                ["python3", "-u", "solution.py"],
+                command,
                 workdir,
                 stdin_data=stdin_data,
                 language="python"

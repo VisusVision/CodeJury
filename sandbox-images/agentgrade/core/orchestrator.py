@@ -151,7 +151,7 @@ class SandboxOrchestrator:
     def __init__(self, limits=None):
         self.limits = limits or ResourceLimits()
 
-    def run_submission(self, code, language, test_cases=None, submission_id=None):
+    def run_submission(self, code, language, test_cases=None, submission_id=None, workdir_files=None, argv=None):
         report = SandboxReport()
         report.language = language.lower()
         report.code_hash = hashlib.sha256(code.encode()).hexdigest()[:16]
@@ -179,7 +179,7 @@ class SandboxOrchestrator:
             report.summary = {"error": str(e), "runnable": False}
             return report
 
-        exec_result = runner.run(code)
+        exec_result = runner.run(code, extra_files=workdir_files, argv=argv)
         report.execution = exec_result.to_dict()
 
         # Run test cases if provided

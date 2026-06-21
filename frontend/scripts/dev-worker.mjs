@@ -188,6 +188,7 @@ async function start() {
     stdio: "inherit",
     env: {
       ...process.env,
+      ANALYSIS_WORKER_RELOAD: process.env.ANALYSIS_WORKER_RELOAD || "1",
       PYTHONPATH: [repoRootAbs, process.env.PYTHONPATH].filter(Boolean).join(path.delimiter),
     },
   });
