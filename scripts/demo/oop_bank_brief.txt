@@ -1,0 +1,1 @@
+Nesne tabanlı (OOP) bir banka hesabı sınıfı tasarlayın: para yatırma, para çekme ve bakiye sorgulama işlemleri olsun; yetersiz bakiye durumunda özel bir istisna (exception) fırlatsın ve negatif/sıfır tutarları reddetsin.
