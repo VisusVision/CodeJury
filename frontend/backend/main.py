@@ -1542,6 +1542,7 @@ class AssignmentAssistantSuggestionsRequest(BaseModel):
 class AssignmentExampleRequest(BaseModel):
     assignment_title: str = ""
     assignment_description: str = ""
+    course_hint: str = ""
 
 
 _ASSIGNMENT_EXAMPLE_SYSTEM = """\
@@ -1569,8 +1570,38 @@ Rules:
 - Include at least one failure or edge case if the assignment asks for validation,
   errors, tests, or robustness.
 - Do not include full solution code.
+- Programming language consistency is mandatory: any CLI command, file extension, or
+  code snippet MUST match the assignment's programming language stated in the user
+  message. If the language is Python, show Python commands like `python main.py` and
+  never use other runtimes such as `node`, `java`, or `g++`. If no language is stated,
+  infer it from the title/description and stay consistent; do not introduce an unrelated
+  language or runtime.
 - Keep it under 900 characters, but it may contain line breaks.
 """
+
+
+_LANGUAGE_MARKERS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("Python", ("python", "py ", ".py", "pandas", "numpy", "django", "flask", "fastapi")),
+    ("Java", ("java ", "java,", " java.", ".java", "spring boot", "maven", "jdk")),
+    ("C++", ("c++", "cpp", ".cpp", "stl ")),
+    ("C#", ("c#", ".net", "dotnet", "asp.net")),
+    ("C", (" c dili", "language c", ".c ")),
+    ("TypeScript", ("typescript", ".ts", "ts ")),
+    ("JavaScript", ("javascript", "node.js", "nodejs", "node ", ".js", "react", "express")),
+    ("Go", ("golang", " go dili", ".go")),
+    ("Rust", ("rust", "cargo")),
+)
+
+
+def _detect_assignment_language(*texts: str) -> str:
+    """Odev metinlerinden programlama dilini tahmin et (bulamazsa boş)."""
+    blob = " ".join(t for t in texts if t).lower()
+    if not blob.strip():
+        return ""
+    for label, markers in _LANGUAGE_MARKERS:
+        if any(marker in blob for marker in markers):
+            return label
+    return ""
 
 
 def _clean_assignment_example(raw: Any, title: str, description: str) -> str:
@@ -2518,26 +2549,28 @@ def _direct_assignment_variants(direct_suggestion: dict[str, str], count: int) -
     description = str(direct_suggestion.get("description") or "").strip()
     base_summary = summary or "Egitimcinin uzun aciklamasindan olusturulan odev taslagi."
     base_description = description or title
-    suffixes = [
+    # Ayni brief icin gercekten farkli vurgu/teslimat acilari; sablonsal "- X Surum" yerine
+    # her biri farkli bir muhendislik odagini one cikarir.
+    angles = [
         (
-            "Temel Surum",
-            "Cekirdek gereksinimleri sade bir komut satiri veya fonksiyonel uygulama olarak tamamlayin.",
+            "temel islevsellik",
+            "Cekirdek gereksinimleri sade ve calisan bir komut satiri uygulamasi olarak tamamlayin; once dogru sonucu uretmeye odaklanin.",
         ),
         (
-            "Dogrulama Odakli Surum",
-            "Girdi dogrulama, hatali satir veya gecersiz veri durumlarini ayrintili ve anlasilir mesajlarla ele alin.",
+            "girdi dogrulama",
+            "Hatali satir, eksik alan ve gecersiz veri durumlarini yakalayip kullaniciya anlasilir hata mesajlari verin.",
         ),
         (
-            "Raporlama Odakli Surum",
-            "Islenen verilerden ozet metrikler uretin ve sonucu dosya veya konsol raporu olarak duzenli bicimde sunun.",
+            "raporlama ve ozet",
+            "Islenen verilerden ozet metrikler (toplam, ortalama, gecme/kalma sayisi) uretip duzenli bir rapor olarak sunun.",
         ),
         (
-            "Testli Surum",
+            "test kapsami",
             "Cekirdek fonksiyonlari birim testlerle dogrulayin; basarili, hatali ve bos veri senaryolarini kapsayin.",
         ),
         (
-            "Moduler Surum",
-            "Okuma, isleme, dogrulama ve cikti uretme sorumluluklarini ayri fonksiyon veya modullere bolun.",
+            "moduler tasarim",
+            "Okuma, isleme, dogrulama ve cikti sorumluluklarini ayri fonksiyon/modullere bolup yeniden kullanilabilir hale getirin.",
         ),
     ]
     variants: list[dict[str, str]] = [
@@ -2547,13 +2580,13 @@ def _direct_assignment_variants(direct_suggestion: dict[str, str], count: int) -
             "description": base_description[:1200],
         }
     ]
-    for suffix, extra in suffixes:
+    for angle, extra in angles:
         if len(variants) >= count:
             break
         variants.append(
             {
-                "title": f"{title} - {suffix}"[:100],
-                "summary": f"{base_summary} {extra}"[:220],
+                "title": f"{title} ({angle})"[:100],
+                "summary": f"{base_summary} Odak: {extra}"[:220],
                 "description": f"{base_description} {extra}"[:1200],
             }
         )
@@ -3265,6 +3298,53 @@ async def _fetch_faculty_rubric_criteria_for_pipeline(assignment_id: str | None)
     return normalize_faculty_rubric_criteria(crit)
 
 
+_RELEVANCE_WARNING_OFF_TOPIC = (
+    "Gorev uyumu zayif: bu teslim buyuk olasilikla odev/rubrik ile alakasiz "
+    "veya yanlis dosya olabilir. Kod dusuk puan almis olsa bile ana sorun konu uyumsuzlugu."
+)
+_RELEVANCE_WARNING_LOW_SCORE = (
+    "Nihai puan dusuk ve gorev uyumu da zayif: bu genelde teslimin odev/rubrikle ortusmedigi "
+    "veya yanlis dosyanin yuklendigi anlamina gelebilir. Dusuk not her zaman alakasiz kod "
+    "demek zorunda degildir; konu dogru olsa bile cozum zayifsa benzer aralikta kalinabilir."
+)
+_RELEVANCE_WARNING_PARTIAL = (
+    "Gorev kismen karsilanmis gorunuyor: teslim odev konusuyla iliskili ancak bazi "
+    "gereksinimler eksik kalmis olabilir. Bu bir 'alakasiz' uyarisi degildir; eksik "
+    "rubrik gereksinimlerini gozden gecirin."
+)
+
+
+def _compute_relevance_warning(
+    *,
+    ctx_len: int,
+    align_factor: float,
+    llm_off_topic: bool,
+    reasons: Any,
+    total_score: int,
+) -> str | None:
+    """Gorev uyumu uyarisini hesapla.
+
+    Off-topic (alakasiz) ile 'gereksinim eksik' birbirinden ayrilir: ikincisi sert
+    'alakasiz' mesajini tetiklemez, yumusak bir kismi-uyum mesaji uretir.
+    """
+    from backend.agents.assignment_alignment import BRIEF_MIN_LEN
+
+    if ctx_len < BRIEF_MIN_LEN:
+        return None
+    rset = reasons if isinstance(reasons, list) else []
+    has_off_topic = any(
+        r in {"llm_task_relevance_off_topic", "llm_low_task_fit"} for r in rset
+    )
+    has_not_fulfilled = "llm_task_not_fulfilled" in rset
+    if llm_off_topic or align_factor <= 0.20 or has_off_topic:
+        return _RELEVANCE_WARNING_OFF_TOPIC
+    if total_score <= 20 and align_factor <= 0.35:
+        return _RELEVANCE_WARNING_LOW_SCORE
+    if has_not_fulfilled and align_factor < 0.70:
+        return _RELEVANCE_WARNING_PARTIAL
+    return None
+
+
 async def run_analysis_pipeline(
     file_name: str,
     file_content: str,
@@ -3479,16 +3559,14 @@ async def run_analysis_pipeline(
     _align_f = float(task_alignment.get("factor", 1.0) or 1.0)
     _llm_off_topic = bool(task_alignment.get("llm_off_topic"))
     _align_reasons = task_alignment.get("reasons", [])
-    _has_off_topic_reason = isinstance(_align_reasons, list) and any(
-        reason in {"llm_task_relevance_off_topic", "llm_task_not_fulfilled", "llm_low_task_fit"}
-        for reason in _align_reasons
+    relevance_score_warning = _compute_relevance_warning(
+        ctx_len=len(_ctx),
+        align_factor=_align_f,
+        llm_off_topic=_llm_off_topic,
+        reasons=_align_reasons,
+        total_score=total_score_rounded,
     )
-    relevance_score_warning: str | None = None
-    if len(_ctx) >= BRIEF_MIN_LEN and (_llm_off_topic or _align_f <= 0.20 or _has_off_topic_reason):
-        relevance_score_warning = (
-            "Gorev uyumu zayif: bu teslim buyuk olasilikla odev/rubrik ile alakasiz "
-            "veya yanlis dosya olabilir. Kod dusuk puan almis olsa bile ana sorun konu uyumsuzlugu."
-        )
+    if relevance_score_warning == _RELEVANCE_WARNING_OFF_TOPIC:
         if not any(
             isinstance(item, dict) and item.get("agent") == "Gorev Uyumu"
             for item in evidence_lines
@@ -3500,16 +3578,6 @@ async def run_analysis_pipeline(
                 "severity": "warning",
             })
             evidence_lines.sort(key=lambda x: x["line"])
-    elif (
-        len(_ctx) >= BRIEF_MIN_LEN
-        and total_score_rounded <= 20
-        and _align_f <= 0.35
-    ):
-        relevance_score_warning = (
-            "Nihai puan dusuk ve gorev uyumu da zayif: bu genelde teslimin odev/rubrikle ortusmedigi "
-            "veya yanlis dosyanin yuklendigi anlamina gelebilir. Dusuk not her zaman alakasiz kod "
-            "demek zorunda degildir; konu dogru olsa bile cozum zayifsa benzer aralikta kalinabilir."
-        )
 
     return {
         "totalScore": total_score_rounded,
@@ -4709,14 +4777,25 @@ async def assignment_assistant_example(req: AssignmentExampleRequest):
 
     title = (req.assignment_title or "").strip() or "Yeni Odev"
     desc = (req.assignment_description or "").strip()
+    course_hint = (req.course_hint or "").strip()
     if not desc:
         return {"example": _fallback_assignment_example(title, desc), "source": "fallback"}
 
+    language = _detect_assignment_language(course_hint, title, desc)
+    language_line = (
+        f"Programming language: {language}. Use only {language} commands, file "
+        f"extensions, and syntax in the example.\n"
+        if language
+        else "Programming language: infer from the text and stay consistent; do not "
+        "introduce an unrelated language or runtime.\n"
+    )
     user_prompt = (
         f"Assignment title: {title}\n"
-        f"Assignment description:\n{desc}\n\n"
-        f"{build_project_context(title, desc).prompt_block()}\n"
-        "Return a concrete expected-output example that helps the student understand the target output format."
+        + (f"Course context: {course_hint}\n" if course_hint else "")
+        + f"Assignment description:\n{desc}\n\n"
+        + language_line
+        + f"{build_project_context(title, desc).prompt_block()}\n"
+        + "Return a concrete expected-output example that helps the student understand the target output format."
     )
 
     if not _llm_cfg.ollama_enabled:
@@ -4788,7 +4867,11 @@ async def assignment_assistant_suggestions(req: AssignmentAssistantSuggestionsRe
         user_prompt += (
             "UZUN BRIEF MODU (ZORUNLU): Egitmen zaten ayrintili bir odev tanimi yazmis. "
             "Yeni konu veya baska domain icat etme. Tum oneriler ayni ana odev etrafinda kalsin; "
-            "yalnizca kapsam, arayuz tipi, modulerlik, test/rapor beklentisi veya teslim formati farklilastirilsin. "
+            "ANCAK her oneri belirgin sekilde FARKLI bir muhendislik odagi/teslimat acisi almali "
+            "(ornegin: temel islevsellik, girdi dogrulama ve hata yonetimi, raporlama ve ozet metrikler, "
+            "birim test kapsami, moduler/yeniden kullanilabilir tasarim, performans/buyuk veri). "
+            "Bicimsel '- Surum 1/2' veya '- Temel/Gelismis Surum' gibi sablon ekler KULLANMA; "
+            "basliklar dogal okunsun ve odagi yansitsin. Ayni cumleyi tekrar etme. "
             f"Cekirdek baslik/niyet: {direct_suggestion['title']}.\n"
         )
     user_prompt += (

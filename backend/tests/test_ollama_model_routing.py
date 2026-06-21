@@ -18,6 +18,8 @@ class OllamaModelRoutingTests(unittest.IsolatedAsyncioTestCase):
     async def test_chat_json_sends_explicit_model_to_ollama_payload(self):
         with (
             patch.object(settings, "llm_provider", "ollama"),
+            patch.object(settings, "llm_coder_provider", "ollama"),
+            patch.object(settings, "llm_general_provider", "ollama"),
             patch(
                 "backend.llm.ollama_client._do_request",
                 new=AsyncMock(return_value={"ok": True}),
@@ -42,6 +44,8 @@ class OllamaModelRoutingTests(unittest.IsolatedAsyncioTestCase):
         schema_hint = {"ok": True}
         with (
             patch.object(settings, "llm_provider", "ollama"),
+            patch.object(settings, "llm_coder_provider", "ollama"),
+            patch.object(settings, "llm_general_provider", "ollama"),
             patch(
                 "backend.llm.ollama_client._do_request",
                 new=AsyncMock(return_value={"ok": True}),
@@ -158,7 +162,9 @@ class OllamaModelRoutingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(payload["messages"][1]["role"], "user")
         self.assertEqual(payload["max_tokens"], 3072)
 
-    async def test_chat_json_keeps_explicit_nvidia_nim_token_limit(self):
+    async def test_chat_json_enforces_nvidia_nim_token_floor(self):
+        # Reasoning modelleri icin: cagiranin kucuk degeri NIM tabanina yukseltilir,
+        # daha buyuk degerler aynen korunur.
         with (
             patch.object(settings, "llm_provider", "nvidia_nim", create=True),
             patch.object(settings, "llm_general_provider", "nvidia_nim", create=True),
@@ -176,8 +182,15 @@ class OllamaModelRoutingTests(unittest.IsolatedAsyncioTestCase):
                 num_predict=128,
                 use_cache=False,
             )
+            self.assertEqual(request.await_args.args[0]["max_tokens"], 3072)
 
-        self.assertEqual(request.await_args.args[0]["max_tokens"], 128)
+            await chat_json(
+                system_prompt="Return JSON.",
+                user_prompt="{}",
+                num_predict=6000,
+                use_cache=False,
+            )
+            self.assertEqual(request.await_args.args[0]["max_tokens"], 6000)
 
     async def test_chat_text_routes_to_nvidia_nim_payload(self):
         with (
@@ -319,3 +332,60 @@ class OllamaModelRoutingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(nim_request.await_count, 1)
         self.assertEqual(ollama_request.await_count, 1)
         self.assertEqual(ollama_request.await_args.args[0]["model"], settings.ollama_coder_model)
+
+
+class ExtractJsonTests(unittest.TestCase):
+    def test_parses_json_with_code_fences_inside_string_value(self):
+        from backend.llm.ollama_client import _extract_json
+
+        content = (
+            '{"example": "Ornek:\\n\\nGirdi (ogrenciler.csv):\\n'
+            "```\\nAd,Not\\nAli,45\\n```\\n\\nCLI:\\n"
+            "```\\npython main.py ogrenciler.csv\\n```\\n"
+            'Beklenen cikti gosterilir."}'
+        )
+
+        result = _extract_json(content)
+
+        self.assertIsInstance(result, dict)
+        self.assertIn("python main.py", result["example"])
+
+    def test_strips_outer_code_fence_wrapper(self):
+        from backend.llm.ollama_client import _extract_json
+
+        content = '```json\n{"score": 90, "summary": "ok"}\n```'
+
+        result = _extract_json(content)
+
+        self.assertEqual(result, {"score": 90, "summary": "ok"})
+
+    def test_ignores_leading_reasoning_prose(self):
+        from backend.llm.ollama_client import _extract_json
+
+        content = 'Let me think about this.\nHere is the answer:\n{"score": 70}'
+
+        self.assertEqual(_extract_json(content), {"score": 70})
+
+
+class NimTokenFloorTests(unittest.IsolatedAsyncioTestCase):
+    async def test_nim_request_raises_caller_tokens_to_floor(self):
+        with (
+            patch.object(settings, "llm_provider", "nvidia_nim"),
+            patch.object(settings, "llm_general_provider", "nvidia_nim"),
+            patch.object(settings, "nvidia_nim_api_key", "test-key"),
+            patch.object(settings, "nvidia_nim_num_predict", 8192),
+            patch(
+                "backend.llm.ollama_client._do_nvidia_nim_request",
+                new=AsyncMock(return_value={"ok": True}),
+                create=True,
+            ) as nim_request,
+        ):
+            await chat_json(
+                system_prompt="Return JSON.",
+                user_prompt="{}",
+                num_predict=1440,
+                model=settings.ollama_general_model,
+                use_cache=False,
+            )
+
+        self.assertEqual(nim_request.await_args.args[0]["max_tokens"], 8192)

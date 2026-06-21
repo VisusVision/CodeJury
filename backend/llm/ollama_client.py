@@ -202,9 +202,13 @@ def _extract_json(text: str) -> dict | None:
 
     Brace sayimi string icindeki '}' ile hata yapabilir; json.JSONDecoder.raw_decode kullanilir.
     """
-    fence = re.search(r"```(?:json)?\s*\n?(.*?)```", text, re.DOTALL)
-    if fence:
-        text = fence.group(1).strip()
+    # Sadece tum yanit bir kod blogu icine sarilmissa fence soy. Aksi halde JSON string
+    # degeri icindeki ``` (orn. ornek ciktidaki kod blogu) yanlislikla yakalanir.
+    stripped = text.strip()
+    if stripped.startswith("```"):
+        fence = re.search(r"```(?:json)?\s*\n?(.*?)```", stripped, re.DOTALL)
+        if fence:
+            text = fence.group(1).strip()
 
     decoder = json.JSONDecoder()
     i = 0
@@ -404,7 +408,10 @@ async def chat_json(
     provider_name = "nvidia_nim" if provider_is_nim else "ollama"
     selected_model = _select_nim_model(model) if provider_is_nim else (model or settings.ollama_general_model)
     if provider_is_nim:
-        predict = int(num_predict) if num_predict is not None else int(settings.nvidia_nim_num_predict)
+        # Reasoning modelleri (orn. DeepSeek) max_tokens butcesinin bir kismini dusunmeye
+        # harcar; cagiranin istedigi degeri NIM tabaniyla yukseltip JSON'in kirpilmasini onle.
+        nim_floor = int(settings.nvidia_nim_num_predict)
+        predict = max(int(num_predict), nim_floor) if num_predict is not None else nim_floor
     else:
         predict = int(num_predict) if num_predict is not None else int(settings.ollama_num_predict)
     cache_key = _cache_key(f"{system_prompt}|np={predict}", user_prompt, temperature, selected_model, schema_hint)
@@ -518,12 +525,14 @@ async def chat_text(
     fallback_reason = ""
     if provider_is_nim:
         text_result: str | None = None
+        # Reasoning modelleri icin NIM token tabanini uygula.
+        nim_predict = max(int(predict), int(settings.nvidia_nim_num_predict))
         if settings.nvidia_nim_api_key.strip():
             nim_payload: dict[str, Any] = {
                 "model": selected_model,
                 "messages": messages,
                 "temperature": temperature,
-                "max_tokens": predict,
+                "max_tokens": nim_predict,
             }
             text_result = await _do_nvidia_nim_text_request(nim_payload)
         else:
@@ -538,7 +547,7 @@ async def chat_text(
                 cache_hit=False,
                 result_status="ok",
                 response_format="text",
-                max_tokens=predict,
+                max_tokens=nim_predict,
             )
             return text_result
 

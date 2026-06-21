@@ -139,12 +139,23 @@ const FacultyDashboard = () => {
       return;
     }
 
+    const selectedCourse = courses.find((c) => c.id === selectedCourseId);
+    const courseHint = selectedCourse
+      ? [
+          `${selectedCourse.name} (${selectedCourse.code})`,
+          selectedCourse.class_year ? `${selectedCourse.class_year}.sinif` : "",
+        ]
+          .filter(Boolean)
+          .join(", ")
+      : "";
+
     let cancelled = false;
     setManualAssignmentExampleLoading(true);
     const timer = window.setTimeout(() => {
       generateAssignmentExample({
         assignment_title: title || "Yeni Odev",
         assignment_description: description,
+        course_hint: courseHint,
       })
         .then((result) => {
           if (!cancelled && result.example?.trim()) {
@@ -167,7 +178,7 @@ const FacultyDashboard = () => {
       cancelled = true;
       window.clearTimeout(timer);
     };
-  }, [newAssignmentName, newAssignmentDesc, manualAssignmentExampleTouched]);
+  }, [newAssignmentName, newAssignmentDesc, manualAssignmentExampleTouched, selectedCourseId, courses]);
 
   const fetchAll = async () => {
     const [departmentsData, coursesData, assignmentsData, rubricsData, evaluationsData] = await Promise.all([
