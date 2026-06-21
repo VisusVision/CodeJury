@@ -31,9 +31,32 @@ LLM_UNAVAILABLE_ERROR = (
     "AI analiz servisi kullanilamiyor. Ollama acik ve model kurulu oldugundan emin olun, "
     "sonra analizi tekrar baslatin."
 )
+_PIPELINE_RELOAD_MODULES = (
+    "backend.agents.master_evaluator",
+    "backend.agents.test_agent",
+    "backend.agents.security",
+    "backend.sandbox.fixtures",
+    "backend.sandbox.executor",
+    "frontend.backend.main",
+)
+
+
+def _worker_reload_enabled() -> bool:
+    return os.getenv("ANALYSIS_WORKER_RELOAD", "1").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _reload_pipeline_modules() -> None:
+    import importlib
+
+    for name in _PIPELINE_RELOAD_MODULES:
+        module = sys.modules.get(name)
+        if module is not None:
+            importlib.reload(module)
 
 
 async def _default_pipeline(**kwargs: Any) -> dict[str, Any]:
+    if _worker_reload_enabled():
+        _reload_pipeline_modules()
     from frontend.backend.main import run_analysis_pipeline
 
     return await run_analysis_pipeline(**kwargs)

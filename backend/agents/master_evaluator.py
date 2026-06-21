@@ -242,6 +242,7 @@ class MasterEvaluatorAgent(BaseAgent):
                 source_code=str(input_data.get("source_code") or ""),
                 language=str(input_data.get("language") or "python"),
                 faculty_mode=True,
+                task_alignment_factor=type(self)._task_alignment_factor(input_data, programmatic),
             )
             self._apply_security_guard(
                 llm_result,
@@ -294,6 +295,7 @@ class MasterEvaluatorAgent(BaseAgent):
             source_code=str(input_data.get("source_code") or ""),
             language=str(input_data.get("language") or "python"),
             faculty_mode=False,
+            task_alignment_factor=self._task_alignment_factor(input_data, programmatic),
         )
         self._apply_security_guard(
             llm_result,
@@ -734,6 +736,19 @@ class MasterEvaluatorAgent(BaseAgent):
         if total_max > 0:
             llm_result["final_score"] = round(100.0 * total_earned / total_max, 1)
 
+    @staticmethod
+    def _task_alignment_factor(input_data: dict[str, Any], programmatic: dict[str, Any]) -> float:
+        task_meta = input_data.get("task_alignment")
+        if isinstance(task_meta, dict):
+            try:
+                return float(task_meta.get("factor", 1.0) or 1.0)
+            except (TypeError, ValueError):
+                pass
+        try:
+            return float(programmatic.get("brief_alignment_factor", 1.0) or 1.0)
+        except (TypeError, ValueError):
+            return 1.0
+
     @classmethod
     def _apply_runtime_guard(
         cls,
@@ -743,6 +758,7 @@ class MasterEvaluatorAgent(BaseAgent):
         source_code: str = "",
         language: str = "python",
         faculty_mode: bool,
+        task_alignment_factor: float = 1.0,
     ) -> None:
         """Runtime facts are hard grading constraints, independent of LLM optimism."""
         if not isinstance(sandbox_result, dict) or not sandbox_result:
@@ -774,14 +790,31 @@ class MasterEvaluatorAgent(BaseAgent):
             except (TypeError, ValueError):
                 exit_i = 0
             if exit_i != 0:
-                from backend.agents.test_agent import _looks_like_cli_program, _looks_like_cli_usage_error
+                from backend.agents.test_agent import (
+                    _looks_like_cli_program,
+                    _looks_like_cli_usage_error,
+                    looks_like_missing_input_file_error,
+                )
 
                 if _looks_like_cli_program(source_code, language) and _looks_like_cli_usage_error(
                     str(sandbox_result.get("stderr") or "")
                 ):
                     return
-                cap = 55.0
-                reason = f"Program runtime hatasiyla sonlandi (exit code {exit_i}); calisabilirlik puani sinirlandi."
+                stderr_text = str(sandbox_result.get("stderr") or "")
+                fixtures_provided = bool(sandbox_result.get("fixtures_provided"))
+                if (
+                    looks_like_missing_input_file_error(stderr_text)
+                    and not fixtures_provided
+                    and task_alignment_factor >= 0.55
+                ):
+                    cap = 60.0
+                    reason = (
+                        "Program beklenen girdi dosyasini bulamadi; sandbox ortaminda ornek dosya "
+                        "saglanmadigi icin calisabilirlik puani sinirlandi."
+                    )
+                else:
+                    cap = 55.0
+                    reason = f"Program runtime hatasiyla sonlandi (exit code {exit_i}); calisabilirlik puani sinirlandi."
 
         if cap is None:
             return

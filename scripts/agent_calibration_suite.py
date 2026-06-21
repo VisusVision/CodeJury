@@ -183,6 +183,7 @@ def _programmatic_pipeline_report(brief: str, file_path: str, code: str) -> dict
     from backend.agents.task_relevance import _capability_match_signal
     from backend.agents.test_agent import TestAgent
     from backend.sandbox.executor import _simulate_sandbox
+    from backend.sandbox.fixtures import infer_sandbox_files
 
     language = _language_for_path(file_path)
     capability = _capability_match_signal(brief, None, code)
@@ -194,7 +195,8 @@ def _programmatic_pipeline_report(brief: str, file_path: str, code: str) -> dict
         assignment_description=brief,
     )
     if language == "python":
-        sandbox = _simulate_sandbox(code)
+        sandbox_files = infer_sandbox_files(assignment_brief=brief, source_code=code)
+        sandbox = _simulate_sandbox(code, files=sandbox_files or None)
     else:
         sandbox = {
             "compilation_success": True,
@@ -623,6 +625,9 @@ async def _amain(args: argparse.Namespace) -> int:
     _write_checkpoint(report, REPORT_PATH)
     _print_console_report(report)
     print(f"\nRapor dosyasi: {REPORT_PATH}")
+    summary = report.get("summary", {})
+    if summary.get("passed_cases", 0) != summary.get("total_cases", 0):
+        return 1
     return 0
 
 

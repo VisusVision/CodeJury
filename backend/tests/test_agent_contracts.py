@@ -677,7 +677,57 @@ class GuidelineContractTests(unittest.TestCase):
 
         self.assertEqual(merged["style_violations"], [])
 
-    def test_capability_match_keeps_unsafe_file_export_relevant(self):
+    def test_filters_file_path_and_valid_snake_case_naming_warnings(self):
+        merged = GuidelineAgent._merge_llm_with_programmatic(
+            {
+                "naming_quality": "fair",
+                "documentation_quality": "fair",
+                "clean_code_score": 70,
+                "style_guide_compliance": "PEP8",
+                "style_violations": [
+                    {
+                        "rule": "Naming",
+                        "description": "'rapor.csv' dosya adi PascalCase kullanilmis; snake_case tercih edilmeli.",
+                        "line_hint": "15",
+                        "severity": "low",
+                    },
+                    {
+                        "rule": "Naming",
+                        "description": "export_report fonksiyonu icin snake_case kullanin.",
+                        "line_hint": "8",
+                        "severity": "medium",
+                    },
+                    {
+                        "rule": "PEP8",
+                        "description": "Satir 12 cok uzun (120 karakter).",
+                        "line_hint": "12",
+                        "severity": "low",
+                    },
+                ],
+                "has_docstrings": False,
+                "has_type_hints": False,
+                "function_length_ok": True,
+                "nesting_depth_ok": True,
+                "dry_violations": [],
+                "score": 70,
+            },
+            {
+                "naming_quality": "good",
+                "documentation_quality": "fair",
+                "clean_code_score": 75,
+                "style_guide_compliance": "PEP8",
+                "style_violations": [],
+                "has_docstrings": False,
+                "has_type_hints": False,
+                "function_length_ok": True,
+                "nesting_depth_ok": True,
+                "dry_violations": [],
+                "score": 75,
+            },
+        )
+
+        rules = [v["rule"] for v in merged["style_violations"]]
+        self.assertEqual(rules, ["PEP8"])
         brief = "Ogrenci skorlarini CSV rapor dosyasina yazan CLI export araci gelistirin."
         code = """
 import os

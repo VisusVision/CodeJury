@@ -21,6 +21,11 @@ import {
 
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import ExecutionStats from "./ExecutionStats";
+import {
+  partitionEvidence,
+  type EvidenceItem,
+  type RejectedClaimItem,
+} from "@/lib/evidenceDisplay";
 
 /* ─── Types ─── */
 
@@ -48,12 +53,7 @@ interface AgentReport {
   findings: Finding[];
 }
 
-interface LineEvidence {
-  line: number;
-  agent: string;
-  message: string;
-  severity: "error" | "warning" | "info" | "success";
-}
+interface LineEvidence extends EvidenceItem {}
 
 export interface ReportData {
   totalScore: number;
@@ -61,6 +61,7 @@ export interface ReportData {
   rubric: RubricCategory[];
   agents: AgentReport[];
   evidence: LineEvidence[];
+  rejectedClaims?: RejectedClaimItem[];
   fileName: string;
   fileContent: string;
   executionTimeMs: number;
@@ -305,6 +306,39 @@ function AgentSection({ agent }: { agent: AgentReport }) {
 
 /* ─── Code with annotations ─── */
 
+function FileEvidencePanel({ items }: { items: LineEvidence[] }) {
+  if (items.length === 0) return null;
+  return (
+    <div className="rounded-xl bg-card shadow-card p-4 mb-4 space-y-2">
+      <h3 className="text-sm font-semibold text-foreground">Dosya Seviyesi Kanıtlar</h3>
+      {items.map((item, index) => (
+        <div key={`${item.agent}-${index}`} className="text-xs border border-border rounded-md p-2">
+          <span className={`font-medium ${severityColor[item.severity]}`}>[{item.agent}]</span>
+          <span className="text-muted-foreground ml-2">{item.message}</span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function RejectedClaimsPanel({ items }: { items: RejectedClaimItem[] }) {
+  if (items.length === 0) return null;
+  return (
+    <div className="rounded-xl bg-card shadow-card p-4 mt-4 space-y-2">
+      <h3 className="text-sm font-semibold text-foreground">Reddedilen İddialar</h3>
+      <p className="text-xs text-muted-foreground">
+        Bu maddeler kodda somut kanıt bulunamadığı için öğrenci geri bildirimine dahil edilmedi.
+      </p>
+      {items.map((item, index) => (
+        <div key={`${item.agentSource}-${index}`} className="text-xs border border-dashed border-border rounded-md p-2">
+          <div className="font-medium text-foreground">[{item.agent}] {item.claim}</div>
+          <div className="text-muted-foreground mt-1">↳ {item.reason}</div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function AnnotatedCode({ fileContent, evidence }: { fileContent: string; evidence: LineEvidence[] }) {
   const lines = fileContent.split("\n");
   const evidenceMap = new Map<number, LineEvidence[]>();
@@ -364,6 +398,8 @@ interface AnalysisReportProps {
 const AnalysisReport = ({ report, onClose }: AnalysisReportProps) => {
   const reportRef = useRef<HTMLDivElement>(null);
   const [exporting, setExporting] = useState(false);
+  const { lineEvidence, fileEvidence } = partitionEvidence(report.evidence);
+  const rejectedClaims = report.rejectedClaims ?? [];
 
   const handleExportPdf = useCallback(async () => {
     if (!reportRef.current) return;
@@ -472,7 +508,9 @@ const AnalysisReport = ({ report, onClose }: AnalysisReportProps) => {
           </TabsContent>
 
           <TabsContent value="evidence" className="mt-4">
-            <AnnotatedCode fileContent={report.fileContent} evidence={report.evidence} />
+            <FileEvidencePanel items={fileEvidence} />
+            <AnnotatedCode fileContent={report.fileContent} evidence={lineEvidence} />
+            <RejectedClaimsPanel items={rejectedClaims} />
           </TabsContent>
         </Tabs>
       </div>

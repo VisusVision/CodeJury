@@ -538,6 +538,7 @@ const WorkspacePage = ({ sidebarTitle, sidebarSubtitle, headerTitle, assignmentD
         rubric: result.rubric,
         agents: agentIconForReport,
         evidence: result.evidence,
+        rejectedClaims: result.rejectedClaims ?? [],
         fileName: result.fileName,
         fileContent: firstFile.content,
         executionTimeMs: result.executionTimeMs,
@@ -548,7 +549,9 @@ const WorkspacePage = ({ sidebarTitle, sidebarSubtitle, headerTitle, assignmentD
       setReport(reportData);
 
       // Build code annotations from evidence
-      const codeAnnotations: CodeAnnotation[] = result.evidence.map((e) => ({
+      const codeAnnotations: CodeAnnotation[] = result.evidence
+        .filter((e) => e.line > 0)
+        .map((e) => ({
         line: e.line,
         severity: e.severity,
         message: e.message,

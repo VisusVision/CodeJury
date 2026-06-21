@@ -53,6 +53,14 @@ export interface ApiLineEvidence {
   agent: string;
   message: string;
   severity: "error" | "warning" | "info" | "success";
+  scope?: "file";
+}
+
+export interface ApiRejectedClaim {
+  agent: string;
+  agentSource: string;
+  claim: string;
+  reason: string;
 }
 
 export interface ApiAnalysisResult {
@@ -61,6 +69,7 @@ export interface ApiAnalysisResult {
   rubric: ApiRubricCategory[];
   agents: ApiAgentReport[];
   evidence: ApiLineEvidence[];
+  rejectedClaims?: ApiRejectedClaim[];
   fileName: string;
   executionTimeMs: number;
   memoryUsageMb: number;

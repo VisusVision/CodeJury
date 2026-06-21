@@ -289,6 +289,45 @@ def _quoted_literals(text: str) -> list[str]:
     return literals
 
 
+def coerce_evidence_llm_payload(raw: dict) -> dict:
+    """Fill common missing fields on Evidence LLM JSON before schema validation."""
+    if not isinstance(raw, dict):
+        return raw
+    out = dict(raw)
+    claims = out.get("validated_claims")
+    if not isinstance(claims, list):
+        return out
+
+    coerced_claims: list[dict] = []
+    for claim in claims:
+        if not isinstance(claim, dict):
+            continue
+        item = dict(claim)
+        item.setdefault(
+            "agent_source",
+            str(item.get("agent") or item.get("source") or "unknown").strip() or "unknown",
+        )
+        if "lines" not in item:
+            raw_lines = item.get("line", item.get("line_hint", item.get("satir", [])))
+            if isinstance(raw_lines, list):
+                item["lines"] = raw_lines
+            elif isinstance(raw_lines, int):
+                item["lines"] = [raw_lines]
+            else:
+                item["lines"] = []
+        if not isinstance(item.get("lines"), list):
+            item["lines"] = []
+        item.setdefault("feedback", str(item.get("feedback") or item.get("message") or "").strip())
+        item.setdefault("severity", _normalize_severity(item.get("severity")))
+        item.setdefault("is_valid", True)
+        coerced_claims.append(item)
+
+    out["validated_claims"] = coerced_claims
+    if not isinstance(out.get("rejected_claims"), list):
+        out["rejected_claims"] = []
+    return out
+
+
 def _normalize_claims(
     claims: list,
     source_lines: list[str],
@@ -521,6 +560,13 @@ def _merge_claim_lists(*claim_lists: list[dict], max_items: int | None = None) -
 class EvidenceAgent(BaseAgent):
     name = "evidence"
     description = "Kanit eslestirme ve dogrulama"
+
+    def _pre_schema_normalize(self, result: dict, output_json_schema: dict | None) -> dict:
+        from backend.agents.json_output_schema import EVIDENCE_OUTPUT_SCHEMA
+
+        if output_json_schema is EVIDENCE_OUTPUT_SCHEMA:
+            return coerce_evidence_llm_payload(result)
+        return result
 
     async def analyze(self, input_data: dict) -> dict:
         source_code = input_data["source_code"]

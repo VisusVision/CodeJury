@@ -63,6 +63,79 @@ Reply with ONLY this JSON shape:
 """
 
 
+def _programmatic_from_sandbox_tests(
+    sb_tests: list,
+    *,
+    exit_code: int,
+    exec_time_ms: float,
+    peak_memory_mb: float,
+    stderr: str = "",
+) -> dict | None:
+    """Map orchestrator test_results into TestAgent programmatic fields."""
+    if not isinstance(sb_tests, list) or not sb_tests:
+        return None
+
+    test_results: list[dict] = []
+    test_failures: list[dict] = []
+    passed = 0
+    failed = 0
+
+    for raw in sb_tests:
+        if not isinstance(raw, dict):
+            continue
+        name = str(raw.get("name") or raw.get("test_name") or "sandbox_test")
+        ok = bool(raw.get("passed"))
+        actual = str(raw.get("actual_stdout") or raw.get("actual") or "")
+        expected = str(raw.get("expected_stdout") or raw.get("expected") or "")
+        detail = {
+            "test_name": name,
+            "input": str(raw.get("stdin") or raw.get("input") or "")[:120],
+            "expected": expected[:200],
+            "actual": actual[:200],
+            "passed": ok,
+            "match_pct": 100.0 if ok else 0.0,
+        }
+        if not ok:
+            err = str(raw.get("error") or "Sandbox testi basarisiz")
+            detail["diff_detail"] = err
+            test_failures.append({"test_name": name, "reason": err})
+            failed += 1
+        else:
+            passed += 1
+        test_results.append(detail)
+
+    if not test_results:
+        return None
+
+    runtime_errors = _classify_errors(stderr) if failed or exit_code != 0 else []
+    runs_ok = failed == 0 and exit_code == 0
+    edge_case = "good" if passed >= 2 else "fair"
+    perf_notes = _evaluate_performance(exec_time_ms, peak_memory_mb)
+
+    total_tests = max(passed + failed, 1)
+    if not runs_ok:
+        score = 15 if failed else 25
+    else:
+        correctness_pct = (passed / total_tests) * 100
+        score = int(correctness_pct * 0.7) + 15
+        edge_bonus = {"poor": 0, "fair": 5, "good": 10, "excellent": 15}.get(edge_case, 0)
+        score += edge_bonus
+
+    return {
+        "compilation_success": True,
+        "runs_successfully": runs_ok,
+        "passed_tests": passed,
+        "failed_tests": failed,
+        "total_tests": passed + failed,
+        "test_results": test_results,
+        "test_failures": test_failures,
+        "runtime_errors": runtime_errors,
+        "edge_case_handling": edge_case,
+        "performance_notes": perf_notes,
+        "score": max(0, min(100, score)),
+    }
+
+
 class TestAgent(BaseAgent):
     name = "test_agent"
     description = "Dinamik test ve calistirma analizi"
@@ -234,6 +307,16 @@ class TestAgent(BaseAgent):
             and exit_code != 0
             and _looks_like_cli_usage_error(stderr)
         )
+
+        sandbox_tests = _programmatic_from_sandbox_tests(
+            sandbox.get("test_results") or [],
+            exit_code=exit_code,
+            exec_time_ms=exec_time,
+            peak_memory_mb=peak_mem,
+            stderr=stderr,
+        )
+        if sandbox_tests is not None:
+            return _finish(sandbox_tests)
 
         if not compilation:
             errors = _classify_errors(stderr)
@@ -495,6 +578,10 @@ class TestAgent(BaseAgent):
             "performance_notes": perf_notes,
             "score": max(0, min(100, score)),
         })
+
+
+def looks_like_missing_input_file_error(stderr: str) -> bool:
+    return "filenotfounderror" in str(stderr or "").lower()
 
 
 def _classify_errors(stderr: str) -> list[str]:

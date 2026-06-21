@@ -666,8 +666,13 @@ def _check_dangerous_patterns(source_code: str) -> list[dict]:
 
 def _merge_threat_lists(*threat_lists: list) -> list[dict]:
     """LLM + AST tehditlerini satir/tip bazinda birlestir."""
-    seen: set[tuple] = set()
-    out: list[dict] = []
+    severity_rank = {"critical": 4, "high": 3, "medium": 2, "low": 1, "info": 0}
+    merged_by_key: dict[tuple, dict] = {}
+    order: list[tuple] = []
+
+    def _rank(threat: dict) -> int:
+        return severity_rank.get(str(threat.get("severity", "")).lower(), 0)
+
     for threats in threat_lists:
         if not isinstance(threats, list):
             continue
@@ -675,16 +680,16 @@ def _merge_threat_lists(*threat_lists: list) -> list[dict]:
             if not isinstance(raw, dict):
                 continue
             t = dict(raw)
-            key = (
-                t.get("line"),
-                str(t.get("type", "")).lower(),
-                str(t.get("description", ""))[:72],
-            )
-            if key in seen:
+            key = (t.get("line"), str(t.get("type", "")).lower().strip())
+            existing = merged_by_key.get(key)
+            if existing is None:
+                merged_by_key[key] = t
+                order.append(key)
                 continue
-            seen.add(key)
-            out.append(t)
-    return out
+            if _rank(t) > _rank(existing):
+                merged_by_key[key] = t
+
+    return [merged_by_key[key] for key in order]
 
 
 def _has_severe_threats(threats: list[dict]) -> bool:

@@ -41,6 +41,27 @@ class SecurityScoreCapTests(unittest.TestCase):
         self.assertEqual(len(merged), 1)
         self.assertEqual(merged[0]["severity"], "critical")
 
+    def test_merge_dedupes_same_line_and_type_with_different_descriptions(self):
+        llm = [
+            {
+                "type": "code_injection",
+                "severity": "high",
+                "line": 5,
+                "description": "eval() kullanimi tespit edildi",
+            }
+        ]
+        prog = [
+            {
+                "type": "code_injection",
+                "severity": "critical",
+                "line": 5,
+                "description": "eval() rastgele kod calistirir",
+            }
+        ]
+        merged = _merge_threat_lists(llm, prog)
+        self.assertEqual(len(merged), 1)
+        self.assertEqual(merged[0]["severity"], "critical")
+
     def test_old_blend_inflates_vs_cap(self):
         threats = [{"type": "x", "severity": "critical", "line": 1, "description": "a"}]
         model, rule = 100, _score_from_threats(threats)

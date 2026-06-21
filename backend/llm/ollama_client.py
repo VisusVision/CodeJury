@@ -131,6 +131,13 @@ def _select_nim_model(model: str | None) -> str:
     return model
 
 
+def _ollama_model_for_request(model: str | None) -> str:
+    """Map a logical model choice back to a local Ollama model name."""
+    if model == settings.ollama_coder_model:
+        return settings.ollama_coder_model
+    return settings.ollama_general_model
+
+
 def _cache_key(
     system_prompt: str,
     user_prompt: str,
@@ -341,6 +348,38 @@ async def _do_nvidia_nim_request(payload: dict[str, Any]) -> dict | None:
 async def _do_nvidia_nim_text_request(payload: dict[str, Any]) -> str | None:
     return await _post_nvidia_nim(payload)
 
+async def _do_ollama_text_request(payload: dict[str, Any]) -> str | None:
+    """Tek bir Ollama chat istegi gonderir (duz metin, retry destekli)."""
+    client = _get_client()
+    sem = _get_semaphore()
+
+    for attempt in range(1 + settings.ollama_max_retries):
+        async with sem:
+            try:
+                resp = await client.post("/api/chat", json=payload)
+                resp.raise_for_status()
+                data = resp.json()
+                content = (data.get("message") or {}).get("content") or ""
+                text = content.strip()
+                if text:
+                    return text
+                logger.warning("[ollama] chat_text bos yanit (attempt %d)", attempt + 1)
+            except httpx.TimeoutException:
+                logger.warning(
+                    "[ollama] chat_text timeout (attempt %d/%d)",
+                    attempt + 1,
+                    1 + settings.ollama_max_retries,
+                )
+            except httpx.HTTPStatusError as exc:
+                logger.warning("[ollama] chat_text HTTP %s", exc.response.status_code)
+            except Exception as exc:
+                logger.warning("[ollama] chat_text hata: %s", exc)
+
+        if attempt < settings.ollama_max_retries:
+            await asyncio.sleep(settings.ollama_retry_delay * (attempt + 1))
+
+    return None
+
 
 async def chat_json(
     system_prompt: str,
@@ -388,28 +427,44 @@ async def chat_json(
         {"role": "user", "content": user_prompt},
     ]
 
+    fallback_reason = ""
     if provider_is_nim:
-        if not settings.nvidia_nim_api_key.strip():
-            logger.warning("[nvidia-nim] API key missing; JSON request skipped")
-            _record_call_metadata(
-                function="chat_json",
-                provider=provider_name,
-                model=selected_model,
-                cache_hit=False,
-                result_status="skipped",
-                response_format="json",
-                max_tokens=predict,
-                fallback_reason="missing_api_key",
-            )
-            return None
-        payload: dict[str, Any] = {
-            "model": selected_model,
-            "messages": messages,
-            "temperature": temperature,
-            "max_tokens": predict,
-            "response_format": {"type": "json_object"},
-        }
-        result = await _do_nvidia_nim_request(payload)
+        result: dict | None = None
+        if settings.nvidia_nim_api_key.strip():
+            nim_payload: dict[str, Any] = {
+                "model": selected_model,
+                "messages": messages,
+                "temperature": temperature,
+                "max_tokens": predict,
+                "response_format": {"type": "json_object"},
+            }
+            result = await _do_nvidia_nim_request(nim_payload)
+        else:
+            logger.warning("[nvidia-nim] API key missing; falling back to local Ollama")
+            fallback_reason = "missing_api_key"
+
+        if result is None:
+            ollama_model = _ollama_model_for_request(model)
+            ollama_predict = int(num_predict) if num_predict is not None else int(settings.ollama_num_predict)
+            ollama_payload = {
+                "model": ollama_model,
+                "messages": messages,
+                "stream": False,
+                "options": {
+                    "temperature": temperature,
+                    "num_predict": ollama_predict,
+                },
+                "format": "json",
+                "keep_alive": "30m",
+            }
+            result = await _do_request(ollama_payload)
+            if result is not None:
+                provider_name = "ollama"
+                selected_model = ollama_model
+                predict = ollama_predict
+                if not fallback_reason:
+                    fallback_reason = "nim_failed_ollama_fallback"
+                logger.info("[ollama] nvidia-nim JSON request fell back to local Ollama")
     else:
         payload = {
             "model": selected_model,
@@ -434,7 +489,7 @@ async def chat_json(
         result_status="ok" if result is not None else "failed",
         response_format="json",
         max_tokens=predict,
-        fallback_reason="" if result is not None else "empty_or_unparseable",
+        fallback_reason="" if (result is not None and not fallback_reason) else (fallback_reason or "empty_or_unparseable"),
     )
     return result
 
@@ -460,38 +515,73 @@ async def chat_text(
     provider_name = "nvidia_nim" if provider_is_nim else "ollama"
     selected_model = _select_nim_model(model) if provider_is_nim else (model or settings.ollama_general_model)
 
+    fallback_reason = ""
     if provider_is_nim:
-        if not settings.nvidia_nim_api_key.strip():
-            logger.warning("[nvidia-nim] API key missing; text request skipped")
+        text_result: str | None = None
+        if settings.nvidia_nim_api_key.strip():
+            nim_payload: dict[str, Any] = {
+                "model": selected_model,
+                "messages": messages,
+                "temperature": temperature,
+                "max_tokens": predict,
+            }
+            text_result = await _do_nvidia_nim_text_request(nim_payload)
+        else:
+            logger.warning("[nvidia-nim] API key missing; falling back to local Ollama")
+            fallback_reason = "missing_api_key"
+
+        if text_result:
             _record_call_metadata(
                 function="chat_text",
                 provider=provider_name,
                 model=selected_model,
                 cache_hit=False,
-                result_status="skipped",
+                result_status="ok",
                 response_format="text",
                 max_tokens=predict,
-                fallback_reason="missing_api_key",
             )
-            return None
-        payload: dict[str, Any] = {
-            "model": selected_model,
+            return text_result
+
+        ollama_model = _ollama_model_for_request(model)
+        ollama_predict = int(num_predict) if num_predict is not None else min(int(settings.ollama_num_predict), 2048)
+        ollama_payload: dict[str, Any] = {
+            "model": ollama_model,
             "messages": messages,
-            "temperature": temperature,
-            "max_tokens": predict,
+            "stream": False,
+            "options": {
+                "temperature": temperature,
+                "num_predict": ollama_predict,
+            },
+            "keep_alive": "30m",
         }
-        text_result = await _do_nvidia_nim_text_request(payload)
+        text_result = await _do_ollama_text_request(ollama_payload)
+        if text_result:
+            if not fallback_reason:
+                fallback_reason = "nim_failed_ollama_fallback"
+            _record_call_metadata(
+                function="chat_text",
+                provider="ollama",
+                model=ollama_model,
+                cache_hit=False,
+                result_status="ok",
+                response_format="text",
+                max_tokens=ollama_predict,
+                fallback_reason=fallback_reason,
+            )
+            logger.info("[ollama] nvidia-nim text request fell back to local Ollama")
+            return text_result
+
         _record_call_metadata(
             function="chat_text",
             provider=provider_name,
             model=selected_model,
             cache_hit=False,
-            result_status="ok" if text_result else "failed",
+            result_status="failed",
             response_format="text",
             max_tokens=predict,
-            fallback_reason="" if text_result else "empty_response",
+            fallback_reason=fallback_reason or "empty_response",
         )
-        return text_result
+        return None
 
     payload: dict[str, Any] = {
         "model": selected_model,
@@ -504,42 +594,18 @@ async def chat_text(
         "keep_alive": "30m",
     }
 
-    client = _get_client()
-    sem = _get_semaphore()
-
-    for attempt in range(1 + settings.ollama_max_retries):
-        async with sem:
-            try:
-                resp = await client.post("/api/chat", json=payload)
-                resp.raise_for_status()
-                data = resp.json()
-                content = (data.get("message") or {}).get("content") or ""
-                text = content.strip()
-                if text:
-                    _record_call_metadata(
-                        function="chat_text",
-                        provider=provider_name,
-                        model=selected_model,
-                        cache_hit=False,
-                        result_status="ok",
-                        response_format="text",
-                        max_tokens=predict,
-                    )
-                    return text
-                logger.warning("[ollama] chat_text bos yanit (attempt %d)", attempt + 1)
-            except httpx.TimeoutException:
-                logger.warning(
-                    "[ollama] chat_text timeout (attempt %d/%d)",
-                    attempt + 1,
-                    1 + settings.ollama_max_retries,
-                )
-            except httpx.HTTPStatusError as exc:
-                logger.warning("[ollama] chat_text HTTP %s", exc.response.status_code)
-            except Exception as exc:
-                logger.warning("[ollama] chat_text hata: %s", exc)
-
-        if attempt < settings.ollama_max_retries:
-            await asyncio.sleep(settings.ollama_retry_delay * (attempt + 1))
+    text_result = await _do_ollama_text_request(payload)
+    if text_result:
+        _record_call_metadata(
+            function="chat_text",
+            provider=provider_name,
+            model=selected_model,
+            cache_hit=False,
+            result_status="ok",
+            response_format="text",
+            max_tokens=predict,
+        )
+        return text_result
 
     _record_call_metadata(
         function="chat_text",

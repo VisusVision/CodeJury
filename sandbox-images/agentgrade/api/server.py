@@ -142,6 +142,17 @@ class SandboxHandler(BaseHTTPRequestHandler):
             except Exception:
                 pass
 
+        workdir_files = []
+        for item in body.get("files", []):
+            if not isinstance(item, dict):
+                continue
+            name = str(item.get("name", "")).strip()
+            if not name:
+                continue
+            workdir_files.append({"name": name, "content": str(item.get("content", ""))})
+
+        argv = [str(arg) for arg in body.get("argv", []) if str(arg).strip()]
+
         start = time.perf_counter()
         log.info(f"Execute: lang={language} size={len(code)}b tests={len(test_cases)}")
 
@@ -152,6 +163,8 @@ class SandboxHandler(BaseHTTPRequestHandler):
                 language=language,
                 test_cases=test_cases or None,
                 submission_id=body.get("submission_id"),
+                workdir_files=workdir_files or None,
+                argv=argv or None,
             )
             elapsed = (time.perf_counter() - start) * 1000
             log.info(f"Done: id={report.submission_id} elapsed={elapsed:.0f}ms")

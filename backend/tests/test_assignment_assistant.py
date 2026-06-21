@@ -264,5 +264,33 @@ class AssignmentAssistantTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("verilecek", title.lower())
 
 
+class AssignmentSuggestionDiversityTests(unittest.TestCase):
+    def test_clean_assignment_suggestion_items_drops_near_duplicate_descriptions(self):
+        from frontend.backend.main import _clean_assignment_suggestion_items
+
+        raw = [
+            {
+                "title": "CSV Not Analizi A",
+                "description": "CSV dosyasindan ogrenci notlarini okuyup gecme durumunu hesaplayan CLI.",
+            },
+            {
+                "title": "CSV Not Analizi B",
+                "description": "CSV dosyasindan ogrenci notlarini okuyup gecme durumunu hesaplayan program.",
+            },
+            {
+                "title": "Hash Tablosu Sayaci",
+                "description": "Metin dosyasinda kelime frekansini hash tablosu ile sayan program.",
+            },
+        ]
+
+        cleaned = _clean_assignment_suggestion_items(raw, 3)
+
+        self.assertEqual(len(cleaned), 2)
+        titles = {row["title"] for row in cleaned}
+        self.assertIn("CSV Not Analizi A", titles)
+        self.assertIn("Hash Tablosu Sayaci", titles)
+        self.assertNotIn("CSV Not Analizi B", titles)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -43,6 +43,8 @@ def run_in_sandbox(
     language: str,
     stdin_data: str = "",
     test_cases: list | None = None,
+    files: list | None = None,
+    argv: list | None = None,
 ) -> dict:
     """
     Execute code through the sandbox pool.
@@ -52,6 +54,8 @@ def run_in_sandbox(
         language    : 'python', 'cpp', 'c++', or 'java'
         stdin_data  : Data to pass as stdin
         test_cases  : [{"name": str, "stdin": str, "expected_stdout": str}, ...]
+        files       : [{"name": str, "content": str}, ...] written into workdir before run
+        argv        : Optional CLI args passed after the solution script
 
     Returns:
         Enriched sandbox result dict
@@ -63,10 +67,12 @@ def run_in_sandbox(
 
     from backend.sandbox.pool_manager import get_pool
 
+    normalized_files = _normalize_workdir_files(files)
+
     pool = get_pool()
     if pool is None or not pool.is_ready:
         print("[executor] Pool hazir degil, simulasyon modu kullaniliyor", flush=True)
-        return _simulate_sandbox(source_code)
+        return _simulate_sandbox(source_code, files=normalized_files, argv=argv)
 
     api_lang = _LANG_MAP.get(language.lower().strip(), language.lower().strip())
 
@@ -81,6 +87,9 @@ def run_in_sandbox(
         "code":       source_code,
         "language":   api_lang,
         "test_cases": tc_list,
+        "files":      normalized_files,
+        "argv":       list(argv or []),
+        "fixtures_provided": bool(normalized_files),
     }
 
     slot = None
@@ -112,6 +121,7 @@ def run_in_sandbox(
             "static_analysis":     report.get("static_analysis", {}),
             "code_metrics":        report.get("code_metrics", {}),
             "summary":             report.get("summary", {}),
+            "fixtures_provided":   bool(normalized_files),
         }
 
     except TimeoutError as e:
@@ -125,9 +135,29 @@ def run_in_sandbox(
             pool.release(slot, ok=True)
 
 
+def _normalize_workdir_files(files: list | None) -> list[dict[str, str]]:
+    out: list[dict[str, str]] = []
+    if not files:
+        return out
+    for item in files:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("name", "")).strip()
+        content = item.get("content")
+        if not name or content is None:
+            continue
+        out.append({"name": name, "content": str(content)})
+    return out
+
+
 # ── Fallback: simple simulation when Docker is unavailable ────────────────────
 
-def _simulate_sandbox(source_code: str) -> dict:
+def _simulate_sandbox(
+    source_code: str,
+    *,
+    files: list | None = None,
+    argv: list | None = None,
+) -> dict:
     """
     Fallback used when the pool is unavailable.
     Runs code directly without isolation (development only).
@@ -152,10 +182,15 @@ def _simulate_sandbox(source_code: str) -> dict:
     try:
         with tempfile.TemporaryDirectory(prefix="agentgrade-sim-") as tmp:
             tmp_path = Path(tmp)
+            for item in _normalize_workdir_files(files):
+                fixture_path = tmp_path / item["name"]
+                fixture_path.parent.mkdir(parents=True, exist_ok=True)
+                fixture_path.write_text(item["content"], encoding="utf-8")
             script_path = tmp_path / "submission.py"
             script_path.write_text(source_code, encoding="utf-8")
+            command = [sys.executable, str(script_path), *list(argv or [])]
             proc = subprocess.run(
-                [sys.executable, str(script_path)],
+                command,
                 capture_output=True, text=True, timeout=10,
                 cwd=str(tmp_path) or os.path.dirname(__file__) or ".",
             )
@@ -170,4 +205,5 @@ def _simulate_sandbox(source_code: str) -> dict:
         result["stderr"]    = str(e)
         result["exit_code"] = 1
 
+    result["fixtures_provided"] = bool(_normalize_workdir_files(files))
     return result
