@@ -97,6 +97,49 @@ class AssignmentSafetyTests(unittest.TestCase):
         self.assertFalse(result.allowed)
         self.assertTrue(any(issue.category == "violence" for issue in result.issues))
 
+    def test_turkish_profanity_in_description_is_blocked(self):
+        result = AssignmentSafetyAgent().analyze(
+            title="Liste Uygulamasi",
+            description="Bu odevde amk basit bir liste yazacaksiniz.",
+            course_context="Python programlama",
+        )
+
+        self.assertFalse(result.allowed)
+        self.assertTrue(any(issue.category == "profanity" for issue in result.issues))
+
+    def test_llm_approve_does_not_override_deterministic_profanity_block(self):
+        agent = AssignmentSafetyAgent()
+        deterministic = agent.analyze(
+            title="Liste Uygulamasi",
+            description="Bu odevde amk basit bir liste yazacaksiniz.",
+            course_context="Python",
+        )
+        self.assertFalse(deterministic.allowed)
+
+        merged = agent._merge_llm_review(
+            deterministic,
+            {
+                "allowed": True,
+                "is_programming_assignment": True,
+                "risk_categories": [],
+                "reason": "Zararsiz programlama odevi.",
+                "suggested_fix": "",
+            },
+        )
+
+        self.assertFalse(merged.allowed)
+        self.assertEqual(merged.review_source, "hybrid_llm_deterministic_kept")
+        self.assertTrue(any(issue.category == "profanity" for issue in merged.issues))
+
+    def test_clean_assignment_description_is_allowed(self):
+        result = AssignmentSafetyAgent().analyze(
+            title="CSV Not Analizi",
+            description="CSV dosyasindan not okuyup gecme durumunu hesaplayan CLI programi yazin.",
+            course_context="Python programlama",
+        )
+
+        self.assertTrue(result.allowed)
+
 
 if __name__ == "__main__":
     unittest.main()
