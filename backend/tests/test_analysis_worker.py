@@ -1,3 +1,4 @@
+import asyncio
 import unittest
 from unittest.mock import AsyncMock, patch
 
@@ -93,6 +94,21 @@ class AnalysisWorkerTests(unittest.IsolatedAsyncioTestCase):
                     await analysis_worker._default_pipeline(file_name="main.py")
 
         reload_mock.assert_not_called()
+
+    async def test_process_analysis_job_marks_failed_when_pipeline_times_out(self):
+        await create_analysis_job(self.store, {"file_name": "main.py", "file_content": "slow"})
+
+        async def pipeline(**kwargs):
+            await asyncio.sleep(0.2)
+            return {"totalScore": 50}
+
+        with patch.object(analysis_worker.settings, "analysis_pipeline_timeout_seconds", 0):
+            with patch.object(analysis_worker.logger, "exception"):
+                await process_analysis_job(self.store, "job-123", pipeline=pipeline)
+
+        job = await get_analysis_job(self.store, "job-123")
+        self.assertEqual(job["status"], "failed")
+        self.assertEqual(job["error"], analysis_worker.PIPELINE_TIMEOUT_ERROR)
 
     async def test_worker_sandbox_pool_initializes_when_enabled(self):
         with patch.dict("os.environ", {"ANALYSIS_WORKER_SANDBOX_POOL": "1"}, clear=False):

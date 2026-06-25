@@ -27,6 +27,7 @@ logger = logging.getLogger(__name__)
 
 PipelineCallable = Callable[..., Awaitable[dict[str, Any]]]
 SAFE_ANALYSIS_ERROR = "Analiz tamamlanamadi. Lutfen tekrar deneyin."
+PIPELINE_TIMEOUT_ERROR = "Analiz zaman asimina ugradi. Lutfen tekrar deneyin."
 LLM_UNAVAILABLE_ERROR = (
     "AI analiz servisi kullanilamiyor. Ollama acik ve model kurulu oldugundan emin olun, "
     "sonra analizi tekrar baslatin."
@@ -99,14 +100,20 @@ async def process_analysis_job(
     job = await mark_analysis_job_running(store, job_id)
     request = dict(job.get("request") or {})
     try:
-        result = await pipeline(
-            file_name=str(request.get("file_name") or "unknown.py"),
-            file_content=str(request.get("file_content") or ""),
-            assignment_brief=str(request.get("assignment_brief") or ""),
-            faculty_rubric_criteria=request.get("faculty_rubric_criteria") or [],
-            report_language=str(request.get("report_language") or "tr"),
+        result = await asyncio.wait_for(
+            pipeline(
+                file_name=str(request.get("file_name") or "unknown.py"),
+                file_content=str(request.get("file_content") or ""),
+                assignment_brief=str(request.get("assignment_brief") or ""),
+                faculty_rubric_criteria=request.get("faculty_rubric_criteria") or [],
+                report_language=str(request.get("report_language") or "tr"),
+            ),
+            timeout=settings.analysis_pipeline_timeout_seconds,
         )
         return await mark_analysis_job_completed(store, job_id, result)
+    except asyncio.TimeoutError:
+        logger.exception("analysis job timed out: %s", job_id)
+        return await fail_analysis_job(store, job_id, PIPELINE_TIMEOUT_ERROR)
     except LLMInferenceError:
         logger.exception("analysis job failed because LLM is unavailable: %s", job_id)
         return await fail_analysis_job(store, job_id, LLM_UNAVAILABLE_ERROR)

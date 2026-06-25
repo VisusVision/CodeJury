@@ -41,6 +41,7 @@ class Settings(BaseSettings):
     analysis_consumer_group: str = "group:analysis_workers"
     analysis_job_ttl_seconds: int = 86400
     analysis_worker_poll_timeout_seconds: int = 5
+    analysis_pipeline_timeout_seconds: int = 300
 
     model_config = {"env_file": str(_ENV_FILE), "extra": "ignore"}
 
