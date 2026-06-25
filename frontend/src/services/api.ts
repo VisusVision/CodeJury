@@ -251,16 +251,47 @@ function apiErrorMessage(errorText: string, fallback: string): string {
 
 const sleep = (ms: number) => new Promise((resolve) => window.setTimeout(resolve, ms));
 
+const ANALYSIS_POLL_INTERVAL_MS = 1500;
+const ANALYSIS_POLL_MAX_ATTEMPTS = 200;
+const LLM_FETCH_TIMEOUT_MS = 120_000;
+const RUBRIC_FETCH_TIMEOUT_MS = 180_000;
+
+async function fetchWithTimeout(
+  url: string,
+  init: RequestInit,
+  timeoutMs: number,
+): Promise<Response> {
+  const controller = new AbortController();
+  const timer = window.setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, { ...init, signal: controller.signal });
+  } catch (error) {
+    if (error instanceof DOMException && error.name === "AbortError") {
+      throw new Error(`İstek zaman aşımına uğradı (${Math.round(timeoutMs / 1000)} sn).`);
+    }
+    throw error;
+  } finally {
+    window.clearTimeout(timer);
+  }
+}
+
 function isAnalysisJobAccepted(value: unknown): value is AnalysisJobAccepted {
   const record = (value ?? {}) as Record<string, unknown>;
   return typeof record.job_id === "string" && (record.status === "queued" || record.status === "running");
 }
 
-async function pollAnalysisJob(jobId: string): Promise<ApiAnalysisResult> {
-  const maxAttempts = 120;
-  for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
-    await sleep(1500);
-    const response = await fetch(`${API_BASE_URL}/api/analyze/jobs/${encodeURIComponent(jobId)}`, { cache: "no-store" });
+async function pollAnalysisJob(jobId: string, signal?: AbortSignal): Promise<ApiAnalysisResult> {
+  for (let attempt = 0; attempt < ANALYSIS_POLL_MAX_ATTEMPTS; attempt += 1) {
+    if (signal?.aborted) {
+      throw new DOMException("Analiz iptal edildi.", "AbortError");
+    }
+    if (attempt > 0) {
+      await sleep(ANALYSIS_POLL_INTERVAL_MS);
+    }
+    const response = await fetch(`${API_BASE_URL}/api/analyze/jobs/${encodeURIComponent(jobId)}`, {
+      cache: "no-store",
+      signal,
+    });
     if (!response.ok) {
       const errorText = await response.text();
       throw new Error(apiErrorMessage(errorText, `Analiz durumu alinamadi (${response.status})`));
@@ -285,6 +316,7 @@ export async function analyzeCode(
   assignmentId?: string,
   reportLanguage?: string,
   studentNo?: string,
+  signal?: AbortSignal,
 ): Promise<ApiAnalysisResult> {
   let response: Response;
   try {
@@ -298,6 +330,7 @@ export async function analyzeCode(
         student_no: studentNo,
         report_language: reportLanguage || "tr",
       }),
+      signal,
     });
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
@@ -316,7 +349,7 @@ export async function analyzeCode(
 
   const payload = await response.json();
   if (isAnalysisJobAccepted(payload)) {
-    return pollAnalysisJob(payload.job_id);
+    return pollAnalysisJob(payload.job_id, signal);
   }
   return payload as ApiAnalysisResult;
 }
@@ -754,11 +787,15 @@ export async function suggestRubric(payload: {
   criterion_count?: number;
   report_language?: string;
 }): Promise<{ criteria: RubricCriterion[] }> {
-  const response = await fetch(`${API_BASE_URL}/api/rubric/suggest`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload),
-  });
+  const response = await fetchWithTimeout(
+    `${API_BASE_URL}/api/rubric/suggest`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    },
+    RUBRIC_FETCH_TIMEOUT_MS,
+  );
   if (!response.ok) {
     const errorText = await response.text();
     throw new Error(`Rubrik AI önerisi hatası (${response.status}): ${errorText}`);
@@ -782,17 +819,21 @@ export async function fetchAssignmentSuggestions(
   preferFresh?: boolean,
   reportLanguage?: string,
 ): Promise<{ suggestions: AssignmentSuggestion[] }> {
-  const response = await fetch(`${API_BASE_URL}/api/faculty/assignment-assistant/suggestions`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      course_hint: courseHint ?? "",
-      count: count ?? 5,
-      difficulty: difficulty ?? "medium",
-      prefer_fresh: Boolean(preferFresh),
-      report_language: reportLanguage || "tr",
-    }),
-  });
+  const response = await fetchWithTimeout(
+    `${API_BASE_URL}/api/faculty/assignment-assistant/suggestions`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        course_hint: courseHint ?? "",
+        count: count ?? 5,
+        difficulty: difficulty ?? "medium",
+        prefer_fresh: Boolean(preferFresh),
+        report_language: reportLanguage || "tr",
+      }),
+    },
+    LLM_FETCH_TIMEOUT_MS,
+  );
   if (!response.ok) {
     const errorText = await response.text();
     throw new Error(
@@ -807,11 +848,15 @@ export async function generateAssignmentExample(payload: {
   assignment_description: string;
   course_hint?: string;
 }): Promise<{ example: string; source?: string }> {
-  const response = await fetch(`${API_BASE_URL}/api/faculty/assignment-assistant/example`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload),
-  });
+  const response = await fetchWithTimeout(
+    `${API_BASE_URL}/api/faculty/assignment-assistant/example`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    },
+    LLM_FETCH_TIMEOUT_MS,
+  );
   if (!response.ok) {
     const errorText = await response.text();
     throw new Error(

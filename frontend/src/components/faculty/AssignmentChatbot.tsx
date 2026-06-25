@@ -148,6 +148,7 @@ const AssignmentChatbot = ({ open, onClose, courses, teacherId, onCreated }: Pro
   const [assignmentExample, setAssignmentExample] = useState("");
   const [assignmentExampleLoading, setAssignmentExampleLoading] = useState(false);
   const [assignmentExampleTouched, setAssignmentExampleTouched] = useState(false);
+  const suggestionsInFlightRef = useRef(false);
   const [editingDesc, setEditingDesc] = useState(false);
   const [date, setDate] = useState<Date | undefined>();
   const [time, setTime] = useState("23:59");
@@ -267,6 +268,8 @@ const AssignmentChatbot = ({ open, onClose, courses, teacherId, onCreated }: Pro
   };
 
   const loadSuggestions = async (hint: string, difficulty: AssignmentDifficulty, preferFresh = false) => {
+    if (suggestionsInFlightRef.current) return;
+    suggestionsInFlightRef.current = true;
     setStep("loadingSuggestions");
     setSuggestions([]);
     setSelectedSuggestionId(null);
@@ -293,6 +296,8 @@ const AssignmentChatbot = ({ open, onClose, courses, teacherId, onCreated }: Pro
       toast.error(msg);
       addMsg({ from: "bot", text: `${t("common.error")}: ${msg}.` });
       setStep("pickSuggestion");
+    } finally {
+      suggestionsInFlightRef.current = false;
     }
   };
 

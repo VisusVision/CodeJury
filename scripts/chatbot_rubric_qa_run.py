@@ -68,13 +68,24 @@ def _score_suggestion(item: dict[str, Any]) -> int:
     text = " ".join(
         str(item.get(k, "")) for k in ("title", "summary", "description")
     ).lower()
+    hint = CHATBOT_HINT.lower()
     score = 0
-    for token in ("csv", "dosya", "okuy", "rapor", "geç", "kal", "not", "cli"):
+    for token in ("csv", "dosya", "okuy", "rapor", "geç", "kal", "not", "cli", "geçme", "kalma"):
         if token in text:
             score += 2
-    for bad in ("api", "veritaban", "oop", "sunum", "web sunucu", "flask", "django"):
+    if "geçme/kalma" in text or "gecme/kalma" in text:
+        score += 8
+    if "rapor dosyası" in text or "rapor dosyasina" in text:
+        score += 6
+    # Hint-faithful generic templates (chatbot id 3–5) beat expanded LLM variants.
+    if text.strip() == hint.strip() or hint.strip() in text:
+        score += 12
+    for bad in (
+        "api", "veritaban", "oop", "sunum", "web sunucu", "flask", "django",
+        "istatistik", "histogram", "ortalama", "en yüksek", "en düşük", "harf notu",
+    ):
         if bad in text:
-            score -= 3
+            score -= 5
     return score
 
 

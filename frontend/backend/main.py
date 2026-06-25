@@ -3394,7 +3394,29 @@ async def run_analysis_pipeline(
     faculty_rubric_criteria: list[dict[str, Any]] | None = None,
     report_language: str = "tr",
 ) -> dict[str, Any]:
-    tracemalloc.start()
+    if not tracemalloc.is_tracing():
+        tracemalloc.start()
+    try:
+        return await _run_analysis_pipeline_body(
+            file_name,
+            file_content,
+            assignment_brief=assignment_brief,
+            faculty_rubric_criteria=faculty_rubric_criteria,
+            report_language=report_language,
+        )
+    finally:
+        if tracemalloc.is_tracing():
+            tracemalloc.stop()
+
+
+async def _run_analysis_pipeline_body(
+    file_name: str,
+    file_content: str,
+    *,
+    assignment_brief: str = "",
+    faculty_rubric_criteria: list[dict[str, Any]] | None = None,
+    report_language: str = "tr",
+) -> dict[str, Any]:
     start_time = time.time()
 
     language = "python"
@@ -3566,7 +3588,6 @@ async def run_analysis_pipeline(
     # Timing & memory
     elapsed_ms = int((time.time() - start_time) * 1000)
     current_mem, peak_mem = tracemalloc.get_traced_memory()
-    tracemalloc.stop()
 
     # ---- Frontend ApiAnalysisResult formatina donustur ----
 
@@ -4815,10 +4836,10 @@ async def suggest_rubric(req: RubricSuggestionRequest):
             assignment_title=title,
             assignment_description=desc,
         )
-    except ValueError as exc:
+    except Exception as exc:
         raise HTTPException(
             status_code=502,
-            detail=f"LLM rubrik çıktısi geçersiz: {exc}",
+            detail=f"LLM rubrik çıktısı işlenemedi: {exc}",
         ) from exc
     return {"criteria": criteria}
 

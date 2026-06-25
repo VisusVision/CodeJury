@@ -350,6 +350,8 @@ const WorkspacePage = ({ sidebarTitle, sidebarSubtitle, headerTitle, assignmentD
   const [loadingQuestions, setLoadingQuestions] = useState<Record<string, boolean>>({});
   const [hoveredAssignmentId, setHoveredAssignmentId] = useState<string | null>(null);
   const hoverTimeoutRef = useRef<Record<string, number | null>>({});
+  const analysisAbortRef = useRef<AbortController | null>(null);
+  const analysisInFlightRef = useRef(false);
   const [currentEvaluation, setCurrentEvaluation] = useState<EvaluationRecord | null>(null);
   const [evaluationOpen, setEvaluationOpen] = useState(false);
 
@@ -469,6 +471,7 @@ const WorkspacePage = ({ sidebarTitle, sidebarSubtitle, headerTitle, assignmentD
   };
 
   const runAnalysis = useCallback(async () => {
+    if (analysisInFlightRef.current) return;
     if (currentEvaluation?.status === "pending") {
       toast.error(language === "tr" ? "Önce açık değerlendirmeyi tamamlayın." : "Complete the active evaluation first.");
       setEvaluationOpen(true);
@@ -479,6 +482,10 @@ const WorkspacePage = ({ sidebarTitle, sidebarSubtitle, headerTitle, assignmentD
       return;
     }
     if (files.length === 0) return;
+    analysisInFlightRef.current = true;
+    analysisAbortRef.current?.abort();
+    const abortController = new AbortController();
+    analysisAbortRef.current = abortController;
     setHasEverRun(true);
     setIsRunning(true);
     setLogs([]);
@@ -509,7 +516,14 @@ const WorkspacePage = ({ sidebarTitle, sidebarSubtitle, headerTitle, assignmentD
 
     try {
       // Call the FastAPI backend
-      const result: ApiAnalysisResult = await analyzeCode(firstFile.name, firstFile.content, assignmentId, language, studentNo);
+      const result: ApiAnalysisResult = await analyzeCode(
+        firstFile.name,
+        firstFile.content,
+        assignmentId,
+        language,
+        studentNo,
+        abortController.signal,
+      );
 
       // Update agent statuses from the result
       result.agents.forEach((agent) => {
@@ -598,6 +612,12 @@ const WorkspacePage = ({ sidebarTitle, sidebarSubtitle, headerTitle, assignmentD
       }
 
     } catch (err: unknown) {
+      if (err instanceof DOMException && err.name === "AbortError") {
+        addLog("System", language === "tr" ? "Analiz iptal edildi." : "Analysis cancelled.", "info");
+        setAgentStatuses(Object.fromEntries(agentDefs.map((a) => [a.id, "idle" as AgentStatus])));
+        setAgentActions({});
+        return;
+      }
       const errorMsg = err instanceof Error ? err.message : t("common.error");
       addLog("System", `${t("workspace.analysisError")}: ${errorMsg}`, "error");
       agentDefs.forEach((a) => {
@@ -636,6 +656,10 @@ const WorkspacePage = ({ sidebarTitle, sidebarSubtitle, headerTitle, assignmentD
         console.error("Yükleme geçmişi kaydedilemedi:", error);
       }
     } finally {
+      if (analysisAbortRef.current === abortController) {
+        analysisAbortRef.current = null;
+      }
+      analysisInFlightRef.current = false;
       setIsRunning(false);
     }
   }, [agentDefs, currentEvaluation?.status, files, addLog, assignmentId, isPastDue, language, studentNo, t]);
@@ -1063,7 +1087,14 @@ const WorkspacePage = ({ sidebarTitle, sidebarSubtitle, headerTitle, assignmentD
               )}
             {isRunning ? (
               <button
-                onClick={() => setIsRunning(false)}
+                onClick={() => {
+                  analysisAbortRef.current?.abort();
+                  analysisInFlightRef.current = false;
+                  setIsRunning(false);
+                  addLog("System", language === "tr" ? "Analiz iptal edildi." : "Analysis cancelled.", "info");
+                  setAgentStatuses(Object.fromEntries(agentDefs.map((a) => [a.id, "idle" as AgentStatus])));
+                  setAgentActions({});
+                }}
                 className="flex items-center gap-2 px-4 py-2 rounded-lg bg-destructive text-destructive-foreground text-sm font-medium transition-all active:scale-95"
               >
                 <StopCircle className="h-4 w-4" /> {language === "tr" ? "Durdur" : "Stop"}
