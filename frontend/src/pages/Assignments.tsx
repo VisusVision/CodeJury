@@ -26,6 +26,7 @@ interface Course {
 
 interface Assignment {
   id: string;
+  course_id: string;
   name: string;
   description: string | null;
   due_date?: string | null;
@@ -40,6 +41,7 @@ const Assignments = () => {
   const [allCourses, setAllCourses] = useState<Course[]>([]);
   const [assignments, setAssignments] = useState<Assignment[]>([]);
   const [loading, setLoading] = useState(true);
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [hoveredAssignmentId, setHoveredAssignmentId] = useState<string | null>(null);
   const hoverTimeoutRef = useRef<Record<string, number | null>>({});
   const [assignmentQuestions, setAssignmentQuestions] = useState<Record<string, QuestionItem[]>>({});
@@ -56,19 +58,29 @@ const Assignments = () => {
     setStudent(s);
 
     const fetchData = async () => {
+      if (!courseId) {
+        navigate("/courses", { replace: true });
+        return;
+      }
       try {
         const [courseData, coursesData, assignmentsData] = await Promise.all([
-          getCourse(courseId!),
+          getCourse(courseId),
           getStudentCourses(s.id),
-          getCourseAssignments(courseId!),
+          getCourseAssignments(courseId),
         ]);
+        if (!coursesData.some((c) => c.id === courseId)) {
+          navigate("/courses", { replace: true });
+          return;
+        }
         const safeAssignments = assignmentsData || [];
 
+        setErrorMessage(null);
         setCourse(courseData);
         setAllCourses(coursesData || []);
         setAssignments(safeAssignments);
       } catch (error) {
         console.error(error);
+        setErrorMessage(language === "tr" ? "Ders veya ödevler yüklenemedi." : "Course or assignments could not be loaded.");
         setCourse(null);
         setAllCourses([]);
         setAssignments([]);
@@ -77,7 +89,7 @@ const Assignments = () => {
       }
     };
     fetchData();
-  }, [courseId, navigate]);
+  }, [courseId, language, navigate]);
 
   const handleLogout = () => {
     sessionStorage.removeItem("student");
@@ -120,7 +132,7 @@ const Assignments = () => {
   return (
     <div className="grid grid-cols-[260px_1fr] h-screen overflow-hidden bg-background">
       {/* Sidebar */}
-      <aside className="flex flex-col h-full bg-sidebar">
+      <aside className="flex flex-col h-full min-h-0 bg-sidebar">
         <div className="p-5 pb-4">
           <div className="flex items-center gap-2 mb-1">
             <div className="h-6 w-6 rounded-md bg-primary flex items-center justify-center">
@@ -138,7 +150,7 @@ const Assignments = () => {
           </p>
         </div>
 
-        <nav className="flex-1 px-3 space-y-0.5">
+        <nav className="flex-1 min-h-0 overflow-y-auto px-3 space-y-0.5">
           <div className="px-2 py-2">
             <span className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wider">{t("courses.title")}</span>
           </div>
@@ -170,7 +182,7 @@ const Assignments = () => {
       </aside>
 
       {/* Main content */}
-      <main className="flex flex-col p-6 lg:p-8 overflow-hidden">
+      <main className="flex min-h-0 flex-col overflow-y-auto p-6 lg:p-8">
         <button
           onClick={() => navigate("/courses")}
           className="flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground mb-4 w-fit transition-colors"
@@ -185,13 +197,17 @@ const Assignments = () => {
 
         {loading ? (
           <p className="text-sm text-muted-foreground">{t("common.loading")}</p>
+        ) : errorMessage ? (
+          <div className="rounded-lg border border-destructive/30 bg-destructive/10 px-4 py-3 text-sm text-destructive">
+            {errorMessage}
+          </div>
         ) : assignments.length === 0 ? (
           <div className="text-center py-12">
             <FileText className="h-8 w-8 text-muted-foreground/40 mx-auto mb-3" />
             <p className="text-sm text-muted-foreground">{t("assignments.noAssignments")}</p>
           </div>
         ) : (
-          <div className="grid gap-2 max-w-2xl relative">
+          <div className="grid max-w-2xl gap-2 pb-8 relative">
             {assignments.map((assignment) => (
               (() => {
                 let remainingLabel = "";

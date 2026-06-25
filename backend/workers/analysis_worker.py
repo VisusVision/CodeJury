@@ -45,6 +45,34 @@ def _worker_reload_enabled() -> bool:
     return os.getenv("ANALYSIS_WORKER_RELOAD", "1").strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _worker_sandbox_pool_enabled() -> bool:
+    return os.getenv("ANALYSIS_WORKER_SANDBOX_POOL", "1").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def initialize_worker_sandbox_pool() -> bool:
+    """Start the sandbox pool in the worker process when enabled."""
+    if not _worker_sandbox_pool_enabled():
+        logger.info("analysis worker sandbox pool disabled")
+        return False
+    try:
+        from backend.sandbox.pool_manager import initialize_pool
+
+        initialize_pool()
+        return True
+    except Exception:
+        logger.exception("analysis worker sandbox pool could not be initialized")
+        return False
+
+
+def shutdown_worker_sandbox_pool() -> None:
+    try:
+        from backend.sandbox.pool_manager import shutdown_pool
+
+        shutdown_pool()
+    except Exception:
+        logger.exception("analysis worker sandbox pool could not be shut down cleanly")
+
+
 def _reload_pipeline_modules() -> None:
     import importlib
 
@@ -133,17 +161,21 @@ async def consume_analysis_jobs(
 
 async def amain() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+    initialize_worker_sandbox_pool()
     redis = create_redis_client(settings.redis_url)
     store = AnalysisJobStore(
         redis,
         stream_name=settings.analysis_queue_name,
         job_ttl_seconds=settings.analysis_job_ttl_seconds,
     )
-    await consume_analysis_jobs(
-        store,
-        group_name=settings.analysis_consumer_group,
-        block_ms=settings.analysis_worker_poll_timeout_seconds * 1000,
-    )
+    try:
+        await consume_analysis_jobs(
+            store,
+            group_name=settings.analysis_consumer_group,
+            block_ms=settings.analysis_worker_poll_timeout_seconds * 1000,
+        )
+    finally:
+        shutdown_worker_sandbox_pool()
 
 
 def main() -> None:

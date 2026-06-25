@@ -93,6 +93,7 @@ def run_in_sandbox(
     }
 
     slot = None
+    release_ok = True
     try:
         slot = pool.acquire()
         print(f"[executor] Sandbox -> {slot.url} (lang={api_lang})", flush=True)
@@ -126,13 +127,25 @@ def run_in_sandbox(
 
     except TimeoutError as e:
         logger.error(f"[executor] Pool timeout: {e}")
+        release_ok = False
         return {**_FALLBACK, "stderr": f"Sandbox timeout: {e}"}
+    except requests.exceptions.RequestException as e:
+        logger.error(f"[executor] Container request failed, falling back to simulation: {e}")
+        release_ok = False
+        simulated = _simulate_sandbox(source_code, files=normalized_files, argv=argv)
+        simulated["stderr"] = (
+            simulated.get("stderr", "")
+            + ("\n" if simulated.get("stderr") else "")
+            + f"Sandbox container unavailable; simulation fallback used: {e}"
+        )
+        return simulated
     except Exception as e:
         logger.error(f"[executor] Error: {e}")
+        release_ok = False
         return {**_FALLBACK, "stderr": f"Sandbox error: {e}"}
     finally:
         if slot is not None:
-            pool.release(slot, ok=True)
+            pool.release(slot, ok=release_ok)
 
 
 def _normalize_workdir_files(files: list | None) -> list[dict[str, str]]:

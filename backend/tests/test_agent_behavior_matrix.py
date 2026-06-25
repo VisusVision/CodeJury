@@ -64,6 +64,36 @@ class TaskCapabilityMatrixTests(unittest.TestCase):
                 self.assertLess(_capability_match_signal(brief, None, unrelated), 0.25)
 
 
+class SunumDemoRelevanceTests(unittest.TestCase):
+    def test_sayilar_brief_matches_analysis_code_not_playlist(self):
+        from pathlib import Path
+
+        from backend.agents.assignment_alignment import compute_brief_code_alignment
+        from backend.agents.task_relevance import (
+            deterministic_task_capability_match,
+            obvious_cross_domain_mismatch,
+        )
+
+        root = Path(__file__).resolve().parents[2] / "sunum_demo_kodlari"
+        brief = (
+            "Sayilar.txt dosyasindan sayilari okuyun. Tek sayilari filtreleyin. "
+            "Ortalama ve medyan hesaplayin. Sonucu sonuc.txt dosyasina raporlayin."
+        )
+        uygun = (root / "01_uygun_sayilar_analizi.py").read_text(encoding="utf-8")
+        alakasiz = (root / "02_alakasiz_playlist.py").read_text(encoding="utf-8")
+
+        self.assertTrue(obvious_cross_domain_mismatch(brief, alakasiz))
+        self.assertFalse(obvious_cross_domain_mismatch(brief, uygun))
+        self.assertGreaterEqual(deterministic_task_capability_match(brief, None, uygun), 0.70)
+        self.assertLess(deterministic_task_capability_match(brief, None, alakasiz), 0.45)
+
+        uygun_align, uygun_rs = compute_brief_code_alignment(brief, uygun)
+        alak_align, alak_rs = compute_brief_code_alignment(brief, alakasiz)
+        self.assertGreaterEqual(uygun_align, 0.90)
+        self.assertLess(alak_align, 0.30)
+        self.assertIn("cross_domain_mismatch", alak_rs)
+
+
 class SecurityCourseworkMatrixTests(unittest.TestCase):
     def test_expected_coursework_io_and_network_are_low_risk(self):
         agent = SecurityAgent()

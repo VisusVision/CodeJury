@@ -189,6 +189,9 @@ async function start() {
     env: {
       ...process.env,
       ANALYSIS_WORKER_RELOAD: process.env.ANALYSIS_WORKER_RELOAD || "1",
+      ANALYSIS_WORKER_SANDBOX_POOL: process.env.ANALYSIS_WORKER_SANDBOX_POOL || "1",
+      SANDBOX_POOL_BASE_PORT: process.env.SANDBOX_WORKER_POOL_BASE_PORT || "8281",
+      SANDBOX_POOL_SIZE: process.env.SANDBOX_WORKER_POOL_SIZE || process.env.SANDBOX_POOL_SIZE || "3",
       PYTHONPATH: [repoRootAbs, process.env.PYTHONPATH].filter(Boolean).join(path.delimiter),
     },
   });

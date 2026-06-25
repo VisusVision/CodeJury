@@ -3357,6 +3357,7 @@ def _compute_relevance_warning(
     llm_off_topic: bool,
     reasons: Any,
     total_score: int,
+    capability_match: float | None = None,
 ) -> str | None:
     """Gorev uyumu uyarisini hesapla.
 
@@ -3369,10 +3370,14 @@ def _compute_relevance_warning(
         return None
     rset = reasons if isinstance(reasons, list) else []
     has_off_topic = any(
-        r in {"llm_task_relevance_off_topic", "llm_low_task_fit"} for r in rset
+        r in {"llm_task_relevance_off_topic", "llm_low_task_fit", "cross_domain_mismatch"}
+        for r in rset
     )
     has_not_fulfilled = "llm_task_not_fulfilled" in rset
+    cap = float(capability_match) if capability_match is not None else None
     if llm_off_topic or align_factor <= 0.20 or has_off_topic:
+        return _RELEVANCE_WARNING_OFF_TOPIC
+    if has_not_fulfilled and total_score <= 20 and cap is not None and cap < 0.65:
         return _RELEVANCE_WARNING_OFF_TOPIC
     if total_score <= 20 and align_factor <= 0.35:
         return _RELEVANCE_WARNING_LOW_SCORE
@@ -3598,6 +3603,7 @@ async def run_analysis_pipeline(
         x for x in (brief, _rubric_criteria_text(fac if fac else None)) if x
     ).strip()
     _align_f = float(task_alignment.get("factor", 1.0) or 1.0)
+    _capability_match = float(task_alignment.get("capability_match", 1.0) or 1.0)
     _llm_off_topic = bool(task_alignment.get("llm_off_topic"))
     _align_reasons = task_alignment.get("reasons", [])
     relevance_score_warning = _compute_relevance_warning(
@@ -3606,6 +3612,7 @@ async def run_analysis_pipeline(
         llm_off_topic=_llm_off_topic,
         reasons=_align_reasons,
         total_score=total_score_rounded,
+        capability_match=_capability_match,
     )
     if relevance_score_warning == _RELEVANCE_WARNING_OFF_TOPIC:
         if not any(
