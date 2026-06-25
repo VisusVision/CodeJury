@@ -23,12 +23,36 @@ if __name__ == "__main__":
 '''
 
 
+_TXT_CODE = '''
+from pathlib import Path
+
+def main():
+    text = Path("sayilar.txt").read_text(encoding="utf-8")
+    print(text.splitlines()[0])
+
+if __name__ == "__main__":
+    main()
+'''
+
+
 class InferSandboxFilesTests(unittest.TestCase):
     def test_detects_scores_csv_from_path(self):
         files = infer_sandbox_files(assignment_brief="CSV odev", source_code=_CSV_CODE)
         self.assertEqual(len(files), 1)
         self.assertEqual(files[0]["name"], "scores.csv")
         self.assertIn("name,score", files[0]["content"])
+
+    def test_detects_txt_input_from_assignment_and_source(self):
+        files = infer_sandbox_files(
+            assignment_brief="sayilar.txt dosyasini okuyup sonuc.txt dosyasina rapor yazin",
+            source_code=_TXT_CODE,
+        )
+        names = [item["name"] for item in files]
+        self.assertIn("sayilar.txt", names)
+        self.assertNotIn("sonuc.txt", names)
+        content = next(item["content"] for item in files if item["name"] == "sayilar.txt")
+        self.assertIn("abc", content)
+        self.assertIn("-3", content)
 
     def test_returns_empty_when_no_file_paths(self):
         code = "print('hello')\n"
@@ -46,6 +70,38 @@ def main():
 '''
         self.assertEqual(infer_sandbox_files(assignment_brief="", source_code=code), [])
 
+    def test_skips_write_only_txt_outputs(self):
+        code = '''
+from pathlib import Path
+
+def main():
+    Path("sonuc.txt").write_text("rapor", encoding="utf-8")
+'''
+        self.assertEqual(
+            infer_sandbox_files(
+                assignment_brief="sayilar.txt okuyup sonuc.txt yazin",
+                source_code=code,
+            ),
+            [],
+        )
+
+    def test_skips_output_named_txt_constants(self):
+        code = '''
+from pathlib import Path
+
+GIRIS_DOSYASI = "sayilar.txt"
+CIKIS_DOSYASI = "sonuc.txt"
+
+def main():
+    metin = Path(GIRIS_DOSYASI).read_text(encoding="utf-8")
+    Path(CIKIS_DOSYASI).write_text(metin, encoding="utf-8")
+'''
+        files = infer_sandbox_files(
+            assignment_brief="sayilar.txt okuyup sonuc.txt dosyasina yazin",
+            source_code=code,
+        )
+        self.assertEqual([item["name"] for item in files], ["sayilar.txt"])
+
 
 class SimulateSandboxFilesTests(unittest.TestCase):
     def test_simulate_writes_fixture_before_run(self):
@@ -53,6 +109,15 @@ class SimulateSandboxFilesTests(unittest.TestCase):
         result = _simulate_sandbox(_CSV_CODE, files=files)
         self.assertEqual(result["exit_code"], 0)
         self.assertIn("rows=2", result["stdout"])
+
+    def test_simulate_writes_txt_fixture_before_run(self):
+        files = infer_sandbox_files(
+            assignment_brief="sayilar.txt dosyasini okuyun",
+            source_code=_TXT_CODE,
+        )
+        result = _simulate_sandbox(_TXT_CODE, files=files)
+        self.assertEqual(result["exit_code"], 0)
+        self.assertIn("10", result["stdout"])
 
     def test_simulate_without_fixtures_fails_for_missing_csv(self):
         result = _simulate_sandbox(_CSV_CODE, files=[])

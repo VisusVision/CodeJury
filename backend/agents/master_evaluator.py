@@ -500,6 +500,8 @@ class MasterEvaluatorAgent(BaseAgent):
         )
         if hard_mismatch:
             return min(merged, prog)
+        if "cross_domain_mismatch" in reasons:
+            return min(merged, prog, 0.20)
 
         runs_ok = bool(programmatic.get("sandbox_runs_ok"))
         if runs_ok and prog >= 0.95 and core >= 60:

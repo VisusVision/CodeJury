@@ -312,6 +312,23 @@ class RelevanceWarningTests(unittest.TestCase):
         self.assertNotEqual(warning, _RELEVANCE_WARNING_OFF_TOPIC)
         self.assertNotIn("alakasiz", warning.split(".")[0])
 
+    def test_low_capability_not_fulfilled_submission_emits_off_topic_warning(self):
+        from frontend.backend.main import (
+            _compute_relevance_warning,
+            _RELEVANCE_WARNING_OFF_TOPIC,
+        )
+
+        warning = _compute_relevance_warning(
+            ctx_len=200,
+            align_factor=0.55,
+            llm_off_topic=False,
+            reasons=["llm_task_not_fulfilled"],
+            total_score=16,
+            capability_match=0.59,
+        )
+
+        self.assertEqual(warning, _RELEVANCE_WARNING_OFF_TOPIC)
+
     def test_true_off_topic_emits_off_topic_warning(self):
         from frontend.backend.main import (
             _compute_relevance_warning,

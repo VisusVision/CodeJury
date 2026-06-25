@@ -58,9 +58,9 @@ const Courses = () => {
   if (!student) return null;
 
   return (
-    <div className="grid grid-cols-[260px_1fr] min-h-screen bg-background">
+    <div className="grid h-screen grid-cols-[260px_1fr] overflow-hidden bg-background">
       {/* Sidebar */}
-      <aside className="flex flex-col h-full bg-sidebar">
+      <aside className="flex h-full min-h-0 flex-col bg-sidebar">
         <div className="p-5 pb-4">
           <div className="flex items-center gap-2 mb-1">
             <div className="h-6 w-6 rounded-md bg-primary flex items-center justify-center">
@@ -78,7 +78,7 @@ const Courses = () => {
           </p>
         </div>
 
-        <nav className="flex-1 px-3 space-y-0.5">
+        <nav className="flex-1 min-h-0 overflow-y-auto px-3 space-y-0.5">
           <div className="px-2 py-2">
             <span className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wider">{t("courses.title")}</span>
           </div>
@@ -118,7 +118,7 @@ const Courses = () => {
       </aside>
 
       {/* Main content */}
-      <main className="flex flex-col p-6 lg:p-8">
+      <main className="flex min-h-0 flex-col overflow-y-auto p-6 lg:p-8">
         <div className="flex items-center justify-between mb-1">
           <h1 className="text-2xl font-bold tracking-tight text-foreground">{t("courses.title")}</h1>
           <LanguageToggle />
@@ -126,7 +126,7 @@ const Courses = () => {
         <p className="text-sm text-muted-foreground mb-6">{t("courses.subtitle")}</p>
 
         {!loading && courses.length > 0 && (
-          <div className="grid gap-3 max-w-lg">
+          <div className="grid max-w-lg gap-3 pb-8">
             {courses.map((course) => (
               <button
                 key={course.id}

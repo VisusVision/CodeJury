@@ -101,6 +101,76 @@ def _capability_task_marker_matches(task_text: str, marker: str) -> bool:
     return _contains_marker(task_text, marker)
 
 
+_DATA_FILE_TASK_MARKERS = (
+    "dosyasindan oku",
+    "dosya oku",
+    "dosyasini oku",
+    "dosyadan oku",
+    ".txt",
+    ".csv",
+    "csv",
+    "raporla",
+    "rapor yaz",
+    "sonuc.txt",
+    "sayilar.txt",
+)
+_DATA_ANALYSIS_TASK_MARKERS = (
+    "ortalama",
+    "medyan",
+    "frekans",
+    "istatistik",
+    "sayi analiz",
+    "sayilari oku",
+    "not oku",
+    "gecme",
+    "kalma",
+)
+_ENTERTAINMENT_CODE_MARKERS = (
+    "playlist",
+    "sarki",
+    "şarkı",
+    "sanatci",
+    "sanatçı",
+    "muzik",
+    "müzik",
+    "spotify",
+    "album",
+)
+_DATA_PIPELINE_CODE_MARKERS = (
+    "read_text",
+    "readlines",
+    "splitlines",
+    "dictreader",
+    "csv.reader",
+    "open(",
+    "path(",
+    "mean(",
+    "median(",
+    "statistics",
+    "ortalama",
+    "medyan",
+)
+
+
+def obvious_cross_domain_mismatch(task_text: str, code_text: str) -> bool:
+    """Detect clearly unrelated domains (e.g. number-file analysis vs playlist UI)."""
+    task_l = (task_text or "").lower()
+    code_l = (code_text or "").lower()
+    if not task_l.strip() or not code_l.strip():
+        return False
+
+    task_data_file = any(_contains_marker(task_l, marker) for marker in _DATA_FILE_TASK_MARKERS)
+    task_data_analysis = any(_contains_marker(task_l, marker) for marker in _DATA_ANALYSIS_TASK_MARKERS)
+    task_data = task_data_file or task_data_analysis
+
+    code_entertainment = any(marker in code_l for marker in _ENTERTAINMENT_CODE_MARKERS)
+    code_data_pipeline = any(marker in code_l for marker in _DATA_PIPELINE_CODE_MARKERS)
+
+    if task_data and code_entertainment and not code_data_pipeline:
+        return True
+    return False
+
+
 def _has_code_deliverable_intent(text: str) -> bool:
     non_code_deliverables = ("makale", "rapor", "poster", "sunum", "slayt", "essay")
     explicit_tech_markers = (
@@ -482,6 +552,8 @@ def _capability_match_signal(
         x for x in ((assignment_description or "").strip(), _rubric_criteria_text(rubric_criteria)) if x
     ).lower()
     code_text = _source_without_comments_and_docstrings(source_code or "").lower()
+    if obvious_cross_domain_mismatch(task_text, code_text):
+        return 0.12
     if len(task_text) < BRIEF_MIN_LEN and not _has_recognized_capability_requirement(task_text):
         return 1.0
 
@@ -629,17 +701,25 @@ def _capability_match_signal(
             {"class ", "node", "dugum", "inorder", "preorder", "postorder", "left", "right", "sol", "sag"},
         ),
         (
-            {"liste", "list", "veri", "data", "istatistik", "ortalama", "average", "flatten", "donustur", "dönüştür"},
+            {"ortalama", "average", "medyan", "median", "istatistik"},
+            {
+                "mean(",
+                "median(",
+                "statistics",
+                "from statistics",
+                "ortalama",
+                "medyan",
+                "average(",
+            },
+        ),
+        (
+            {"liste", "list", "veri", "data", "flatten", "donustur", "dönüştür"},
             {
                 "list[",
                 "list(",
                 "append(",
                 "extend(",
-                "sum(",
-                "len(",
                 "flatten",
-                "average",
-                "ortalama",
                 "filter(",
                 "map(",
             },
@@ -802,6 +882,7 @@ def merge_task_alignment(
         and not fulfils
         and out["programmatic_factor"] >= 0.95
         and capability_signal >= 0.80
+        and "cross_domain_mismatch" not in reasons
     ):
         fulfils = True
         llm_f = max(llm_f, 0.75)

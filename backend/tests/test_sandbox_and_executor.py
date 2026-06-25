@@ -147,7 +147,27 @@ class RunInSandboxTests(unittest.TestCase):
 
         self.assertIn("Sandbox error", result["stderr"])
         self.assertEqual(result["exit_code"], -1)
-        pool.release.assert_called_once_with(slot, ok=True)
+        pool.release.assert_called_once_with(slot, ok=False)
+
+    def test_connection_error_falls_back_to_simulation_and_marks_slot_unhealthy(self):
+        import requests
+
+        pool, slot = self._ready_pool_with_slot()
+        files = [{"name": "sayilar.txt", "content": "1\n2\n3\n"}]
+        with (
+            patch(_GET_POOL, return_value=pool),
+            patch(_REQUESTS_POST, side_effect=requests.exceptions.ConnectionError("refused")),
+        ):
+            result = run_in_sandbox(
+                "from pathlib import Path\nprint(Path('sayilar.txt').read_text())\n",
+                "python",
+                files=files,
+            )
+
+        self.assertEqual(result["exit_code"], 0)
+        self.assertIn("1", result["stdout"])
+        self.assertTrue(result["fixtures_provided"])
+        pool.release.assert_called_once_with(slot, ok=False)
 
     def test_acquire_timeout_returns_fallback(self):
         pool = MagicMock()

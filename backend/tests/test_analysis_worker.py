@@ -94,6 +94,22 @@ class AnalysisWorkerTests(unittest.IsolatedAsyncioTestCase):
 
         reload_mock.assert_not_called()
 
+    async def test_worker_sandbox_pool_initializes_when_enabled(self):
+        with patch.dict("os.environ", {"ANALYSIS_WORKER_SANDBOX_POOL": "1"}, clear=False):
+            with patch("backend.sandbox.pool_manager.initialize_pool") as initialize_mock:
+                started = analysis_worker.initialize_worker_sandbox_pool()
+
+        self.assertTrue(started)
+        initialize_mock.assert_called_once()
+
+    async def test_worker_sandbox_pool_skips_when_disabled(self):
+        with patch.dict("os.environ", {"ANALYSIS_WORKER_SANDBOX_POOL": "0"}, clear=False):
+            with patch("backend.sandbox.pool_manager.initialize_pool") as initialize_mock:
+                started = analysis_worker.initialize_worker_sandbox_pool()
+
+        self.assertFalse(started)
+        initialize_mock.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()
