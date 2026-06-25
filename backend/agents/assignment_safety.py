@@ -265,6 +265,27 @@ _UNSAFE_CATEGORY_PATTERNS: dict[str, tuple[str, ...]] = {
         r"\bintihar\b",
         r"\bkendine zarar\b",
     ),
+    "profanity": (
+        r"\bamk\b",
+        r"\baq\b",
+        r"\bamina\b",
+        r"\baminakoy",
+        r"\boc\b",
+        r"\borospu",
+        r"\bsiktir\b",
+        r"\bsikerim\b",
+        r"\bsikeyim\b",
+        r"\bsikim\b",
+        r"\bsik\b",
+        r"\bgotu\b",
+        r"\bgotune\b",
+        r"\bgotunun\b",
+        r"\bpic\b",
+        r"\bibne\b",
+        r"\bkahpe\b",
+        r"\bpezevenk\b",
+        r"\bpu[sş]t\b",
+    ),
 }
 
 _SAFETY_OR_EDUCATIONAL_CONTEXT_PATTERNS: tuple[str, ...] = (
@@ -307,6 +328,14 @@ _CATEGORY_LABELS = {
     "drugs": "madde kullanimi",
     "terrorism": "teror",
     "violence": "siddet",
+    "profanity": "kufur",
+}
+
+_CATEGORY_MESSAGES = {
+    "profanity": (
+        "Odev guvenlik ajani: Odev metninde kufur veya uygunsuz ifade bulundu. "
+        "Lutfen metni duzenleyin."
+    ),
 }
 
 
@@ -387,7 +416,14 @@ class AssignmentSafetyAgent:
                 AssignmentSafetyIssue(
                     code=f"unsafe_{category}",
                     category=category,
-                    message=f"Odev guvenlik ajani: Odev metninde {_CATEGORY_LABELS.get(category, category)} kapsaminda riskli icerik bulundu. Lutfen sucluluk, cinsellik, madde kullanimi, teror veya siddet iceren ogeleri kaldirin.",
+                    message=_CATEGORY_MESSAGES.get(
+                        category,
+                        (
+                            f"Odev guvenlik ajani: Odev metninde "
+                            f"{_CATEGORY_LABELS.get(category, category)} kapsaminda riskli icerik bulundu. "
+                            "Lutfen sucluluk, cinsellik, madde kullanimi, teror, siddet veya kufur iceren ogeleri kaldirin."
+                        ),
+                    ),
                     matches=matches,
                 )
             )
@@ -463,12 +499,13 @@ Rules:
 - is_programming_assignment is informational only; NEVER reject only because it is not programming.
 - Block assignments that ask students to create, optimize, simulate, facilitate, or instruct crime,
   sexual content, drug use, terrorism, self-harm, or real-world violence.
+- Block profanity, slurs, and vulgar Turkish expressions in the assignment title or description.
 - Educational and defensive safety work can be allowed if it clearly avoids enabling harm, e.g.
   "phishing awareness classifier", "malware indicator detector", or "terror propaganda detection"
   with toy data, no credential collection, no deployment, no operational instructions.
 - If the brief is ambiguous but there is no concrete unsafe element, approve it.
 - risk_categories values must be chosen from:
-  ["crime","sexual","drugs","terrorism","violence"].
+  ["crime","sexual","drugs","terrorism","violence","profanity"].
 - Write reason and suggested_fix in Turkish.
 """
 
@@ -521,7 +558,7 @@ Rules:
         unsafe_categories = [
             category
             for category in categories
-            if category in {"crime", "sexual", "drugs", "terrorism", "violence"}
+            if category in {"crime", "sexual", "drugs", "terrorism", "violence", "profanity"}
         ]
 
         if allowed and unsafe_categories and deterministic.allowed and _llm_text_has_safe_educational_guardrail(
@@ -537,6 +574,15 @@ Rules:
             )
 
         if not unsafe_categories:
+            if not deterministic.allowed:
+                return AssignmentSafetyResult(
+                    allowed=False,
+                    is_programming_assignment=deterministic.is_programming_assignment,
+                    issues=deterministic.issues,
+                    llm_used=True,
+                    llm_reason=reason,
+                    review_source="hybrid_llm_deterministic_kept",
+                )
             return AssignmentSafetyResult(
                 allowed=True,
                 is_programming_assignment=is_programming,
