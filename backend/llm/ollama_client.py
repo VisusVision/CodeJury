@@ -138,6 +138,58 @@ def _ollama_model_for_request(model: str | None) -> str:
     return settings.ollama_general_model
 
 
+def _is_gpt_oss_model(model: str | None) -> bool:
+    return "gpt-oss" in str(model or "").lower()
+
+
+def _ollama_predict_for_model(model: str | None, num_predict: int | None) -> int:
+    base = int(num_predict) if num_predict is not None else int(settings.ollama_num_predict)
+    if _is_gpt_oss_model(model):
+        return max(base, int(settings.ollama_gpt_oss_num_predict))
+    return base
+
+
+def _ollama_inference_options(model: str, temperature: float, num_predict: int) -> dict[str, Any]:
+    """Ollama /api/chat options; coder model gets AgentGrade Modelfile tuning."""
+    options: dict[str, Any] = {
+        "temperature": temperature,
+        "num_predict": num_predict,
+    }
+    if model == settings.ollama_coder_model:
+        options.update(
+            {
+                "temperature": settings.ollama_coder_temperature,
+                "num_ctx": settings.ollama_coder_num_ctx,
+                "top_p": settings.ollama_coder_top_p,
+                "repeat_penalty": settings.ollama_coder_repeat_penalty,
+                "num_gpu": settings.ollama_coder_num_gpu,
+            }
+        )
+    return options
+
+
+def _apply_gpt_oss_chat_options(payload: dict[str, Any], *, json_mode: bool) -> None:
+    """GPT-OSS needs a higher token budget; thinking is disabled for JSON mode."""
+    model = str(payload.get("model") or "")
+    if not _is_gpt_oss_model(model):
+        return
+    think = str(settings.ollama_gpt_oss_think or "").strip().lower()
+    if json_mode:
+        # Ollama: format=json and think are mutually exclusive for structured agent output.
+        return
+    if think in {"low", "medium", "high"}:
+        payload["think"] = think
+
+
+def _ollama_message_text(data: dict[str, Any]) -> str:
+    message = data.get("message") if isinstance(data.get("message"), dict) else {}
+    content = str(message.get("content") or "").strip()
+    if content:
+        return content
+    # Some thinking models may leave content empty on malformed runs; never parse thinking as JSON.
+    return ""
+
+
 def _cache_key(
     system_prompt: str,
     user_prompt: str,
@@ -237,7 +289,7 @@ async def _do_request(payload: dict[str, Any]) -> dict | None:
                 resp = await client.post("/api/chat", json=payload)
                 resp.raise_for_status()
                 data = resp.json()
-                content = data.get("message", {}).get("content", "")
+                content = _ollama_message_text(data)
 
                 if not content:
                     logger.warning("[ollama] Bos yanit alindi (attempt %d)", attempt + 1)
@@ -363,8 +415,8 @@ async def _do_ollama_text_request(payload: dict[str, Any]) -> str | None:
                 resp = await client.post("/api/chat", json=payload)
                 resp.raise_for_status()
                 data = resp.json()
-                content = (data.get("message") or {}).get("content") or ""
-                text = content.strip()
+                content = _ollama_message_text(data)
+                text = content
                 if text:
                     return text
                 logger.warning("[ollama] chat_text bos yanit (attempt %d)", attempt + 1)
@@ -389,7 +441,7 @@ async def chat_json(
     system_prompt: str,
     user_prompt: str,
     schema_hint: dict[str, Any] | None = None,
-    temperature: float = 0.3,
+    temperature: float = 0.0,
     num_predict: int | None = None,
     *,
     model: str | None = None,
@@ -413,7 +465,7 @@ async def chat_json(
         nim_floor = int(settings.nvidia_nim_num_predict)
         predict = max(int(num_predict), nim_floor) if num_predict is not None else nim_floor
     else:
-        predict = int(num_predict) if num_predict is not None else int(settings.ollama_num_predict)
+        predict = _ollama_predict_for_model(selected_model, num_predict)
     cache_key = _cache_key(f"{system_prompt}|np={predict}", user_prompt, temperature, selected_model, schema_hint)
     if use_cache:
         cached = _cache_get(cache_key)
@@ -452,18 +504,16 @@ async def chat_json(
 
         if result is None:
             ollama_model = _ollama_model_for_request(model)
-            ollama_predict = int(num_predict) if num_predict is not None else int(settings.ollama_num_predict)
+            ollama_predict = _ollama_predict_for_model(ollama_model, num_predict)
             ollama_payload = {
                 "model": ollama_model,
                 "messages": messages,
                 "stream": False,
-                "options": {
-                    "temperature": temperature,
-                    "num_predict": ollama_predict,
-                },
+                "options": _ollama_inference_options(ollama_model, temperature, ollama_predict),
                 "format": "json",
                 "keep_alive": "30m",
             }
+            _apply_gpt_oss_chat_options(ollama_payload, json_mode=True)
             result = await _do_request(ollama_payload)
             if result is not None:
                 provider_name = "ollama"
@@ -477,13 +527,11 @@ async def chat_json(
             "model": selected_model,
             "messages": messages,
             "stream": False,
-            "options": {
-                "temperature": temperature,
-                "num_predict": predict,
-            },
+            "options": _ollama_inference_options(selected_model, temperature, predict),
             "format": "json",
             "keep_alive": "30m",
         }
+        _apply_gpt_oss_chat_options(payload, json_mode=True)
         result = await _do_request(payload)
 
     if result is not None and use_cache:
@@ -521,6 +569,8 @@ async def chat_text(
     provider_is_nim = _provider_is_nvidia_nim(_provider_for_model(model))
     provider_name = "nvidia_nim" if provider_is_nim else "ollama"
     selected_model = _select_nim_model(model) if provider_is_nim else (model or settings.ollama_general_model)
+    if not provider_is_nim:
+        predict = _ollama_predict_for_model(selected_model, num_predict)
 
     fallback_reason = ""
     if provider_is_nim:
@@ -552,17 +602,15 @@ async def chat_text(
             return text_result
 
         ollama_model = _ollama_model_for_request(model)
-        ollama_predict = int(num_predict) if num_predict is not None else min(int(settings.ollama_num_predict), 2048)
+        ollama_predict = _ollama_predict_for_model(ollama_model, num_predict)
         ollama_payload: dict[str, Any] = {
             "model": ollama_model,
             "messages": messages,
             "stream": False,
-            "options": {
-                "temperature": temperature,
-                "num_predict": ollama_predict,
-            },
+            "options": _ollama_inference_options(ollama_model, temperature, ollama_predict),
             "keep_alive": "30m",
         }
+        _apply_gpt_oss_chat_options(ollama_payload, json_mode=False)
         text_result = await _do_ollama_text_request(ollama_payload)
         if text_result:
             if not fallback_reason:
@@ -596,12 +644,10 @@ async def chat_text(
         "model": selected_model,
         "messages": messages,
         "stream": False,
-        "options": {
-            "temperature": temperature,
-            "num_predict": predict,
-        },
+        "options": _ollama_inference_options(selected_model, temperature, predict),
         "keep_alive": "30m",
     }
+    _apply_gpt_oss_chat_options(payload, json_mode=False)
 
     text_result = await _do_ollama_text_request(payload)
     if text_result:

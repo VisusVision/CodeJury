@@ -263,6 +263,90 @@ class ApiEndpointTests(unittest.TestCase):
         self.assertEqual(resp.status_code, 400)
 
     # ── Rubrics ────────────────────────────────────────────────────────────────
+    def test_assignment_test_cases_can_be_replaced_and_listed(self):
+        payload = {
+            "test_cases": [
+                {
+                    "name": "public normal",
+                    "stdin": "6\n",
+                    "expected_stdout": "36\n",
+                    "expected_exit_code": 0,
+                    "visibility": "public",
+                    "source": "manual",
+                },
+                {
+                    "name": "hidden zero",
+                    "stdin": "0\n",
+                    "expected_stdout": "0\n",
+                    "visibility": "hidden",
+                    "source": "ai",
+                },
+            ]
+        }
+
+        put_resp = self.client.put(
+            f"/api/assignments/{_DEMO_ASSIGNMENT_ID}/test-cases",
+            json=payload,
+        )
+        self.assertEqual(put_resp.status_code, 200)
+
+        get_resp = self.client.get(f"/api/assignments/{_DEMO_ASSIGNMENT_ID}/test-cases")
+        self.assertEqual(get_resp.status_code, 200)
+        rows = get_resp.json()
+        self.assertEqual([row["display_order"] for row in rows], [1, 2])
+        self.assertEqual(rows[0]["assignment_id"], _DEMO_ASSIGNMENT_ID)
+        self.assertEqual(rows[0]["visibility"], "public")
+        self.assertEqual(rows[1]["visibility"], "hidden")
+        self.assertEqual(rows[1]["source"], "ai")
+
+    def test_analyze_uses_saved_assignment_test_cases_when_request_has_no_override(self):
+        main._DEMO_STORE.setdefault("assignment_test_cases", []).append(
+            {
+                "id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+                "assignment_id": _DEMO_ASSIGNMENT_ID,
+                "name": "saved public",
+                "stdin": "7\n",
+                "expected_stdout": "49\n",
+                "expected_exit_code": 0,
+                "visibility": "public",
+                "source": "manual",
+                "display_order": 1,
+            }
+        )
+
+        async def fake_create_analysis_job(_store, request):
+            return {"job_id": "job-saved-tests", "status": "queued", "request": request}
+
+        with (
+            patch.object(main, "_get_analysis_job_store", new=AsyncMock(return_value=object())),
+            patch.object(main, "create_analysis_job", new=AsyncMock(side_effect=fake_create_analysis_job)),
+        ):
+            resp = self.client.post(
+                "/api/analyze",
+                json={
+                    "file_name": "main.py",
+                    "file_content": "print(int(input()) ** 2)\n",
+                    "assignment_id": _DEMO_ASSIGNMENT_ID,
+                },
+            )
+
+        self.assertEqual(resp.status_code, 200)
+        request = resp.json()["request"]
+        self.assertEqual(request["test_cases"][0]["name"], "saved public")
+        self.assertEqual(request["test_cases"][0]["expected_stdout"], "49\n")
+
+    def test_assignment_test_case_suggestions_are_ai_source_and_not_persisted(self):
+        resp = self.client.post(f"/api/assignments/{_DEMO_ASSIGNMENT_ID}/test-cases/suggest")
+
+        self.assertEqual(resp.status_code, 200)
+        suggestions = resp.json()["suggestions"]
+        self.assertGreaterEqual(len(suggestions), 1)
+        self.assertTrue(all(row["source"] == "ai" for row in suggestions))
+
+        saved_resp = self.client.get(f"/api/assignments/{_DEMO_ASSIGNMENT_ID}/test-cases")
+        self.assertEqual(saved_resp.status_code, 200)
+        self.assertEqual(saved_resp.json(), [])
+
     def test_list_rubrics(self):
         resp = self.client.get("/api/rubrics")
         self.assertEqual(resp.status_code, 200)

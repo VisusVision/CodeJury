@@ -115,7 +115,7 @@ npm run setup:demo      # Platforma göre otomatik kurulum (demo mode)
 4. **npm install**: `frontend/` klasöründe çalıştırır.
 5. **Sandbox imajı**: `docker build -t agentgrade-sandbox sandbox-images/agentgrade/`.
 6. **PostgreSQL + Redis**: `docker compose up -d postgres redis`.
-7. **Ollama modelleri**: `ollama pull qwen2.5:7b` ve `ollama pull qwen2.5-coder:7b`.
+7. **Ollama modelleri**: `ollama pull qwen2.5-coder:14b-instruct-q6_K` (kod ajanlari, Q6_K). Hibrit modda genel sohbet NIM'de kalir; tam Ollama icin `ollama pull qwen2.5:7b`.
 8. Sonunda renkli özet (uyarı/hata listesi) yazdırır.
 
 > **Önemli:** `--demo` / `-DemoMode` parametresi 5–7. adımları atlar
@@ -162,8 +162,13 @@ Düzenlenebilir alanlar:
 | `LLM_GENERAL_PROVIDER` | bos | Chatbot/rubrik icin provider override; bos ise `LLM_PROVIDER` kullanilir |
 | `LLM_CODER_PROVIDER` | bos | Kod degerlendirme ajanlari icin provider override; bos ise `LLM_PROVIDER` kullanilir |
 | `OLLAMA_BASE_URL` | `http://localhost:11434` | Ollama servisi |
-| `OLLAMA_GENERAL_MODEL` | `qwen2.5:7b` | Genel sohbet/öneri LLM model adı |
-| `OLLAMA_CODER_MODEL` | `qwen2.5-coder:7b` | Kod değerlendirme ajanları için LLM model adı |
+| `OLLAMA_GENERAL_MODEL` | `qwen2.5:7b` | Tam Ollama modunda chatbot/rubrik |
+| `OLLAMA_CODER_MODEL` | `qwen2.5-coder:14b-instruct-q6_K` | Kod degerlendirme ajanlari (JSON, Q6_K) |
+| `OLLAMA_CODER_NUM_CTX` | `16384` | Coder model baglam penceresi |
+| `OLLAMA_CODER_NUM_GPU` | `-1` | GPU katmanlari (`-1` = tumu) |
+| `OLLAMA_CODER_TEMPERATURE` | `0.0` | Coder JSON ciktilari icin deterministik sicaklik |
+| `OLLAMA_CODER_TOP_P` | `0.9` | Coder nucleus sampling |
+| `OLLAMA_CODER_REPEAT_PENALTY` | `1.15` | Coder tekrar cezasi |
 | `NVIDIA_NIM_API_KEY` | bos | `LLM_PROVIDER=nvidia_nim` modunda kullanilan API key |
 | `NVIDIA_NIM_GENERAL_MODEL` | `qwen/qwen2.5-coder-32b-instruct` | Chatbot, rubrik ve genel LLM isleri |
 | `NVIDIA_NIM_CODER_MODEL` | `qwen/qwen2.5-coder-32b-instruct` | Kod degerlendirme ajanlari |
@@ -200,9 +205,29 @@ psql -U postgres -c "CREATE DATABASE agent_db OWNER KULLANICIADI;"
 ### 4.5 Ollama Modeli
 
 ```bash
-ollama pull qwen2.5:7b
-ollama pull qwen2.5-coder:7b
+ollama pull qwen2.5-coder:14b-instruct-q6_K
 ollama serve   # Servis arka planda çalışmıyorsa
+```
+
+> **Gereksinim:** qwen2.5-coder:14b-instruct-q6_K (~12 GB) icin 16 GB VRAM onerilir (5070 Ti uygun).
+
+Kod ajanlari icin inference parametreleri `.env` icinde `OLLAMA_CODER_*` ile ayarlanir; backend her Ollama cagrisinda bunlari uygular. Istege bagli Ollama Modelfile:
+
+```bash
+ollama create agentgrade-coder -f ollama/AgentGrade-Coder.modelfile
+# sonra OLLAMA_CODER_MODEL=agentgrade-coder
+```
+
+Tam Ollama modunda genel sohbet icin ek olarak:
+
+```bash
+ollama pull qwen2.5:7b
+```
+
+Kod analizi ajanlarında JSON bos donerse `OLLAMA_MAX_CONCURRENT=2` yapin veya daha kucuk model deneyin:
+
+```env
+OLLAMA_CODER_MODEL=qwen2.5-coder:7b
 ```
 
 ### 4.5.1 NVIDIA NIM ile Calistirma
@@ -234,11 +259,11 @@ kalirsa veya 429 rate limit aliyorsaniz hibrit mod kullanin (onerilen demo ayari
 LLM_PROVIDER=nvidia_nim
 LLM_GENERAL_PROVIDER=nvidia_nim
 LLM_CODER_PROVIDER=ollama
-OLLAMA_CODER_MODEL=qwen2.5-coder:7b
+OLLAMA_CODER_MODEL=qwen2.5-coder:14b-instruct-q6_K
 ```
 
 > **Not:** `qwen3.5:9b` coder modeli Ollama `format:json` ile bos yanit verebilir;
-> kod analizi icin `qwen2.5-coder:7b` kullanin.
+> kod analizi icin `qwen2.5-coder:14b-instruct-q6_K` (onerilen) veya `qwen2.5-coder:7b` kullanin.
 
 ### 4.6 Uygulamayı Başlatma
 
@@ -295,7 +320,7 @@ Kurulum sonrası kontrol listesi:
 
 ### Ollama modeli çekilemiyor
 
-- `ollama pull qwen2.5:7b` ve `ollama pull qwen2.5-coder:7b` komutlarını manuel deneyin; ağ engelliyorsa
+- `ollama pull qwen2.5-coder:14b-instruct-q6_K` ve `ollama pull qwen2.5:7b` komutlarını manuel deneyin; ağ engelliyorsa
   `OLLAMA_GENERAL_MODEL` veya `OLLAMA_CODER_MODEL` değerlerini daha küçük modellere çekin.
 
 ### Port çakışması (5432, 8080, 8001, 8181-8190, 11434)

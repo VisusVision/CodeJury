@@ -79,7 +79,7 @@ class OllamaModelRoutingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["score"], 100)
         self.assertEqual(result["llm_status"], "ok")
         self.assertEqual(result["guardrail_flags"], [])
-        self.assertEqual(chat.await_args.kwargs["model"], "qwen2.5-coder:7b")
+        self.assertEqual(chat.await_args.kwargs["model"], settings.ollama_coder_model)
 
     async def test_base_agent_marks_repaired_required_key_responses(self):
         agent = _DummyAgent()
@@ -132,7 +132,7 @@ class OllamaModelRoutingTests(unittest.IsolatedAsyncioTestCase):
                 )
             )
 
-        self.assertEqual(chat.await_args.kwargs["model"], "qwen2.5:7b")
+        self.assertEqual(chat.await_args.kwargs["model"], settings.ollama_general_model)
 
     async def test_chat_json_routes_coder_model_to_nvidia_nim_payload(self):
         with (
@@ -333,6 +333,36 @@ class OllamaModelRoutingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(ollama_request.await_count, 1)
         self.assertEqual(ollama_request.await_args.args[0]["model"], settings.ollama_coder_model)
 
+    async def test_coder_ollama_payload_uses_modelfile_inference_options(self):
+        with (
+            patch.object(settings, "llm_provider", "ollama"),
+            patch.object(settings, "llm_coder_provider", "ollama"),
+            patch.object(settings, "ollama_coder_num_ctx", 16384, create=True),
+            patch.object(settings, "ollama_coder_num_gpu", -1, create=True),
+            patch.object(settings, "ollama_coder_temperature", 0.0, create=True),
+            patch.object(settings, "ollama_coder_top_p", 0.9, create=True),
+            patch.object(settings, "ollama_coder_repeat_penalty", 1.15, create=True),
+            patch(
+                "backend.llm.ollama_client._do_request",
+                new=AsyncMock(return_value={"ok": True}),
+            ) as request,
+        ):
+            await chat_json(
+                system_prompt="Return JSON.",
+                user_prompt="{}",
+                model=settings.ollama_coder_model,
+                temperature=0.28,
+                use_cache=False,
+            )
+
+        options = request.await_args.args[0]["options"]
+        self.assertEqual(options["temperature"], 0.0)
+        self.assertEqual(options["num_ctx"], 16384)
+        self.assertEqual(options["top_p"], 0.9)
+        self.assertEqual(options["repeat_penalty"], 1.15)
+        self.assertEqual(options["num_gpu"], -1)
+        self.assertEqual(options["num_predict"], settings.ollama_num_predict)
+
 
 class ExtractJsonTests(unittest.TestCase):
     def test_parses_json_with_code_fences_inside_string_value(self):
@@ -389,3 +419,53 @@ class NimTokenFloorTests(unittest.IsolatedAsyncioTestCase):
             )
 
         self.assertEqual(nim_request.await_args.args[0]["max_tokens"], 8192)
+
+
+class GptOssClientTests(unittest.IsolatedAsyncioTestCase):
+    async def test_chat_json_uses_gpt_oss_token_floor_without_think(self):
+        with (
+            patch.object(settings, "ollama_enabled", True),
+            patch.object(settings, "llm_provider", "ollama"),
+            patch.object(settings, "llm_general_provider", "ollama"),
+            patch.object(settings, "ollama_general_model", "gpt-oss:20b"),
+            patch.object(settings, "ollama_gpt_oss_num_predict", 4096),
+            patch.object(settings, "ollama_num_predict", 1024),
+            patch(
+                "backend.llm.ollama_client._do_request",
+                new=AsyncMock(return_value={"ok": True}),
+            ) as ollama_request,
+        ):
+            await chat_json(
+                system_prompt="Return JSON.",
+                user_prompt="{}",
+                num_predict=512,
+                model=settings.ollama_general_model,
+                use_cache=False,
+            )
+
+        self.assertIsNotNone(ollama_request.await_args)
+        payload = ollama_request.await_args.args[0]
+        self.assertEqual(payload["model"], "gpt-oss:20b")
+        self.assertEqual(payload["options"]["num_predict"], 4096)
+        self.assertNotIn("think", payload)
+
+    async def test_chat_text_sets_gpt_oss_think_level(self):
+        with (
+            patch.object(settings, "ollama_enabled", True),
+            patch.object(settings, "llm_provider", "ollama"),
+            patch.object(settings, "llm_general_provider", "ollama"),
+            patch.object(settings, "ollama_general_model", "gpt-oss:20b"),
+            patch.object(settings, "ollama_gpt_oss_think", "medium"),
+            patch(
+                "backend.llm.ollama_client._do_ollama_text_request",
+                new=AsyncMock(return_value="hello"),
+            ) as text_request,
+        ):
+            await chat_text(
+                [{"role": "user", "content": "hi"}],
+                model=settings.ollama_general_model,
+            )
+
+        self.assertIsNotNone(text_request.await_args)
+        payload = text_request.await_args.args[0]
+        self.assertEqual(payload["think"], "medium")

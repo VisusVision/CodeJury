@@ -132,7 +132,7 @@ class BaseAgent(ABC):
         *,
         required_keys: list[str] | None = None,
         output_json_schema: dict | None = None,
-        temperature: float = 0.3,
+        temperature: float = 0.0,
         num_predict: int | None = None,
         use_cache: bool = True,
         model: str | None = None,
@@ -215,9 +215,9 @@ class BaseAgent(ABC):
                 )
 
         if output_json_schema:
-            result = self._pre_schema_normalize(result, output_json_schema)
             max_schema_repair_attempts = 3
             for attempt in range(max_schema_repair_attempts + 1):
+                result = self._pre_schema_normalize(result, output_json_schema)
                 result = normalize_instance_for_schema(result, output_json_schema)
                 schema_msgs = collect_validation_messages(result, output_json_schema)
                 if not schema_msgs:

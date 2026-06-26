@@ -1,0 +1,12 @@
+# AgentGrade kod analizi ajanlari — RTX 5070 Ti 16GB (Q6_K)
+# Olusturmak icin: ollama create agentgrade-coder -f ollama/AgentGrade-Coder.modelfile
+# Runtime'da ayni parametreler backend/llm/ollama_client.py tarafindan da uygulanir.
+
+FROM qwen2.5-coder:14b-instruct-q6_K
+
+PARAMETER num_ctx 16384
+PARAMETER num_gpu -1
+PARAMETER temperature 0.0
+PARAMETER top_p 0.9
+PARAMETER repeat_penalty 1.15
+PARAMETER num_predict 3072

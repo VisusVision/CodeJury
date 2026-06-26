@@ -1,8 +1,8 @@
 """
 Dynamic Test Agent -- tam LLM: calistirma degerlendirmesi Ollama ile.
 
-Derleme, exit kodu, test sayilari gibi olgular sandbox'tan alinir ve JSON'da sabitlenir; edge_case,
-performance_notes ve skor yorumu LLM'den gelir. LLM cagrisi zorunludur (ollama kapaliysa hata).
+Derleme, exit kodu, test sayilari ve skor gibi olgular sandbox/programatik katmandan alinir ve
+JSON'da sabitlenir; LLM yalnizca edge_case/performance yorumunu zenginlestirir.
 
 Girdi:  {"sandbox_result": dict, "expected_output": str | list[dict],
          "source_code": str, "language": str}
@@ -12,7 +12,12 @@ Cikti:  TestAgentOutput dict
 import ast
 import json
 
-from backend.agents.base import BaseAgent, build_llm_user_suffix, format_assignment_context_for_prompt
+from backend.agents.base import (
+    BaseAgent,
+    LLMInferenceError,
+    build_llm_user_suffix,
+    format_assignment_context_for_prompt,
+)
 from backend.agents.json_output_schema import TEST_AGENT_OUTPUT_SCHEMA
 from backend.agents.assignment_alignment import (
     BRIEF_MIN_LEN,
@@ -70,10 +75,21 @@ def _programmatic_from_sandbox_tests(
     exec_time_ms: float,
     peak_memory_mb: float,
     stderr: str = "",
+    expected_cases: list | None = None,
 ) -> dict | None:
     """Map orchestrator test_results into TestAgent programmatic fields."""
     if not isinstance(sb_tests, list) or not sb_tests:
         return None
+
+    visibility_by_name: dict[str, str] = {}
+    if isinstance(expected_cases, list):
+        for raw_case in expected_cases:
+            if not isinstance(raw_case, dict):
+                continue
+            case_name = str(raw_case.get("name") or raw_case.get("test_name") or "").strip()
+            visibility = str(raw_case.get("visibility") or "").strip().lower()
+            if case_name and visibility in {"public", "hidden"}:
+                visibility_by_name[case_name] = visibility
 
     test_results: list[dict] = []
     test_failures: list[dict] = []
@@ -85,7 +101,8 @@ def _programmatic_from_sandbox_tests(
             continue
         name = str(raw.get("name") or raw.get("test_name") or "sandbox_test")
         ok = bool(raw.get("passed"))
-        actual = str(raw.get("actual_stdout") or raw.get("actual") or "")
+        actual_stderr = str(raw.get("actual_stderr") or raw.get("stderr") or "")
+        actual = str(raw.get("actual_stdout") or raw.get("actual") or actual_stderr or "")
         expected = str(raw.get("expected_stdout") or raw.get("expected") or "")
         detail = {
             "test_name": name,
@@ -95,8 +112,13 @@ def _programmatic_from_sandbox_tests(
             "passed": ok,
             "match_pct": 100.0 if ok else 0.0,
         }
+        visibility = visibility_by_name.get(name)
+        if visibility:
+            detail["visibility"] = visibility
         if not ok:
             err = str(raw.get("error") or "Sandbox testi basarisiz")
+            if actual_stderr and actual_stderr not in err:
+                err = f"{err}\n{actual_stderr}"
             detail["diff_detail"] = err
             test_failures.append({"test_name": name, "reason": err})
             failed += 1
@@ -107,7 +129,12 @@ def _programmatic_from_sandbox_tests(
     if not test_results:
         return None
 
-    runtime_errors = _classify_errors(stderr) if failed or exit_code != 0 else []
+    error_text = "\n".join(
+        str(item.get("reason") or "")
+        for item in test_failures
+        if isinstance(item, dict)
+    )
+    runtime_errors = _classify_errors("\n".join([stderr or "", error_text])) if failed or exit_code != 0 else []
     runs_ok = failed == 0 and exit_code == 0
     edge_case = "good" if passed >= 2 else "fair"
     perf_notes = _evaluate_performance(exec_time_ms, peak_memory_mb)
@@ -139,6 +166,36 @@ def _programmatic_from_sandbox_tests(
 class TestAgent(BaseAgent):
     name = "test_agent"
     description = "Dinamik test ve calistirma analizi"
+
+    def _pre_schema_normalize(self, result: dict, output_json_schema: dict | None) -> dict:
+        if output_json_schema is not TEST_AGENT_OUTPUT_SCHEMA or not isinstance(result, dict):
+            return result
+        out = dict(result)
+        flags = [
+            str(flag)
+            for flag in out.get("guardrail_flags", [])
+            if str(flag).strip()
+        ] if isinstance(out.get("guardrail_flags"), list) else []
+
+        def default(key: str, value, flag: str = "test_agent_schema_defaulted") -> None:
+            if key not in out or out.get(key) is None:
+                out[key] = value
+                if flag not in flags:
+                    flags.append(flag)
+
+        default("compilation_success", False)
+        default("runs_successfully", False)
+        default("passed_tests", 0)
+        default("failed_tests", 0)
+        default("test_failures", [])
+        default("runtime_errors", [])
+        default("edge_case_handling", "fair")
+        default("edge_cases_observed", [])
+        default("performance_notes", "")
+        default("score", 0, "test_agent_score_defaulted")
+        if flags:
+            out["guardrail_flags"] = flags
+        return out
 
     async def analyze(self, input_data: dict) -> dict:
         sandbox = input_data["sandbox_result"]
@@ -186,12 +243,29 @@ class TestAgent(BaseAgent):
             f"{build_llm_user_suffix(report_language=report_language)}"
         )
 
-        llm_result = await self._call_llm(
-            system_prompt=_TEST_SYSTEM_PROMPT,
-            user_prompt=user_prompt,
-            required_keys=["compilation_success", "score"],
-            output_json_schema=TEST_AGENT_OUTPUT_SCHEMA,
-        )
+        try:
+            llm_result = await self._call_llm(
+                system_prompt=_TEST_SYSTEM_PROMPT,
+                user_prompt=user_prompt,
+                required_keys=[],
+                output_json_schema=TEST_AGENT_OUTPUT_SCHEMA,
+            )
+        except LLMInferenceError as exc:
+            llm_result = {
+                "compilation_success": programmatic["compilation_success"],
+                "runs_successfully": programmatic["runs_successfully"],
+                "passed_tests": programmatic["passed_tests"],
+                "failed_tests": programmatic["failed_tests"],
+                "test_failures": list(programmatic.get("test_failures") or []),
+                "runtime_errors": list(programmatic.get("runtime_errors") or []),
+                "edge_case_handling": programmatic.get("edge_case_handling", "fair"),
+                "edge_cases_observed": [],
+                "performance_notes": programmatic.get("performance_notes", ""),
+                "score": programmatic["score"],
+                "llm_status": "fallback",
+                "guardrail_flags": ["llm_inference_fallback"],
+                "llm_error": str(exc)[:300],
+            }
 
         # Sandbox-olgusal alanlar: her zaman programatik (hallucinasyonu onler)
         llm_result["compilation_success"] = programmatic["compilation_success"]
@@ -203,12 +277,16 @@ class TestAgent(BaseAgent):
         if "test_results" in programmatic:
             llm_result["test_results"] = programmatic["test_results"]
         p_fail = programmatic.get("test_failures")
-        if isinstance(p_fail, list) and p_fail:
+        if isinstance(programmatic.get("test_results"), list):
+            llm_result["test_failures"] = p_fail or []
+        elif isinstance(p_fail, list) and p_fail:
             llm_result["test_failures"] = p_fail
         elif not isinstance(llm_result.get("test_failures"), list) or not llm_result.get("test_failures"):
             llm_result["test_failures"] = p_fail or []
         p_re = programmatic.get("runtime_errors")
-        if isinstance(p_re, list) and p_re:
+        if isinstance(programmatic.get("test_results"), list):
+            llm_result["runtime_errors"] = p_re or []
+        elif isinstance(p_re, list) and p_re:
             llm_result["runtime_errors"] = p_re
         elif not isinstance(llm_result.get("runtime_errors"), list) or not llm_result.get("runtime_errors"):
             llm_result["runtime_errors"] = p_re or []
@@ -235,7 +313,10 @@ class TestAgent(BaseAgent):
             # LLM may pessimistically over-penalize smoke-only student submissions for
             # missing advanced edge-case scaffolding. Factual successful execution and
             # task alignment should keep the runtime score in a reasonable band.
-            llm_result["score"] = max(int(llm_result["score"]), min(int(prog_s), 80))
+            if int(programmatic.get("total_tests", 0) or 0) > 0:
+                llm_result["score"] = max(int(llm_result["score"]), int(prog_s))
+            else:
+                llm_result["score"] = max(int(llm_result["score"]), min(int(prog_s), 80))
         if (
             programmatic["runs_successfully"]
             and programmatic.get("failed_tests", 0) == 0
@@ -314,6 +395,7 @@ class TestAgent(BaseAgent):
             exec_time_ms=exec_time,
             peak_memory_mb=peak_mem,
             stderr=stderr,
+            expected_cases=expected if isinstance(expected, list) else None,
         )
         if sandbox_tests is not None:
             return _finish(sandbox_tests)

@@ -63,6 +63,39 @@ class TaskCapabilityMatrixTests(unittest.TestCase):
                 self.assertGreaterEqual(_capability_match_signal(brief, None, matching_code), minimum)
                 self.assertLess(_capability_match_signal(brief, None, unrelated), 0.25)
 
+    def test_topic_relevance_separates_off_topic_partial_and_matching_submissions(self):
+        cases = [
+            (
+                "number_file_analysis",
+                "Sayilar.txt dosyasindan sayilari okuyun, tek sayilari filtreleyin, ortalama ve medyan hesaplayin.",
+                "from pathlib import Path\nnums=[int(x) for x in Path('sayilar.txt').read_text().splitlines()]\nprint(sum(nums)/len(nums))\n",
+                "playlist=[]\nplaylist.append({'song':'A','artist':'B'})\nprint(playlist)\n",
+                0.70,
+                0.30,
+            ),
+            (
+                "api_client",
+                "API_URL ortam degiskeninden okunan HTTP API istemcisi yazin; durum kodunu yazdirsin.",
+                "import os, urllib.request\nurl=os.environ.get('API_URL')\nprint(urllib.request.urlopen(url, timeout=5).status)\n",
+                "def fibonacci(n): return n if n < 2 else fibonacci(n-1)+fibonacci(n-2)\n",
+                0.70,
+                0.30,
+            ),
+            (
+                "oop_library",
+                "Kitap, uye ve kutuphane siniflariyla odunc alma iade sistemi yazin.",
+                "class Kitap: pass\nclass Uye: pass\nclass Kutuphane:\n    def odunc_al(self): pass\n",
+                "print('hava durumu raporu')\n",
+                0.70,
+                0.30,
+            ),
+        ]
+
+        for label, brief, matching, off_topic, min_match, max_off in cases:
+            with self.subTest(label=label):
+                self.assertGreaterEqual(_capability_match_signal(brief, None, matching), min_match)
+                self.assertLess(_capability_match_signal(brief, None, off_topic), max_off)
+
 
 class SunumDemoRelevanceTests(unittest.TestCase):
     def test_sayilar_brief_matches_analysis_code_not_playlist(self):

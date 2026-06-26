@@ -273,12 +273,12 @@ function Start-Postgres {
 }
 
 function Pull-OllamaModel {
-    Write-Step "Ollama modelleri indiriliyor (qwen2.5:7b + qwen2.5-coder:7b)"
+    Write-Step "Ollama modelleri indiriliyor (qwen2.5-coder:14b-instruct-q6_K + qwen2.5:7b)"
     if (-not (Test-Command "ollama")) {
         Write-Warn2 "Ollama yok, model cekilemedi."
         return
     }
-    $models = @("qwen2.5:7b", "qwen2.5-coder:7b")
+    $models = @("qwen2.5-coder:14b-instruct-q6_K", "qwen2.5:7b")
     foreach ($model in $models) {
         & ollama pull $model
         if ($LASTEXITCODE -eq 0) { Write-Ok "Ollama modeli hazir: $model" }

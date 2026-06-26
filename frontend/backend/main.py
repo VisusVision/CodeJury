@@ -35,6 +35,8 @@ if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
 from backend.agents.code_quality import CodeQualityAgent
+from backend.agents.algorithm import AlgorithmAgent
+from backend.agents.ai_authorship import AIAuthorshipAgent
 from backend.agents.seniority import SeniorityAgent
 from backend.agents.guideline import GuidelineAgent
 from backend.agents.security import SecurityAgent
@@ -166,6 +168,7 @@ _DEMO_STORE: dict[str, Any] = {
         },
     ],
     "assignment_questions": {},
+    "assignment_test_cases": [],
     "upload_history": [],
     "evaluations": [],
 }
@@ -528,6 +531,7 @@ class AnalysisRequest(BaseModel):
     assignment_id: Optional[str] = None
     report_language: Optional[str] = None
     student_no: Optional[str] = None
+    test_cases: Optional[list[dict[str, Any]]] = None
 
 
 class StudentLoginRequest(BaseModel):
@@ -583,6 +587,21 @@ class AssignmentCreateRequest(BaseModel):
     name: str
     description: str | None = None
     due_date: str | None = None
+
+
+class AssignmentTestCaseIn(BaseModel):
+    id: str | None = None
+    name: str
+    stdin: str = ""
+    expected_stdout: str = ""
+    expected_exit_code: int = 0
+    visibility: str = "hidden"
+    source: str = "manual"
+    display_order: int | None = None
+
+
+class AssignmentTestCaseUpsertRequest(BaseModel):
+    test_cases: list[AssignmentTestCaseIn]
 
 
 class RubricUpsertRequest(BaseModel):
@@ -3169,6 +3188,23 @@ async def _ensure_db_schema(pool: asyncpg.Pool) -> None:
 
         CREATE INDEX IF NOT EXISTS idx_question_bank_created_at
             ON public.question_bank(created_at DESC);
+
+        CREATE TABLE IF NOT EXISTS public.assignment_test_cases (
+            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            assignment_id UUID NOT NULL REFERENCES public.assignments(id) ON DELETE CASCADE,
+            name TEXT NOT NULL,
+            stdin TEXT NOT NULL DEFAULT '',
+            expected_stdout TEXT NOT NULL DEFAULT '',
+            expected_exit_code INTEGER NOT NULL DEFAULT 0,
+            visibility TEXT NOT NULL DEFAULT 'hidden' CHECK (visibility IN ('public', 'hidden')),
+            source TEXT NOT NULL DEFAULT 'manual' CHECK (source IN ('manual', 'ai')),
+            display_order INTEGER NOT NULL DEFAULT 1,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_assignment_test_cases_assignment_id
+            ON public.assignment_test_cases(assignment_id, display_order ASC, created_at ASC);
         """)
 
 
@@ -3386,12 +3422,121 @@ def _compute_relevance_warning(
     return None
 
 
+def _normalize_pipeline_test_cases(raw: Any) -> list[dict[str, Any]]:
+    """Keep sandbox test cases small, explicit, and display-safe."""
+    if not isinstance(raw, list):
+        return []
+    out: list[dict[str, Any]] = []
+    for index, item in enumerate(raw, 1):
+        if not isinstance(item, dict):
+            continue
+        expected = item.get("expected_stdout", item.get("expected", ""))
+        case = {
+            "name": str(item.get("name") or item.get("test_name") or f"case_{index}")[:80],
+            "stdin": str(item.get("stdin", item.get("input", "")))[:4000],
+            "expected_stdout": str(expected)[:4000],
+        }
+        if "expected_exit_code" in item:
+            case["expected_exit_code"] = int(item.get("expected_exit_code", 0) or 0)
+        if "visibility" in item:
+            visibility = str(item.get("visibility") or "hidden").strip().lower()
+            case["visibility"] = visibility if visibility in {"public", "hidden"} else "hidden"
+        out.append(case)
+    return out[:50]
+
+
+def _normalize_assignment_test_case(
+    item: AssignmentTestCaseIn | dict[str, Any],
+    *,
+    assignment_id: str,
+    display_order: int,
+) -> dict[str, Any]:
+    raw = item.model_dump() if isinstance(item, AssignmentTestCaseIn) else dict(item)
+    name = str(raw.get("name") or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="Test adi zorunludur")
+    visibility = str(raw.get("visibility") or "hidden").strip().lower()
+    if visibility not in {"public", "hidden"}:
+        raise HTTPException(status_code=400, detail="Test gorunurlugu public veya hidden olmali")
+    source = str(raw.get("source") or "manual").strip().lower()
+    if source not in {"manual", "ai"}:
+        raise HTTPException(status_code=400, detail="Test kaynagi manual veya ai olmali")
+    try:
+        expected_exit_code = int(raw.get("expected_exit_code", 0) or 0)
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail="expected_exit_code sayi olmali") from exc
+    order_value = raw.get("display_order")
+    try:
+        order = int(order_value) if order_value is not None else display_order
+    except (TypeError, ValueError):
+        order = display_order
+    return {
+        "id": str(raw.get("id") or _demo_uuid()),
+        "assignment_id": assignment_id,
+        "name": name[:120],
+        "stdin": str(raw.get("stdin") or "")[:8000],
+        "expected_stdout": str(raw.get("expected_stdout", raw.get("expected", "")) or "")[:8000],
+        "expected_exit_code": expected_exit_code,
+        "visibility": visibility,
+        "source": source,
+        "display_order": max(1, order),
+    }
+
+
+def _assignment_test_case_response(row: Any) -> dict[str, Any]:
+    record = dict(row)
+    return {
+        "id": str(record.get("id") or ""),
+        "assignment_id": str(record.get("assignment_id") or ""),
+        "name": str(record.get("name") or ""),
+        "stdin": str(record.get("stdin") or ""),
+        "expected_stdout": str(record.get("expected_stdout") or ""),
+        "expected_exit_code": int(record.get("expected_exit_code", 0) or 0),
+        "visibility": str(record.get("visibility") or "hidden"),
+        "source": str(record.get("source") or "manual"),
+        "display_order": int(record.get("display_order", 1) or 1),
+    }
+
+
+async def _fetch_assignment_test_cases_for_pipeline(assignment_id: str | None) -> list[dict[str, Any]]:
+    if not assignment_id or not str(assignment_id).strip():
+        return []
+    aid = str(assignment_id).strip()
+    try:
+        uuid.UUID(aid)
+    except (ValueError, AttributeError):
+        return []
+
+    if _DEMO_MODE:
+        rows = [
+            _assignment_test_case_response(row)
+            for row in _DEMO_STORE.get("assignment_test_cases", [])
+            if isinstance(row, dict) and str(row.get("assignment_id")) == aid
+        ]
+        rows.sort(key=lambda row: (row["display_order"], row["name"]))
+        return _normalize_pipeline_test_cases(rows)
+
+    pool = await _get_db_pool()
+    rows = await pool.fetch(
+        """
+        SELECT id, assignment_id, name, stdin, expected_stdout, expected_exit_code,
+               visibility, source, display_order
+        FROM public.assignment_test_cases
+        WHERE assignment_id = $1::uuid
+        ORDER BY display_order ASC, created_at ASC
+        """,
+        aid,
+    )
+    return _normalize_pipeline_test_cases([_assignment_test_case_response(row) for row in rows])
+
+
 async def run_analysis_pipeline(
     file_name: str,
     file_content: str,
     *,
     assignment_brief: str = "",
     faculty_rubric_criteria: list[dict[str, Any]] | None = None,
+    test_cases: list[dict[str, Any]] | None = None,
     report_language: str = "tr",
 ) -> dict[str, Any]:
     if not tracemalloc.is_tracing():
@@ -3402,6 +3547,7 @@ async def run_analysis_pipeline(
             file_content,
             assignment_brief=assignment_brief,
             faculty_rubric_criteria=faculty_rubric_criteria,
+            test_cases=test_cases,
             report_language=report_language,
         )
     finally:
@@ -3415,6 +3561,7 @@ async def _run_analysis_pipeline_body(
     *,
     assignment_brief: str = "",
     faculty_rubric_criteria: list[dict[str, Any]] | None = None,
+    test_cases: list[dict[str, Any]] | None = None,
     report_language: str = "tr",
 ) -> dict[str, Any]:
     start_time = time.time()
@@ -3427,6 +3574,7 @@ async def _run_analysis_pipeline_body(
 
     brief = (assignment_brief or "").strip()
     fac = list(faculty_rubric_criteria) if faculty_rubric_criteria else []
+    pipeline_test_cases = _normalize_pipeline_test_cases(test_cases)
     if fac:
         print(f"[pipeline] Ogretmen rubrigi: {len(fac)} kriter", flush=True)
 
@@ -3516,22 +3664,29 @@ async def _run_analysis_pipeline_body(
     print("[pipeline] Paralel katman basliyor (statik + sandbox->test)...", flush=True)
 
     async def _run_static():
-        cq, sn, gl, sc = await asyncio.gather(
+        cq, alg, auth, sn, gl, sc = await asyncio.gather(
             CodeQualityAgent().analyze(inp),
+            AlgorithmAgent().analyze(inp),
+            AIAuthorshipAgent().analyze(inp),
             SeniorityAgent().analyze(inp),
             GuidelineAgent().analyze(inp),
             SecurityAgent().analyze(inp),
         )
-        return cq, sn, gl, sc
+        return cq, alg, auth, sn, gl, sc
 
     async def _run_sandbox_then_test():
         sb = await loop.run_in_executor(
             None,
-            lambda: run_in_sandbox(file_content, language, files=sandbox_files),
+            lambda: run_in_sandbox(
+                file_content,
+                language,
+                files=sandbox_files,
+                test_cases=pipeline_test_cases,
+            ),
         )
         ta = await TestAgent().analyze({
             "sandbox_result": sb,
-            "expected_output": "",
+            "expected_output": pipeline_test_cases,
             "source_code": file_content,
             "language": language,
             "report_language": "tr",
@@ -3541,11 +3696,11 @@ async def _run_analysis_pipeline_body(
         })
         return sb, ta
 
-    (cq, sn, gl, sc), (sandbox_result, ta) = await asyncio.gather(
+    (cq, alg, auth, sn, gl, sc), (sandbox_result, ta) = await asyncio.gather(
         _run_static(),
         _run_sandbox_then_test(),
     )
-    print(f"[pipeline] Paralel katman bitti (CQ={cq.get('score')}, SN={sn.get('score')}, GL={gl.get('score')}, SC={sc.get('score')}, TA={ta.get('score')})", flush=True)
+    print(f"[pipeline] Paralel katman bitti (CQ={cq.get('score')}, ALG={alg.get('score')}, AUTH={auth.get('risk_level')}, SN={sn.get('score')}, GL={gl.get('score')}, SC={sc.get('score')}, TA={ta.get('score')})", flush=True)
 
     # 2) Evidence Agent (tüm ajanlara bağımlı)
     print("[pipeline] EvidenceAgent basliyor...", flush=True)
@@ -3556,6 +3711,8 @@ async def _run_analysis_pipeline_body(
         "assignment_description": brief,
         "agent_findings": {
             "code_quality": cq,
+            "algorithm": alg,
+            "ai_authorship": auth,
             "test_agent": ta,
             "seniority": sn,
             "guideline": gl,
@@ -3570,6 +3727,7 @@ async def _run_analysis_pipeline_body(
         "evidence": ev,
         "sandbox_result": sandbox_result,
         "code_quality": cq,
+        "algorithm": alg,
         "test_agent": ta,
         "seniority": sn,
         "guideline": gl,
@@ -3611,7 +3769,7 @@ async def _run_analysis_pipeline_body(
         })
 
     # Agent raporlari
-    agents_list = _build_agents_list(cq, sn, gl, sc, ta, ev)
+    agents_list = _build_agents_list(cq, sn, gl, sc, ta, ev, alg, auth)
 
     # Line evidence
     evidence_lines = _build_line_evidence(cq, gl, sc, ev, file_content)
@@ -3665,6 +3823,8 @@ async def _run_analysis_pipeline_body(
         "agentDiagnostics": _build_agent_diagnostics(
             {
                 "code_quality": cq,
+                "algorithm": alg,
+                "ai_authorship": auth,
                 "seniority": sn,
                 "guideline": gl,
                 "security": sc,
@@ -3717,21 +3877,51 @@ def _agent_report_metadata(output: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _build_agents_list(cq, sn, gl, sc, ta, ev) -> list[dict]:
+def _build_agents_list(cq, sn, gl, sc, ta, ev, alg=None, auth=None) -> list[dict]:
     """Her ajan icin frontend'in beklegi formatta rapor olustur."""
     agents = []
 
     # Testing Agent
     test_findings = []
+    for case in ta.get("test_results", []) or []:
+        if not isinstance(case, dict):
+            continue
+        name = str(case.get("test_name") or case.get("name") or "test").strip()
+        stdin = str(case.get("input") or case.get("stdin") or "").strip()
+        expected = str(case.get("expected") or case.get("expected_stdout") or "").strip()
+        actual = str(case.get("actual") or case.get("actual_stdout") or "").strip()
+        passed_case = bool(case.get("passed"))
+        is_hidden = str(case.get("visibility") or "").strip().lower() == "hidden"
+        status_text = "gecti" if passed_case else "basarisiz"
+        parts = [f"Test {name} {status_text}"]
+        if is_hidden:
+            parts.append("Girdi/cikti gizli test")
+        elif stdin:
+            parts.append(f"Girdi: {stdin[:120]}")
+        if not is_hidden and expected:
+            parts.append(f"Beklenen: {expected[:160]}")
+        if not is_hidden and actual:
+            parts.append(f"Gercek: {actual[:160]}")
+        test_findings.append({
+            "severity": "info" if passed_case else "error",
+            "message": " | ".join(parts),
+            "line": None,
+            "agent": "Test AjanÄ±",
+            "code": None,
+        })
     for err in ta.get("runtime_errors", []):
         test_findings.append({
             "severity": "error", "message": err,
             "line": None, "agent": "Test Ajanı", "code": None,
         })
     for fail in ta.get("test_failures", []):
+        if isinstance(fail, dict):
+            fail_reason = fail.get("reason", fail.get("test_name", ""))
+        else:
+            fail_reason = fail
         test_findings.append({
             "severity": "error",
-            "message": f"Test basarisiz: {fail.get('reason', fail.get('test_name', ''))}",
+            "message": f"Test basarisiz: {str(fail_reason)[:300]}",
             "line": None, "agent": "Test Ajanı", "code": None,
         })
     edge_observed = ta.get("edge_cases_observed", []) or []
@@ -3794,6 +3984,34 @@ def _build_agents_list(cq, sn, gl, sc, ta, ev) -> list[dict]:
         "findings": cq_findings,
         **_agent_report_metadata(cq),
     })
+
+    if isinstance(alg, dict):
+        alg_findings = []
+        for issue in alg.get("issues", []) or []:
+            if not isinstance(issue, dict):
+                continue
+            desc = str(issue.get("description") or issue.get("type") or "").strip()
+            alg_findings.append({
+                "severity": _map_severity_for_message(issue.get("severity", "info"), desc),
+                "message": desc,
+                "line": issue.get("line"),
+                "agent": "Algoritma Ajani",
+                "code": None,
+            })
+        gap = str(alg.get("complexity_gap") or "unknown")
+        expected = str(alg.get("expected_complexity") or "?")
+        agents.append({
+            "id": "algorithm",
+            "name": "Algoritma Ajani",
+            "summary": (
+                f"Karmasiklik: {alg.get('time_complexity', '?')}, "
+                f"Beklenen: {expected}, Durum: {gap}"
+            ),
+            "score": alg.get("score", 0),
+            "maxScore": 100,
+            "findings": alg_findings,
+            **_agent_report_metadata(alg),
+        })
 
     # Seniority Agent
     sn_findings = []
@@ -3860,6 +4078,39 @@ def _build_agents_list(cq, sn, gl, sc, ta, ev) -> list[dict]:
         "findings": sc_findings,
         **_agent_report_metadata(sc),
     })
+
+    if isinstance(auth, dict):
+        auth_findings = []
+        for signal in auth.get("signals", []) or []:
+            text = str(signal).strip()
+            if text:
+                auth_findings.append({
+                    "severity": "warning",
+                    "message": text,
+                    "line": None,
+                    "agent": "AI Yazarlik Ajani",
+                    "code": None,
+                })
+        recommendation = str(auth.get("recommendation") or "").strip()
+        if recommendation:
+            auth_findings.append({
+                "severity": "info",
+                "message": recommendation,
+                "line": None,
+                "agent": "AI Yazarlik Ajani",
+                "code": None,
+            })
+        confidence = float(auth.get("confidence", 0) or 0)
+        risk_level = str(auth.get("risk_level") or "safe").upper()
+        agents.append({
+            "id": "ai_authorship",
+            "name": "AI Yazarlik Ajani",
+            "summary": f"Risk: {risk_level}, Guven: {round(confidence * 100)}%. Notu otomatik etkilemez.",
+            "score": round((1 - confidence) * 100),
+            "maxScore": 100,
+            "findings": auth_findings,
+            **_agent_report_metadata(auth),
+        })
 
     # Evidence Agent
     ev_findings = []
@@ -4094,7 +4345,7 @@ async def health(response: Response):
         "status": "ok",
         "package": "frontend",
         "version": "2.1.0",
-        "agents": 8,
+        "agents": 10,
         "analysis_engine": _ANALYSIS_ENGINE,
         "demo_mode": _DEMO_MODE,
         "main_py": str(_MAIN_FILE),
@@ -4124,6 +4375,11 @@ async def analyze_code(req: AnalysisRequest):
                       raise HTTPException(status_code=409, detail="Önce açık değerlendirmeyi tamamlayın")
         brief = await _fetch_assignment_brief_for_pipeline(req.assignment_id)
         faculty = await _fetch_faculty_rubric_criteria_for_pipeline(req.assignment_id)
+        saved_test_cases = (
+            await _fetch_assignment_test_cases_for_pipeline(req.assignment_id)
+            if req.test_cases is None
+            else req.test_cases
+        )
         store = await _get_analysis_job_store()
         return await create_analysis_job(
             store,
@@ -4133,6 +4389,7 @@ async def analyze_code(req: AnalysisRequest):
                 "assignment_id": req.assignment_id,
                 "assignment_brief": brief,
                 "faculty_rubric_criteria": faculty,
+                "test_cases": saved_test_cases or [],
                 "report_language": req.report_language or "tr",
             },
         )
@@ -4596,6 +4853,9 @@ async def delete_assignment(assignment_id: str):
         if len(_DEMO_STORE["assignments"]) == before:
             raise HTTPException(status_code=404, detail="Ödev bulunamadı")
         _DEMO_STORE["rubrics"] = [r for r in _DEMO_STORE["rubrics"] if str(r["assignment_id"]) != aid]
+        _DEMO_STORE["assignment_test_cases"] = [
+            t for t in _DEMO_STORE.get("assignment_test_cases", []) if str(t.get("assignment_id")) != aid
+        ]
         _save_demo_store_to_disk()
         return {"status": "ok"}
 
@@ -4611,6 +4871,147 @@ async def delete_assignment(assignment_id: str):
     if result.endswith("0"):
         raise HTTPException(status_code=404, detail="Ödev bulunamadı")
     return {"status": "ok"}
+
+
+@app.get("/api/assignments/{assignment_id}/test-cases")
+async def list_assignment_test_cases(assignment_id: str):
+    aid = assignment_id.strip()
+    if _DEMO_MODE:
+        if not any(str(a.get("id")) == aid for a in _DEMO_STORE.get("assignments", [])):
+            raise HTTPException(status_code=404, detail="Odev bulunamadi")
+        rows = [
+            _assignment_test_case_response(row)
+            for row in _DEMO_STORE.get("assignment_test_cases", [])
+            if isinstance(row, dict) and str(row.get("assignment_id")) == aid
+        ]
+        return sorted(rows, key=lambda row: (row["display_order"], row["name"]))
+
+    uid = _parse_assignment_uuid_param(aid)
+    pool = await _get_db_pool()
+    exists = await pool.fetchval("SELECT 1 FROM public.assignments WHERE id = $1::uuid LIMIT 1", uid)
+    if exists is None:
+        raise HTTPException(status_code=404, detail="Odev bulunamadi")
+    rows = await pool.fetch(
+        """
+        SELECT id, assignment_id, name, stdin, expected_stdout, expected_exit_code,
+               visibility, source, display_order
+        FROM public.assignment_test_cases
+        WHERE assignment_id = $1::uuid
+        ORDER BY display_order ASC, created_at ASC
+        """,
+        uid,
+    )
+    return [_assignment_test_case_response(row) for row in rows]
+
+
+@app.post("/api/assignments/{assignment_id}/test-cases/suggest")
+async def suggest_assignment_test_cases(assignment_id: str):
+    aid = assignment_id.strip()
+    if _DEMO_MODE:
+        assignment = next((a for a in _DEMO_STORE.get("assignments", []) if str(a.get("id")) == aid), None)
+        if assignment is None:
+            raise HTTPException(status_code=404, detail="Odev bulunamadi")
+    else:
+        uid = _parse_assignment_uuid_param(aid)
+        pool = await _get_db_pool()
+        assignment = await pool.fetchrow(
+            "SELECT id, name, description FROM public.assignments WHERE id = $1::uuid LIMIT 1",
+            uid,
+        )
+        if assignment is None:
+            raise HTTPException(status_code=404, detail="Odev bulunamadi")
+
+    raw_suggestions = [
+        {
+            "name": "public sample",
+            "stdin": "3\n",
+            "expected_stdout": "9\n",
+            "visibility": "public",
+            "source": "ai",
+        },
+        {
+            "name": "hidden zero edge",
+            "stdin": "0\n",
+            "expected_stdout": "0\n",
+            "visibility": "hidden",
+            "source": "ai",
+        },
+        {
+            "name": "hidden larger input",
+            "stdin": "10\n",
+            "expected_stdout": "100\n",
+            "visibility": "hidden",
+            "source": "ai",
+        },
+    ]
+    suggestions = [
+        _assignment_test_case_response(
+            _normalize_assignment_test_case(row, assignment_id=aid, display_order=index)
+        )
+        for index, row in enumerate(raw_suggestions, 1)
+    ]
+    return {"suggestions": suggestions}
+
+
+@app.put("/api/assignments/{assignment_id}/test-cases")
+async def replace_assignment_test_cases(assignment_id: str, req: AssignmentTestCaseUpsertRequest):
+    aid = assignment_id.strip()
+    if len(req.test_cases) > 50:
+        raise HTTPException(status_code=400, detail="En fazla 50 test kaydedilebilir")
+
+    normalized = [
+        _normalize_assignment_test_case(item, assignment_id=aid, display_order=index)
+        for index, item in enumerate(req.test_cases, 1)
+    ]
+
+    if _DEMO_MODE:
+        if not any(str(a.get("id")) == aid for a in _DEMO_STORE.get("assignments", [])):
+            raise HTTPException(status_code=404, detail="Odev bulunamadi")
+        _DEMO_STORE["assignment_test_cases"] = [
+            row for row in _DEMO_STORE.get("assignment_test_cases", []) if str(row.get("assignment_id")) != aid
+        ]
+        now = _demo_now()
+        for row in normalized:
+            row["created_at"] = now
+            row["updated_at"] = now
+        _DEMO_STORE["assignment_test_cases"].extend(normalized)
+        _save_demo_store_to_disk()
+        return sorted(
+            [_assignment_test_case_response(row) for row in normalized],
+            key=lambda row: (row["display_order"], row["name"]),
+        )
+
+    uid = _parse_assignment_uuid_param(aid)
+    pool = await _get_db_pool()
+    exists = await pool.fetchval("SELECT 1 FROM public.assignments WHERE id = $1::uuid LIMIT 1", uid)
+    if exists is None:
+        raise HTTPException(status_code=404, detail="Odev bulunamadi")
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            await conn.execute(
+                "DELETE FROM public.assignment_test_cases WHERE assignment_id = $1::uuid",
+                uid,
+            )
+            for row in normalized:
+                await conn.execute(
+                    """
+                    INSERT INTO public.assignment_test_cases (
+                        id, assignment_id, name, stdin, expected_stdout, expected_exit_code,
+                        visibility, source, display_order
+                    )
+                    VALUES ($1::uuid, $2::uuid, $3, $4, $5, $6, $7, $8, $9)
+                    """,
+                    row["id"],
+                    uid,
+                    row["name"],
+                    row["stdin"],
+                    row["expected_stdout"],
+                    row["expected_exit_code"],
+                    row["visibility"],
+                    row["source"],
+                    row["display_order"],
+                )
+    return await list_assignment_test_cases(aid)
 
 
 @app.get("/api/rubrics")

@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
+import asyncio
 import unittest
+from unittest.mock import AsyncMock, patch
 
+from backend.agents.base import LLMInferenceError
 from backend.agents.test_agent import TestAgent, _programmatic_from_sandbox_tests
+from frontend.backend.main import _build_agents_list
 
 
 class TestAgentSandboxResultsTests(unittest.TestCase):
@@ -77,6 +81,323 @@ class TestAgentSandboxResultsTests(unittest.TestCase):
         self.assertTrue(result["runs_successfully"])
         self.assertGreaterEqual(result["score"], 70)
         self.assertEqual(len(result["test_results"]), 2)
+
+    def test_analyze_drops_llm_runtime_error_when_formal_tests_pass(self):
+        sandbox = {
+            "compilation_success": True,
+            "exit_code": 0,
+            "stdout": "",
+            "stderr": "",
+            "execution_time_ms": 5,
+            "peak_memory_mb": 0.5,
+            "test_results": [
+                {
+                    "name": "case_a",
+                    "stdin": "6\n",
+                    "passed": True,
+                    "actual_stdout": "36",
+                    "expected_stdout": "36\n",
+                    "actual_exit_code": 0,
+                },
+                {
+                    "name": "case_b",
+                    "stdin": "0\n",
+                    "passed": True,
+                    "actual_stdout": "0",
+                    "expected_stdout": "0\n",
+                    "actual_exit_code": 0,
+                },
+            ],
+        }
+        expected = [
+            {"name": "case_a", "stdin": "6\n", "expected_stdout": "36\n"},
+            {"name": "case_b", "stdin": "0\n", "expected_stdout": "0\n"},
+        ]
+        agent = TestAgent()
+
+        async def run_case():
+            with patch.object(
+                agent,
+                "_call_llm",
+                new=AsyncMock(
+                    return_value={
+                        "compilation_success": True,
+                        "runs_successfully": False,
+                        "passed_tests": 0,
+                        "failed_tests": 1,
+                        "test_failures": [{"test_name": "smoke", "reason": "EOFError"}],
+                        "runtime_errors": ["EOFError: EOF when reading a line"],
+                        "edge_case_handling": "poor",
+                        "edge_cases_observed": [],
+                        "performance_notes": "llm noise",
+                        "score": 50,
+                    }
+                ),
+            ):
+                return await agent.analyze(
+                    {
+                        "sandbox_result": sandbox,
+                        "expected_output": expected,
+                        "source_code": "n=int(input())\nprint(n*n)\n",
+                        "language": "python",
+                        "assignment_description": "Sayinin karesini yazdirin.",
+                    }
+                )
+
+        result = asyncio.run(run_case())
+
+        self.assertEqual(result["runtime_errors"], [])
+        self.assertEqual(result["test_failures"], [])
+        self.assertTrue(result["runs_successfully"])
+        self.assertGreaterEqual(result["score"], 90)
+
+    def test_analyze_falls_back_when_llm_response_missing_score(self):
+        sandbox = {
+            "compilation_success": True,
+            "exit_code": 0,
+            "stdout": "ok\n",
+            "stderr": "",
+            "execution_time_ms": 5,
+            "peak_memory_mb": 0.5,
+            "test_results": [
+                {
+                    "name": "case_a",
+                    "stdin": "",
+                    "passed": True,
+                    "actual_stdout": "ok",
+                    "expected_stdout": "ok\n",
+                    "actual_exit_code": 0,
+                },
+            ],
+        }
+        agent = TestAgent()
+
+        async def run_case():
+            with patch.object(
+                agent,
+                "_call_llm",
+                new=AsyncMock(
+                    side_effect=LLMInferenceError(
+                        "[test_agent] Missing required keys in LLM response: score"
+                    )
+                ),
+            ):
+                return await agent.analyze(
+                    {
+                        "sandbox_result": sandbox,
+                        "expected_output": [{"name": "case_a", "expected_stdout": "ok\n"}],
+                        "source_code": "print('ok')\n",
+                        "language": "python",
+                        "assignment_description": "ok yazdirin.",
+                    }
+                )
+
+        result = asyncio.run(run_case())
+
+        self.assertEqual(result["llm_status"], "fallback")
+        self.assertIn("llm_inference_fallback", result["guardrail_flags"])
+        self.assertTrue(result["runs_successfully"])
+        self.assertEqual(result["passed_tests"], 1)
+        self.assertGreaterEqual(result["score"], 85)
+
+    def test_analyze_normalizes_parseable_llm_response_missing_score(self):
+        sandbox = {
+            "compilation_success": True,
+            "exit_code": 0,
+            "stdout": "ok\n",
+            "stderr": "",
+            "execution_time_ms": 5,
+            "peak_memory_mb": 0.5,
+            "test_results": [
+                {
+                    "name": "case_a",
+                    "stdin": "",
+                    "passed": True,
+                    "actual_stdout": "ok",
+                    "expected_stdout": "ok\n",
+                    "actual_exit_code": 0,
+                },
+            ],
+        }
+        agent = TestAgent()
+        llm_payload_without_score = {
+            "compilation_success": True,
+            "runs_successfully": True,
+            "passed_tests": 1,
+            "failed_tests": 0,
+            "test_failures": [],
+            "runtime_errors": [],
+            "edge_case_handling": "fair",
+            "edge_cases_observed": [],
+            "performance_notes": "Calisti.",
+        }
+
+        async def run_case():
+            with (
+                patch("backend.agents.base.settings.ollama_enabled", True),
+                patch("backend.agents.base.chat_json", new=AsyncMock(return_value=llm_payload_without_score)) as chat,
+            ):
+                result = await agent.analyze(
+                    {
+                        "sandbox_result": sandbox,
+                        "expected_output": [{"name": "case_a", "expected_stdout": "ok\n"}],
+                        "source_code": "print('ok')\n",
+                        "language": "python",
+                        "assignment_description": "ok yazdirin.",
+                    }
+                )
+                return result, chat.await_count
+
+        result, call_count = asyncio.run(run_case())
+
+        self.assertNotEqual(result.get("llm_status"), "fallback")
+        self.assertIn("test_agent_score_defaulted", result.get("guardrail_flags", []))
+        self.assertEqual(call_count, 1)
+        self.assertTrue(result["runs_successfully"])
+        self.assertEqual(result["passed_tests"], 1)
+        self.assertGreaterEqual(result["score"], 85)
+
+    def test_failed_sandbox_case_preserves_input_expected_actual_evidence(self):
+        built = _programmatic_from_sandbox_tests(
+            [
+                {
+                    "name": "divide_by_zero_edge",
+                    "stdin": "10 0\n",
+                    "passed": False,
+                    "actual_stdout": "",
+                    "actual_stderr": "Traceback...\nZeroDivisionError: division by zero",
+                    "expected_stdout": "HATA: sifira bolme\n",
+                    "error": "Exit code: expected=0, actual=1",
+                },
+            ],
+            exit_code=1,
+            exec_time_ms=8,
+            peak_memory_mb=1.0,
+            stderr="",
+        )
+
+        self.assertIsNotNone(built)
+        assert built is not None
+        self.assertFalse(built["runs_successfully"])
+        self.assertEqual(built["passed_tests"], 0)
+        self.assertEqual(built["failed_tests"], 1)
+        self.assertEqual(built["test_results"][0]["input"], "10 0\n")
+        self.assertEqual(built["test_results"][0]["expected"], "HATA: sifira bolme\n")
+        self.assertIn("ZeroDivisionError", built["test_results"][0]["actual"])
+        self.assertTrue(any("ZeroDivisionError" in err for err in built["runtime_errors"]))
+        self.assertLessEqual(built["score"], 35)
+
+    def test_programmatic_analysis_marks_hidden_sandbox_cases_from_expected_metadata(self):
+        sandbox = {
+            "compilation_success": True,
+            "exit_code": 0,
+            "stdout": "",
+            "stderr": "",
+            "execution_time_ms": 5,
+            "peak_memory_mb": 1.0,
+            "test_results": [
+                {
+                    "name": "hidden_edge",
+                    "stdin": "10 0\n",
+                    "expected_stdout": "HATA\n",
+                    "actual_stdout": "HATA\n",
+                    "passed": True,
+                }
+            ],
+        }
+        expected = [
+            {
+                "name": "hidden_edge",
+                "stdin": "10 0\n",
+                "expected_stdout": "HATA\n",
+                "visibility": "hidden",
+            }
+        ]
+
+        result = TestAgent()._programmatic_analysis(sandbox, expected, "print('x')", "python")
+
+        self.assertEqual(result["test_results"][0]["visibility"], "hidden")
+
+    def test_frontend_testing_agent_shows_input_expected_actual_for_cases(self):
+        agents = _build_agents_list(
+            {"time_complexity": "O(n)", "score": 80, "issues": []},
+            {"estimated_level": "mid", "score": 70, "immaturity_indicators": [], "maturity_indicators": []},
+            {"naming_quality": "good", "score": 75, "style_violations": []},
+            {"risk_level": "safe", "total_threats": 0, "score": 100, "threats": []},
+            {
+                "compilation_success": True,
+                "runs_successfully": False,
+                "passed_tests": 1,
+                "failed_tests": 1,
+                "score": 45,
+                "test_results": [
+                    {
+                        "test_name": "normal_case",
+                        "input": "4\n",
+                        "expected": "16\n",
+                        "actual": "16\n",
+                        "passed": True,
+                    },
+                    {
+                        "test_name": "zero_division_edge",
+                        "input": "10 0\n",
+                        "expected": "HATA\n",
+                        "actual": "ZeroDivisionError\n",
+                        "passed": False,
+                    },
+                ],
+                "test_failures": [
+                    "ZeroDivisionError: division by zero",
+                    {"test_name": "zero_division_edge", "reason": "ZeroDivisionError"},
+                ],
+                "runtime_errors": ["ZeroDivisionError: sifira bolme hatasi"],
+            },
+            {"total_claims_received": 0, "total_claims_validated": 0, "validated_claims": []},
+        )
+
+        testing = next(agent for agent in agents if agent["id"] == "testing")
+        messages = "\n".join(finding["message"] for finding in testing["findings"])
+        self.assertIn("normal_case", messages)
+        self.assertIn("Girdi: 4", messages)
+        self.assertIn("Beklenen: 16", messages)
+        self.assertIn("Gercek: 16", messages)
+        self.assertIn("zero_division_edge", messages)
+        self.assertIn("ZeroDivisionError", messages)
+
+    def test_frontend_testing_agent_hides_hidden_case_io(self):
+        agents = _build_agents_list(
+            {"time_complexity": "O(n)", "score": 80, "issues": []},
+            {"estimated_level": "mid", "score": 70, "immaturity_indicators": [], "maturity_indicators": []},
+            {"naming_quality": "good", "score": 75, "style_violations": []},
+            {"risk_level": "safe", "total_threats": 0, "score": 100, "threats": []},
+            {
+                "compilation_success": True,
+                "runs_successfully": False,
+                "passed_tests": 0,
+                "failed_tests": 1,
+                "score": 30,
+                "test_results": [
+                    {
+                        "test_name": "hidden_edge",
+                        "input": "10 0\n",
+                        "expected": "HATA\n",
+                        "actual": "ZeroDivisionError\n",
+                        "passed": False,
+                        "visibility": "hidden",
+                    },
+                ],
+                "test_failures": [],
+                "runtime_errors": ["ZeroDivisionError: sifira bolme hatasi"],
+            },
+            {"total_claims_received": 0, "total_claims_validated": 0, "validated_claims": []},
+        )
+
+        testing = next(agent for agent in agents if agent["id"] == "testing")
+        messages = "\n".join(finding["message"] for finding in testing["findings"])
+        self.assertIn("hidden_edge", messages)
+        self.assertNotIn("Girdi: 10 0", messages)
+        self.assertNotIn("Beklenen: HATA", messages)
+        self.assertNotIn("Gercek: ZeroDivisionError", messages)
 
 
 if __name__ == "__main__":
