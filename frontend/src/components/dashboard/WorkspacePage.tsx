@@ -17,6 +17,8 @@ import {
   Star,
   Sparkles,
   CheckCircle2,
+  BarChart3,
+  Fingerprint,
 } from "lucide-react";
 import { toast } from "sonner";
 import FileUploadZone from "@/components/dashboard/FileUploadZone";
@@ -49,9 +51,11 @@ interface AgentDef {
 const agentKeys = [
   { id: "testing", nameKey: "agents.testAgent", descKey: "agents.testAgentDesc", icon: FlaskConical },
   { id: "quality", nameKey: "agents.codeQuality", descKey: "agents.codeQualityDesc", icon: Code2 },
+  { id: "algorithm", nameKey: "agents.algorithm", descKey: "agents.algorithmDesc", icon: BarChart3 },
   { id: "seniority", nameKey: "agents.seniority", descKey: "agents.seniorityDesc", icon: GraduationCap },
   { id: "guideline", nameKey: "agents.guideline", descKey: "agents.guidelineDesc", icon: BookCheck },
   { id: "security", nameKey: "agents.security", descKey: "agents.securityDesc", icon: ShieldAlert },
+  { id: "ai_authorship", nameKey: "agents.aiAuthorship", descKey: "agents.aiAuthorshipDesc", icon: Fingerprint },
   { id: "evidence", nameKey: "agents.evidence", descKey: "agents.evidenceDesc", icon: Search },
   { id: "orchestrator", nameKey: "agents.rubric", descKey: "agents.rubricDesc", icon: Brain },
 ];
@@ -60,9 +64,11 @@ const agentKeys = [
 const agentIconMap: Record<string, typeof FlaskConical> = {
   testing: FlaskConical,
   quality: Code2,
+  algorithm: BarChart3,
   seniority: GraduationCap,
   guideline: BookCheck,
   security: ShieldAlert,
+  ai_authorship: Fingerprint,
   evidence: Search,
   orchestrator: Brain,
 };

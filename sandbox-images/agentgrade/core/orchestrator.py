@@ -28,7 +28,9 @@ class TestCaseResult:
     name: str
     passed: bool = False
     description: str = ""
+    stdin: str = ""
     actual_stdout: str = ""
+    actual_stderr: str = ""
     expected_stdout: str = ""
     actual_exit_code: int = -1
     expected_exit_code: int = 0
@@ -219,12 +221,14 @@ class SandboxOrchestrator:
         result = TestCaseResult(
             name=tc.name,
             description=tc.description,
+            stdin=tc.stdin or "",
             expected_stdout=tc.expected_stdout or "",
             expected_exit_code=tc.expected_exit_code,
         )
         try:
             er = runner.run(code, stdin_data=tc.stdin)
             result.actual_stdout = er.stdout.strip()
+            result.actual_stderr = er.stderr.strip()
             result.actual_exit_code = er.exit_code
             result.wall_time_ms = er.wall_time_ms
 
@@ -236,7 +240,10 @@ class SandboxOrchestrator:
                 result.error = "MEMORY_EXCEEDED"
             elif er.exit_code != tc.expected_exit_code:
                 result.passed = False
+                err_tail = er.stderr.strip().splitlines()[-1] if er.stderr.strip() else ""
                 result.error = f"Exit code: expected={tc.expected_exit_code}, actual={er.exit_code}"
+                if err_tail:
+                    result.error += f"; {err_tail[:200]}"
             elif tc.expected_stdout is not None:
                 exp = tc.expected_stdout.strip()
                 act = er.stdout.strip()

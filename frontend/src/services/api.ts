@@ -140,6 +140,18 @@ export interface Assignment {
   created_at?: string;
 }
 
+export interface AssignmentTestCase {
+  id?: string;
+  assignment_id?: string;
+  name: string;
+  stdin: string;
+  expected_stdout: string;
+  expected_exit_code?: number;
+  visibility: "public" | "hidden";
+  source: "manual" | "ai";
+  display_order?: number;
+}
+
 export interface Teacher {
   id: string;
   first_name: string;
@@ -726,6 +738,45 @@ export async function deleteAssignment(assignmentId: string): Promise<void> {
     const errorText = await response.text();
     throw new Error(`Ödev silme hatası (${response.status}): ${errorText}`);
   }
+}
+
+export async function getAssignmentTestCases(assignmentId: string): Promise<AssignmentTestCase[]> {
+  const response = await fetch(`${API_BASE_URL}/api/assignments/${assignmentId}/test-cases`);
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new Error(`Test listesi hatasi (${response.status}): ${errorText}`);
+  }
+  const data = await response.json();
+  return Array.isArray(data) ? data as AssignmentTestCase[] : [];
+}
+
+export async function replaceAssignmentTestCases(
+  assignmentId: string,
+  testCases: AssignmentTestCase[],
+): Promise<AssignmentTestCase[]> {
+  const response = await fetch(`${API_BASE_URL}/api/assignments/${assignmentId}/test-cases`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ test_cases: testCases }),
+  });
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new Error(`Test kaydetme hatasi (${response.status}): ${errorText}`);
+  }
+  const data = await response.json();
+  return Array.isArray(data) ? data as AssignmentTestCase[] : [];
+}
+
+export async function suggestAssignmentTestCases(assignmentId: string): Promise<AssignmentTestCase[]> {
+  const response = await fetch(`${API_BASE_URL}/api/assignments/${assignmentId}/test-cases/suggest`, {
+    method: "POST",
+  });
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new Error(`Test onerisi hatasi (${response.status}): ${errorText}`);
+  }
+  const data = await response.json();
+  return Array.isArray(data?.suggestions) ? data.suggestions as AssignmentTestCase[] : [];
 }
 
 export async function getRubrics(): Promise<Rubric[]> {

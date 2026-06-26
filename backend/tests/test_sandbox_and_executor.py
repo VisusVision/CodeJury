@@ -68,6 +68,33 @@ class SimulateSandboxTests(unittest.TestCase):
 # run_in_sandbox
 # ═══════════════════════════════════════════════════════════════════════════════
 
+    def test_formal_tests_run_with_stdin_when_pool_unavailable(self):
+        result = _simulate_sandbox(
+            "n=int(input())\nprint(n*n)\n",
+            test_cases=[
+                {"name": "square_5", "stdin": "5\n", "expected_stdout": "25\n"},
+                {"name": "square_0", "stdin": "0\n", "expected_stdout": "0\n"},
+            ],
+        )
+
+        self.assertEqual(result["exit_code"], 0)
+        self.assertEqual(len(result["test_results"]), 2)
+        self.assertTrue(all(tc["passed"] for tc in result["test_results"]))
+        self.assertEqual(result["summary"]["tests"]["passed"], 2)
+
+    def test_formal_test_runtime_error_is_recorded_in_simulation(self):
+        result = _simulate_sandbox(
+            "a=int(input())\nb=int(input())\nprint(a//b)\n",
+            test_cases=[
+                {"name": "zero_division", "stdin": "10\n0\n", "expected_stdout": "HATA\n"},
+            ],
+        )
+
+        self.assertEqual(result["exit_code"], 1)
+        self.assertFalse(result["test_results"][0]["passed"])
+        self.assertIn("ZeroDivisionError", result["test_results"][0]["error"])
+
+
 class RunInSandboxTests(unittest.TestCase):
     def _ready_pool_with_slot(self):
         pool = MagicMock()
@@ -196,6 +223,80 @@ class RunInSandboxTests(unittest.TestCase):
         payload = mock_post.call_args.kwargs["json"]
         self.assertIn(test_cases[0], payload["test_cases"])
         self.assertEqual(payload["language"], "python")
+
+    def test_formal_test_passes_override_empty_stdin_smoke_error(self):
+        pool, _ = self._ready_pool_with_slot()
+        resp = self._ok_response({
+            "execution": {
+                "stdout": "",
+                "stderr": "Traceback...\nEOFError: EOF when reading a line",
+                "exit_code": 1,
+                "compile_success": True,
+            },
+            "test_results": [
+                {
+                    "name": "tc1",
+                    "stdin": "5\n",
+                    "passed": True,
+                    "actual_stdout": "25",
+                    "expected_stdout": "25\n",
+                    "actual_exit_code": 0,
+                }
+            ],
+            "static_analysis": {},
+            "code_metrics": {},
+            "summary": {},
+        })
+        with (
+            patch(_GET_POOL, return_value=pool),
+            patch(_REQUESTS_POST, return_value=resp),
+        ):
+            result = run_in_sandbox(
+                "n=int(input())\nprint(n*n)\n",
+                "python",
+                test_cases=[{"name": "tc1", "stdin": "5\n", "expected_stdout": "25\n"}],
+            )
+
+        self.assertEqual(result["exit_code"], 0)
+        self.assertEqual(result["stderr"], "")
+
+    def test_formal_test_failure_uses_case_stderr(self):
+        pool, _ = self._ready_pool_with_slot()
+        resp = self._ok_response({
+            "execution": {
+                "stdout": "",
+                "stderr": "Traceback...\nEOFError: EOF when reading a line",
+                "exit_code": 1,
+                "compile_success": True,
+            },
+            "test_results": [
+                {
+                    "name": "zero_division",
+                    "stdin": "10\n0\n",
+                    "passed": False,
+                    "actual_stdout": "",
+                    "actual_stderr": "Traceback...\nZeroDivisionError: division by zero",
+                    "expected_stdout": "HATA\n",
+                    "actual_exit_code": 1,
+                    "error": "Exit code: expected=0, actual=1; ZeroDivisionError: division by zero",
+                }
+            ],
+            "static_analysis": {},
+            "code_metrics": {},
+            "summary": {},
+        })
+        with (
+            patch(_GET_POOL, return_value=pool),
+            patch(_REQUESTS_POST, return_value=resp),
+        ):
+            result = run_in_sandbox(
+                "a=int(input())\nb=int(input())\nprint(a//b)\n",
+                "python",
+                test_cases=[{"name": "zero_division", "stdin": "10\n0\n", "expected_stdout": "HATA\n"}],
+            )
+
+        self.assertEqual(result["exit_code"], 1)
+        self.assertIn("ZeroDivisionError", result["stderr"])
 
     def test_stdin_data_added_as_test_case(self):
         pool, _ = self._ready_pool_with_slot()

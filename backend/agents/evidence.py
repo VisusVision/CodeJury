@@ -116,18 +116,9 @@ def _coerce_lines(value) -> list[int]:
 
 
 def _normalize_severity(value) -> str:
-    sev = str(value or "medium").strip().lower()
-    mapping = {
-        "bilgi": "info",
-        "düşük": "low",
-        "dusuk": "low",
-        "orta": "medium",
-        "yüksek": "high",
-        "yuksek": "high",
-        "kritik": "critical",
-    }
-    sev = mapping.get(sev, sev)
-    return sev if sev in ("low", "medium", "high", "critical", "info") else "medium"
+    from backend.agents.json_output_schema import normalize_agent_severity
+
+    return normalize_agent_severity(value)
 
 
 def _adjust_severity_from_feedback(feedback: str, severity: str) -> str:
@@ -341,12 +332,33 @@ def coerce_evidence_llm_payload(raw: dict) -> dict:
                 item["lines"] = raw_lines
             elif isinstance(raw_lines, int):
                 item["lines"] = [raw_lines]
+            elif isinstance(raw_lines, str):
+                nums = [int(n) for n in re.findall(r"\d+", raw_lines)]
+                item["lines"] = nums[:3]
             else:
                 item["lines"] = []
         if not isinstance(item.get("lines"), list):
             item["lines"] = []
+        item["lines"] = _coerce_lines(item.get("lines"))
+        if not item["lines"]:
+            raw_range = item.get("line_range") or item.get("lineRange") or item.get("range")
+            if isinstance(raw_range, list) and raw_range:
+                start = _coerce_int(raw_range[0])
+                if start and start >= 1:
+                    item["lines"] = [start]
+        node_type = str(item.get("node_type") or item.get("nodeType") or "").strip().lower()
+        if node_type in {"block", "ast", "statement", "expr", "module"}:
+            item["node_type"] = "line"
+        elif node_type and node_type not in _AST_NODE_TYPES:
+            item.pop("node_type", None)
+            item.pop("nodeType", None)
         item.setdefault("feedback", str(item.get("feedback") or item.get("message") or "").strip())
-        item.setdefault("severity", _normalize_severity(item.get("severity")))
+        snippet = item.get("code_snippet")
+        if snippet is None:
+            item["code_snippet"] = ""
+        elif not isinstance(snippet, str):
+            item["code_snippet"] = str(snippet)
+        item["severity"] = _normalize_severity(item.get("severity"))
         item.setdefault("is_valid", True)
         coerced_claims.append(item)
 
@@ -870,10 +882,14 @@ class EvidenceAgent(BaseAgent):
 
             for fail in findings.get("test_failures", []):
                 total += 1
+                if isinstance(fail, dict):
+                    fail_reason = fail.get("reason", fail.get("test_name", "unknown"))
+                else:
+                    fail_reason = fail
                 validated.append({
                     "lines": [],
                     "code_snippet": "",
-                    "feedback": f"Test hatasi: {fail.get('reason', fail.get('test_name', 'unknown'))}",
+                    "feedback": f"Test hatasi: {str(fail_reason)[:300]}",
                     "agent_source": agent_name,
                     "severity": "high",
                     "node_type": "file",

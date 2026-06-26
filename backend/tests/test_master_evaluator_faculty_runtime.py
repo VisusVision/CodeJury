@@ -94,6 +94,30 @@ class MasterEvaluatorFacultyRuntimeGuardTests(unittest.IsolatedAsyncioTestCase):
         effective = MasterEvaluatorAgent._effective_alignment_for_grading(programmatic)
         self.assertGreaterEqual(effective, 0.82)
 
+    def test_faculty_mode_hard_off_topic_caps_below_thirty(self):
+        llm_result = {
+            "final_score": 90.0,
+            "rubric_breakdown": [
+                {"label": "Fonksiyonellik", "weight": 40, "score": 36, "weighted_score": 36.0, "justification": ""},
+                {"label": "Kod Kalitesi", "weight": 30, "score": 27, "weighted_score": 27.0, "justification": ""},
+                {"label": "Test ve Kenar Durumlari", "weight": 30, "score": 27, "weighted_score": 27.0, "justification": ""},
+            ],
+            "weaknesses": [],
+        }
+        programmatic = {
+            "final_score": 70.0,
+            "brief_alignment_factor": 0.40,
+            "programmatic_alignment_factor": 0.40,
+            "capability_match": 0.20,
+            "sandbox_runs_ok": True,
+            "brief_alignment_reasons": ["llm_task_relevance_off_topic"],
+        }
+
+        MasterEvaluatorAgent._apply_brief_alignment_guard(llm_result, programmatic, faculty_mode=True)
+
+        self.assertLessEqual(float(llm_result["final_score"]), 28.0)
+        self.assertTrue(any("alakas" in item.lower() or "gorev" in item.lower() for item in llm_result["weaknesses"]))
+
 
 if __name__ == "__main__":
     unittest.main()

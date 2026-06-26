@@ -110,6 +110,13 @@ def normalize_instance_for_schema(instance: Any, schema: dict[str, Any]) -> Any:
             return [normalize_instance_for_schema(item, item_schema) for item in instance]
         return instance
 
+    if isinstance(instance, str):
+        enum_vals = schema.get("enum")
+        if isinstance(enum_vals, list) and {"info", "low", "critical"}.issubset(set(enum_vals)):
+            coerced = normalize_agent_severity(instance)
+            if coerced in enum_vals:
+                return coerced
+
     return _coerce_scalar_for_schema(instance, schema)
 
 
@@ -161,6 +168,34 @@ CODE_QUALITY_OUTPUT_SCHEMA: dict[str, Any] = {
 
 _QUALITY_ENUM = ["poor", "fair", "good", "excellent"]
 _SEVERITY_ENUM = ["info", "low", "medium", "high", "critical"]
+
+
+def normalize_agent_severity(value: Any) -> str:
+    """Map LLM severity synonyms to schema-safe enum values."""
+    sev = str(value or "medium").strip().lower()
+    mapping = {
+        "bilgi": "info",
+        "information": "info",
+        "düşük": "low",
+        "dusuk": "low",
+        "minor": "low",
+        "orta": "medium",
+        "moderate": "medium",
+        "yüksek": "high",
+        "yuksek": "high",
+        "major": "high",
+        "kritik": "critical",
+        "severe": "critical",
+        "suggestion": "low",
+        "suggest": "low",
+        "recommendation": "low",
+        "warning": "medium",
+        "warn": "medium",
+        "error": "high",
+        "err": "high",
+    }
+    sev = mapping.get(sev, sev)
+    return sev if sev in _SEVERITY_ENUM else "medium"
 
 SENIORITY_OUTPUT_SCHEMA: dict[str, Any] = {
     "type": "object",

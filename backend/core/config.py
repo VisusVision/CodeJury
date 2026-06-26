@@ -13,13 +13,20 @@ class Settings(BaseSettings):
 
     ollama_base_url: str = "http://localhost:11434"
     ollama_general_model: str = "qwen2.5:7b"
-    ollama_coder_model: str = "qwen2.5-coder:7b"
+    ollama_coder_model: str = "qwen2.5-coder:14b-instruct-q6_K"
     ollama_enabled: bool = True
-    ollama_timeout: float = 120.0
+    ollama_timeout: float = 300.0
     ollama_max_retries: int = 2
     ollama_retry_delay: float = 2.0
-    ollama_max_concurrent: int = 4
-    ollama_num_predict: int = 1024
+    ollama_max_concurrent: int = 2
+    ollama_num_predict: int = 3072
+    ollama_coder_num_ctx: int = 16384
+    ollama_coder_num_gpu: int = -1
+    ollama_coder_temperature: float = 0.0
+    ollama_coder_top_p: float = 0.9
+    ollama_coder_repeat_penalty: float = 1.15
+    ollama_gpt_oss_num_predict: int = 4096
+    ollama_gpt_oss_think: str = "low"
 
     llm_provider: str = "ollama"
     llm_general_provider: str = ""

@@ -543,11 +543,19 @@ class MasterEvaluatorAgent(BaseAgent):
         if align_f >= 0.70:
             return
 
+        reasons = programmatic.get("brief_alignment_reasons", [])
+        if not isinstance(reasons, list):
+            reasons = []
         cap = cls._alignment_score_cap(align_f)
+        hard_off_topic = any(
+            reason in {"llm_task_relevance_off_topic", "cross_domain_mismatch", "deterministic_capability_mismatch"}
+            for reason in reasons
+        )
+        if hard_off_topic:
+            cap = min(cap, 28.0)
         if cap >= 100.0:
             return
 
-        reasons = programmatic.get("brief_alignment_reasons", [])
         reason_text = alignment_summary_tr(reasons if isinstance(reasons, list) else [])
         if not reason_text:
             reason_text = (

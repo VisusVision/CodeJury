@@ -276,12 +276,12 @@ start_postgres() {
 }
 
 pull_ollama_model() {
-    step "Ollama modelleri indiriliyor (qwen2.5:7b + qwen2.5-coder:7b)"
+    step "Ollama modelleri indiriliyor (qwen2.5-coder:14b-instruct-q6_K + qwen2.5:7b)"
     if ! has_cmd ollama; then
         warn "Ollama yok, model cekilemedi."
         return
     fi
-    for model in qwen2.5:7b qwen2.5-coder:7b; do
+    for model in qwen2.5-coder:14b-instruct-q6_K qwen2.5:7b; do
         if ollama pull "$model"; then
             ok "Ollama modeli hazir: $model"
         else

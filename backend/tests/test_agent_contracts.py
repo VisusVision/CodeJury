@@ -6,7 +6,7 @@ from backend.agents.assignment_alignment import compute_brief_code_alignment
 from backend.agents.code_quality import CodeQualityAgent
 from backend.agents.code_utils import get_code_metrics
 from backend.agents.guideline import GuidelineAgent
-from backend.agents.evidence import _normalize_claims, _normalize_rejected_claims
+from backend.agents.evidence import EvidenceAgent, _normalize_claims, _normalize_rejected_claims
 from backend.agents.master_evaluator import MasterEvaluatorAgent
 from backend.agents.security import SecurityAgent
 from backend.agents.seniority import SeniorityAgent
@@ -153,6 +153,24 @@ int max_value(const std::vector<int>& values) { return *std::max_element(values.
         self.assertNotIn("baglantisi yok", merged["llm_explanation"].lower())
         self.assertIn("kismi", merged["llm_explanation"].lower())
 
+    def test_merge_softens_off_topic_when_capability_and_domain_overlap(self):
+        merged = merge_task_alignment(
+            0.55,
+            ["deterministic_low_capability_match"],
+            {
+                "relevance_factor": 0.12,
+                "off_topic": True,
+                "student_fulfills_assignment": False,
+                "capability_match": 0.44,
+                "explanation": "Model yanlis alakasiz dedi.",
+                "submission_domain_guess": "csv rapor export",
+                "task_domain_guess": "csv not raporu cli",
+            },
+        )
+
+        self.assertFalse(merged["llm_off_topic"])
+        self.assertGreaterEqual(merged["factor"], 0.55)
+
     def test_merge_flags_deterministic_fallback_mismatch_without_llm(self):
         merged = merge_task_alignment(
             1.0,
@@ -171,6 +189,35 @@ int max_value(const std::vector<int>& values) { return *std::max_element(values.
         self.assertLessEqual(merged["factor"], 0.22)
         self.assertTrue(merged["llm_off_topic"])
         self.assertIn("llm_task_relevance_off_topic", merged["reasons"])
+
+    def test_guideline_pre_schema_normalizes_suggestion_severity(self):
+        from backend.agents.guideline import GuidelineAgent
+        from backend.agents.json_output_schema import GUIDELINE_OUTPUT_SCHEMA, collect_validation_messages
+
+        normalized = GuidelineAgent._normalize_guideline_payload(
+            {
+                "style_violations": [
+                    {
+                        "rule": "PEP8",
+                        "description": "Docstring eksik",
+                        "line_hint": "Satir 1",
+                        "severity": "suggestion",
+                    }
+                ]
+            }
+        )
+        violation = normalized["style_violations"][0]
+        violation_msgs = collect_validation_messages(
+            {"style_violations": [violation]},
+            {
+                "type": "object",
+                "properties": {
+                    "style_violations": GUIDELINE_OUTPUT_SCHEMA["properties"]["style_violations"],
+                },
+            },
+        )
+        self.assertEqual(violation_msgs, [], violation_msgs)
+        self.assertEqual(violation["severity"], "low")
 
     def test_capability_requirement_markers_do_not_match_word_fragments(self):
         false_positive_briefs = [
@@ -248,6 +295,49 @@ print(status)
             deterministic_task_capability_match(brief, rubric, code),
             0.75,
         )
+
+    def test_capability_match_detects_stdin_pass_fail_grade_assignment(self):
+        brief = (
+            "Ogrenci adi ve notunu standart girdiden okuyup gecme kalma durumunu hesaplayan "
+            "program yaziniz. Ilk satir ad, ikinci satir nottur."
+        )
+        code = """
+ad = input()
+notu = int(input())
+durum = "gecti" if notu >= 50 else "kaldi"
+print(f"{ad}: {durum}")
+"""
+        unrelated = """
+city = input()
+print("Hava gunesli")
+"""
+
+        self.assertGreaterEqual(_capability_match_signal(brief, None, code), 0.75)
+        self.assertLess(_capability_match_signal(brief, None, unrelated), 0.45)
+
+    def test_capability_match_detects_two_sum_hash_lookup_assignment(self):
+        brief = (
+            "Python ile Two Sum cozumunu yazin. Hedef toplam T ve tamsayi listesi stdin'den alinir. "
+            "Iki farkli elemanin toplami T ediyorsa indekslerini yazdirin. Beklenen algoritma tek gecis O(n)."
+        )
+        code = """
+target = int(input())
+values = list(map(int, input().split()))
+seen = {}
+for i, value in enumerate(values):
+    need = target - value
+    if need in seen:
+        print(seen[need], i)
+        break
+    seen[value] = i
+"""
+        unrelated = """
+city = input()
+print("Hava gunesli")
+"""
+
+        self.assertGreaterEqual(_capability_match_signal(brief, None, code), 0.75)
+        self.assertLess(_capability_match_signal(brief, None, unrelated), 0.45)
 
 
 class AgentDiagnosticsContractTests(unittest.TestCase):
@@ -644,6 +734,28 @@ class EvidenceNormalizationContractTests(unittest.TestCase):
         self.assertEqual(normalized[0]["agent_source"], "guideline")
         self.assertIn("Docstring", normalized[0]["claim"])
         self.assertTrue(normalized[0]["reason"])
+
+    def test_programmatic_evidence_tolerates_string_test_failures(self):
+        result = EvidenceAgent()._programmatic_analysis(
+            "print(1)\n",
+            {
+                "test_agent": {
+                    "test_failures": [
+                        "ZeroDivisionError: division by zero",
+                        {"test_name": "edge_case", "reason": "stdout mismatch"},
+                    ],
+                    "runtime_errors": ["ZeroDivisionError: sifira bolme hatasi"],
+                }
+            },
+            "python",
+        )
+
+        feedback = "\n".join(
+            claim["feedback"] for claim in result["validated_claims"] if isinstance(claim, dict)
+        )
+        self.assertIn("ZeroDivisionError: division by zero", feedback)
+        self.assertIn("stdout mismatch", feedback)
+        self.assertIn("Runtime hatasi", feedback)
 
 
 class CodeComplexityContractTests(unittest.TestCase):

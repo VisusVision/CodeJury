@@ -13,7 +13,7 @@ from typing import Any
 
 from backend.agents.base import BaseAgent, build_llm_user_suffix, format_assignment_context_for_prompt
 from backend.agents.code_utils import get_code_metrics, strip_comments
-from backend.agents.json_output_schema import GUIDELINE_OUTPUT_SCHEMA
+from backend.agents.json_output_schema import GUIDELINE_OUTPUT_SCHEMA, normalize_agent_severity
 
 
 def _python_main_guard_line_nums(lines: list[str]) -> frozenset[int]:
@@ -115,6 +115,31 @@ def _looks_like_snake_case(name: str) -> bool:
 class GuidelineAgent(BaseAgent):
     name = "guideline"
     description = "Kodlama standartlari ve stil kontrolu"
+
+    def _pre_schema_normalize(self, result: dict, output_json_schema: dict | None) -> dict:
+        if output_json_schema is GUIDELINE_OUTPUT_SCHEMA:
+            return self._normalize_guideline_payload(result)
+        return result
+
+    @staticmethod
+    def _normalize_guideline_payload(result: dict) -> dict:
+        if not isinstance(result, dict):
+            return result
+        out = dict(result)
+        violations = out.get("style_violations")
+        if isinstance(violations, list):
+            normalized: list[dict[str, Any]] = []
+            for item in violations:
+                if not isinstance(item, dict):
+                    continue
+                row = dict(item)
+                row["severity"] = normalize_agent_severity(row.get("severity"))
+                row.setdefault("rule", str(row.get("rule") or "style").strip() or "style")
+                row.setdefault("description", str(row.get("description") or "").strip())
+                row.setdefault("line_hint", str(row.get("line_hint") or row.get("line") or "").strip())
+                normalized.append(row)
+            out["style_violations"] = normalized
+        return out
 
     async def analyze(self, input_data: dict) -> dict:
         source_code = input_data["source_code"]
@@ -275,6 +300,8 @@ class GuidelineAgent(BaseAgent):
                 ]
                 if snake_refs and all(_looks_like_snake_case(name) for name in snake_refs):
                     continue
+            item = dict(item)
+            item["severity"] = normalize_agent_severity(item.get("severity"))
             filtered.append(item)
         return filtered
 

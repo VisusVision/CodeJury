@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import unicodedata
 from typing import Any
 
 from backend.agents.assignment_alignment import (
@@ -91,6 +92,12 @@ def _contains_marker(text: str, marker: str) -> bool:
     if re.search(r"[a-z0-9_]", marker_l, flags=re.IGNORECASE):
         return bool(re.search(rf"(?<![a-z0-9_]){re.escape(marker_l)}(?![a-z0-9_])", text))
     return marker_l in text
+
+
+def _fold_capability_text(value: str | None) -> str:
+    text = unicodedata.normalize("NFKD", value or "")
+    text = "".join(ch for ch in text if not unicodedata.combining(ch))
+    return text.lower().replace("?", "")
 
 
 def _capability_task_marker_matches(task_text: str, marker: str) -> bool:
@@ -248,9 +255,9 @@ def _has_recognized_capability_requirement(text: str) -> bool:
         ("html", "css", "responsive", "medya sorgusu", "portfolio", "portfolyo", "sayfa"),
         ("javascript", "typescript", "node", "npm"),
         ("c++", "cpp", "vektor", "vector", "sirala", "siralayan", "sort", "min", "max"),
-        ("sqlite", "sql", "database", "db", "tablo"),
-        ("log", "dosya", "file", "cli", "arguman", "komut", "satir", "rapor", "export", "cikti dosyasi"),
-        ("sinif", "class", "oop", "nesne", "kalitim", "encapsulation"),
+        ("sqlite", "sql", "database", "db", "tablo", "kayit"),
+        ("log", "dosya", "dosyasindan", "dosyadan", "txt", ".txt", "file", "cli", "arguman", "komut", "satir", "rapor", "export", "cikti dosyasi"),
+        ("sinif", "siniflari", "siniflariyla", "class", "oop", "nesne", "kalitim", "encapsulation"),
         (
             "banka",
             "hesap",
@@ -557,6 +564,36 @@ def _capability_match_signal(
     if len(task_text) < BRIEF_MIN_LEN and not _has_recognized_capability_requirement(task_text):
         return 1.0
 
+    rubric_text = _rubric_criteria_text(rubric_criteria).lower()
+    if rubric_text:
+        rubric_grade_average = (
+            any(marker in rubric_text for marker in ("ortalama", "average"))
+            and any(marker in rubric_text for marker in ("gecme", "geçme", "kalma", "passed", "failed"))
+        )
+        code_grade_average = (
+            "sum(" in code_text
+            and "len(" in code_text
+            and any(marker in code_text for marker in ("gecti", "geçti", "kaldi", "kaldı", "passed", "failed"))
+        )
+        if rubric_grade_average and code_grade_average:
+            return 0.82
+
+    task_fold = _fold_capability_text(task_text)
+    code_fold = _fold_capability_text(code_text)
+    grade_pass_task = (
+        not any(marker in task_fold for marker in ("ortalama", "average", "mean"))
+        and any(marker in task_fold for marker in ("ogrenci", "grenci", "renci", "student"))
+        and any(marker in task_fold for marker in (" not", "notu", "grade", "score"))
+        and any(marker in task_fold for marker in ("gecme", "geme", "kalma", "passed", "failed"))
+    )
+    grade_pass_code = (
+        any(marker in code_fold for marker in ("input(", "sys.stdin", "csv", "dictreader", "row[", "reader("))
+        and any(marker in code_fold for marker in ("gecti", "geti", "kaldi", "kald", "passed", "failed"))
+        and any(marker in code_fold for marker in (">=50", ">= 50", "> 49", ">=60", ">= 60", "> 59"))
+    )
+    if grade_pass_task and grade_pass_code:
+        return 0.86
+
     groups: list[tuple[set[str], set[str]]] = [
         (
             {"api", "endpoint", "http", "server", "post", "put", "get", "route"},
@@ -644,15 +681,33 @@ def _capability_match_signal(
             },
         ),
         (
-            {"sqlite", "sql", "database", "db", "tablo"},
+            {"sqlite", "sql", "database", "db", "tablo", "kayit"},
             {"sqlite3", "connect(", "cursor", "select ", "insert ", "update ", "create table"},
         ),
         (
-            {"log", "dosya", "file", "cli", "arguman", "komut", "satir", "rapor", "export", "cikti dosyasi"},
+            {"csv", "rapor", "export"},
+            {
+                "csv",
+                "csv.reader",
+                "csv.writer",
+                "dictwriter",
+                "writerow",
+                "read_text",
+                ".csv",
+                "export_report",
+                "report.csv",
+                "open(",
+                "write(",
+            },
+        ),
+        (
+            {"log", "dosya", "dosyasindan", "dosyadan", "txt", ".txt", "file", "cli", "arguman", "komut", "satir", "rapor", "export", "cikti dosyasi"},
             {
                 "argparse",
                 "sys.argv",
                 "path(",
+                "path('",
+                "path(\"",
                 "read_text",
                 "open(",
                 "readlines",
@@ -665,7 +720,7 @@ def _capability_match_signal(
             },
         ),
         (
-            {"sinif", "class", "oop", "nesne", "kalitim", "encapsulation"},
+            {"sinif", "siniflari", "siniflariyla", "class", "oop", "nesne", "kalitim", "encapsulation"},
             {"class ", "__init__", "self.", "super("},
         ),
         (
@@ -707,6 +762,8 @@ def _capability_match_signal(
                 "median(",
                 "statistics",
                 "from statistics",
+                "sum(",
+                "len(",
                 "ortalama",
                 "medyan",
                 "average(",
@@ -722,6 +779,27 @@ def _capability_match_signal(
                 "flatten",
                 "filter(",
                 "map(",
+            },
+        ),
+        (
+            {
+                "two sum",
+                "iki toplam",
+                "hedef toplam",
+                "toplami",
+                "toplamÄ±",
+                "farkli eleman",
+                "farklÄ± eleman",
+                "indeks",
+                "index",
+            },
+            {
+                "target",
+                "seen",
+                "enumerate(",
+                "need",
+                "dict(",
+                "{}",
             },
         ),
         (
@@ -872,6 +950,11 @@ def merge_task_alignment(
         off = False
         fulfils = False
         llm_f = max(llm_f, 0.62 if capability_signal >= 0.72 else 0.55)
+        softened_false_off_topic = True
+    elif off and capability_signal >= 0.40 and overlap:
+        off = False
+        fulfils = False
+        llm_f = max(llm_f, 0.58)
         softened_false_off_topic = True
 
     # A strongly matching code shape (CLI/API/OOP/BST etc.) means the submission is

@@ -35,6 +35,7 @@ class AnalysisQueueApiTests(unittest.IsolatedAsyncioTestCase):
                 "assignment_id": "assignment-1",
                 "assignment_brief": "Assignment brief",
                 "faculty_rubric_criteria": [{"name": "Correctness"}],
+                "test_cases": [],
                 "report_language": "tr",
             },
         )

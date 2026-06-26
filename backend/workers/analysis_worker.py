@@ -33,6 +33,15 @@ LLM_UNAVAILABLE_ERROR = (
     "sonra analizi tekrar baslatin."
 )
 _PIPELINE_RELOAD_MODULES = (
+    "backend.agents.base",
+    "backend.agents.json_output_schema",
+    "backend.agents.code_quality",
+    "backend.agents.algorithm",
+    "backend.agents.ai_authorship",
+    "backend.agents.guideline",
+    "backend.agents.evidence",
+    "backend.agents.seniority",
+    "backend.agents.task_relevance",
     "backend.agents.master_evaluator",
     "backend.agents.test_agent",
     "backend.agents.security",
@@ -106,6 +115,7 @@ async def process_analysis_job(
                 file_content=str(request.get("file_content") or ""),
                 assignment_brief=str(request.get("assignment_brief") or ""),
                 faculty_rubric_criteria=request.get("faculty_rubric_criteria") or [],
+                test_cases=request.get("test_cases") or [],
                 report_language=str(request.get("report_language") or "tr"),
             ),
             timeout=settings.analysis_pipeline_timeout_seconds,

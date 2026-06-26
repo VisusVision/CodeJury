@@ -208,6 +208,120 @@ class P0PipelineE2ETests(unittest.IsolatedAsyncioTestCase):
         test_agent = agents.get("test_agent", {})
         self.assertNotIn("FileNotFound", str(test_agent.get("summary", "")))
 
+    async def test_pipeline_passes_explicit_test_cases_to_sandbox_and_test_agent(self):
+        captured: dict = {}
+        test_cases = [
+            {"name": "normal_case", "stdin": "6\n", "expected_stdout": "36\n"},
+            {"name": "zero_case", "stdin": "0\n", "expected_stdout": "0\n"},
+        ]
+
+        def _spy_run_in_sandbox(source_code, language, files=None, test_cases=None, **kwargs):
+            captured["sandbox_test_cases"] = test_cases
+            return {
+                "compilation_success": True,
+                "exit_code": 0,
+                "stdout": "36\n",
+                "stderr": "",
+                "execution_time_ms": 5,
+                "peak_memory_mb": 1.0,
+                "test_results": [
+                    {
+                        "name": "normal_case",
+                        "stdin": "6\n",
+                        "expected_stdout": "36\n",
+                        "actual_stdout": "36\n",
+                        "passed": True,
+                    },
+                    {
+                        "name": "zero_case",
+                        "stdin": "0\n",
+                        "expected_stdout": "0\n",
+                        "actual_stdout": "0\n",
+                        "passed": True,
+                    },
+                ],
+            }
+
+        async def _spy_test_agent(self, payload):
+            captured["test_agent_expected_output"] = payload.get("expected_output")
+            captured["test_agent_sandbox_results"] = payload["sandbox_result"].get("test_results")
+            return _good_agent_payload() | {
+                "passed_tests": 2,
+                "failed_tests": 0,
+                "total_tests": 2,
+                "test_results": payload["sandbox_result"].get("test_results", []),
+            }
+
+        with (
+            patch("backend.sandbox.executor.run_in_sandbox", side_effect=_spy_run_in_sandbox),
+            patch(
+                "backend.agents.task_relevance.assess_task_relevance_llm",
+                new=AsyncMock(return_value={"skipped": True, "relevance_factor": 1.0}),
+            ),
+            patch.object(main.CodeQualityAgent, "analyze", new=AsyncMock(return_value=_good_agent_payload())),
+            patch.object(main.SeniorityAgent, "analyze", new=AsyncMock(return_value=_good_agent_payload())),
+            patch.object(main.GuidelineAgent, "analyze", new=AsyncMock(return_value=_good_agent_payload())),
+            patch.object(main.SecurityAgent, "analyze", new=AsyncMock(return_value=_good_agent_payload())),
+            patch.object(main.TestAgent, "analyze", new=_spy_test_agent),
+            patch.object(main.EvidenceAgent, "analyze", new=AsyncMock(return_value=_good_agent_payload())),
+            patch.object(main.MasterEvaluatorAgent, "analyze", new=AsyncMock(return_value=_good_master_payload())),
+        ):
+            result = await main.run_analysis_pipeline(
+                "submission.py",
+                "print(int(input()) ** 2)\n",
+                assignment_brief="Girilen sayinin karesini yazdiran Python programi.",
+                test_cases=test_cases,
+            )
+
+        self.assertEqual(captured["sandbox_test_cases"], test_cases)
+        self.assertEqual(captured["test_agent_expected_output"], test_cases)
+        self.assertEqual(captured["test_agent_sandbox_results"][0]["actual_stdout"], "36\n")
+        testing = next(agent for agent in result["agents"] if agent["id"] == "testing")
+        self.assertIn("2 test gecti", testing["summary"])
+
+    async def test_pipeline_reports_algorithm_and_authorship_without_authorship_score_penalty(self):
+        with (
+            patch("backend.sandbox.executor.run_in_sandbox", return_value={"compilation_success": True, "exit_code": 0, "stdout": "", "stderr": ""}),
+            patch(
+                "backend.agents.task_relevance.assess_task_relevance_llm",
+                new=AsyncMock(return_value={"skipped": True, "relevance_factor": 1.0}),
+            ),
+            patch.object(main.CodeQualityAgent, "analyze", new=AsyncMock(return_value=_good_agent_payload())),
+            patch.object(main.AlgorithmAgent, "analyze", new=AsyncMock(return_value={
+                "detected_algorithms": ["nested_loop"],
+                "data_structures": ["list"],
+                "time_complexity": "O(n^2)",
+                "space_complexity": "O(1)",
+                "expected_complexity": "O(n)",
+                "complexity_gap": "worse_than_expected",
+                "issues": [{"type": "complexity_gap", "description": "Beklenenden karmasik", "severity": "high"}],
+                "score": 55,
+            })),
+            patch.object(main.AIAuthorshipAgent, "analyze", new=AsyncMock(return_value={
+                "risk_level": "high",
+                "confidence": 0.9,
+                "signals": ["AI kalibi"],
+                "counter_signals": [],
+                "recommendation": "Notu otomatik dusurme.",
+            })),
+            patch.object(main.SeniorityAgent, "analyze", new=AsyncMock(return_value=_good_agent_payload())),
+            patch.object(main.GuidelineAgent, "analyze", new=AsyncMock(return_value=_good_agent_payload())),
+            patch.object(main.SecurityAgent, "analyze", new=AsyncMock(return_value=_good_agent_payload())),
+            patch.object(main.TestAgent, "analyze", new=AsyncMock(return_value=_good_agent_payload())),
+            patch.object(main.EvidenceAgent, "analyze", new=AsyncMock(return_value=_good_agent_payload())),
+            patch.object(main.MasterEvaluatorAgent, "analyze", new=AsyncMock(return_value=_good_master_payload())),
+        ):
+            result = await main.run_analysis_pipeline(
+                "submission.py",
+                "print('ok')\n",
+                assignment_brief="Listeyi O(n) karmasiklikla isleyin.",
+            )
+
+        self.assertEqual(result["totalScore"], 88)
+        agent_ids = {agent["id"] for agent in result["agents"]}
+        self.assertIn("algorithm", agent_ids)
+        self.assertIn("ai_authorship", agent_ids)
+
 
 if __name__ == "__main__":
     unittest.main()
