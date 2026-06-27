@@ -407,6 +407,9 @@ class MasterEvaluatorAgent(BaseAgent):
             "weaknesses": weaknesses,
             "recommendations": recommendations,
             "llm_status": "fallback",
+            "guardrail_flags": ["llm_inference_fallback"],
+            "confidence": None,
+            "schema_repair_count": 0,
             "llm_error": str(error),
         }
 

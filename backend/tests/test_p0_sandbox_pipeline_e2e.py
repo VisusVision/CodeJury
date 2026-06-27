@@ -128,6 +128,22 @@ def _good_master_payload() -> dict:
     }
 
 
+def _good_algorithm_payload() -> dict:
+    return {
+        "detected_algorithms": ["linear_scan"],
+        "data_structures": ["list"],
+        "time_complexity": "O(n)",
+        "space_complexity": "O(n)",
+        "expected_complexity": "O(n)",
+        "complexity_gap": "matches_expected",
+        "algorithm_analysis": "Algoritma odev beklentisiyle uyumlu.",
+        "data_structure_analysis": "Liste tabanli sirali isleme kullaniyor.",
+        "issues": [],
+        "score": 90,
+        "llm_status": "ok",
+    }
+
+
 class P0SandboxChainE2ETests(unittest.TestCase):
     def test_uygun_csv_code_succeeds_when_fixtures_injected(self):
         files = infer_sandbox_files(
@@ -149,6 +165,36 @@ class P0SandboxChainE2ETests(unittest.TestCase):
 
 
 class P0PipelineE2ETests(unittest.IsolatedAsyncioTestCase):
+    async def test_pipeline_returns_extended_report_fields(self):
+        with (
+            patch(
+                "backend.agents.task_relevance.assess_task_relevance_llm",
+                new=AsyncMock(return_value={"factor": 0.92, "llm_off_topic": False, "reasons": []}),
+            ),
+            patch.object(main, "_build_resource_recommendations", new=AsyncMock(return_value=[])),
+            patch.object(main.CodeQualityAgent, "analyze", new=AsyncMock(return_value=_good_agent_payload())),
+            patch.object(main.AlgorithmAgent, "analyze", new=AsyncMock(return_value=_good_algorithm_payload())),
+            patch.object(main.SeniorityAgent, "analyze", new=AsyncMock(return_value=_good_agent_payload())),
+            patch.object(main.GuidelineAgent, "analyze", new=AsyncMock(return_value=_good_agent_payload())),
+            patch.object(main.SecurityAgent, "analyze", new=AsyncMock(return_value=_good_agent_payload())),
+            patch.object(main.TestAgent, "analyze", new=AsyncMock(return_value=_good_agent_payload())),
+            patch.object(main.EvidenceAgent, "analyze", new=AsyncMock(return_value=_good_agent_payload())),
+            patch.object(main.MasterEvaluatorAgent, "analyze", new=AsyncMock(return_value=_good_master_payload())),
+        ):
+            result = await main.run_analysis_pipeline(
+                "submission.py",
+                _UYGUN_CSV_CODE,
+                assignment_brief=_CSV_BRIEF,
+                report_language="tr",
+            )
+
+        self.assertEqual(result["summary"], "Odev beklentilerini karsiliyor.")
+        self.assertEqual(result["strengths"], ["CSV okuma ve rapor yazma dogru."])
+        self.assertEqual(result["weaknesses"], [])
+        self.assertIn("taskAlignment", result)
+        self.assertIn("resourceRecommendations", result)
+        self.assertEqual(result["resourceRecommendations"], [])
+
     async def test_pipeline_passes_inferred_fixtures_to_sandbox(self):
         captured: dict = {}
 
@@ -163,6 +209,7 @@ class P0PipelineE2ETests(unittest.IsolatedAsyncioTestCase):
                 new=AsyncMock(return_value={"factor": 0.9, "llm_off_topic": False, "reasons": []}),
             ),
             patch.object(main.CodeQualityAgent, "analyze", new=AsyncMock(return_value=_good_agent_payload())),
+            patch.object(main.AlgorithmAgent, "analyze", new=AsyncMock(return_value=_good_algorithm_payload())),
             patch.object(main.SeniorityAgent, "analyze", new=AsyncMock(return_value=_good_agent_payload())),
             patch.object(main.GuidelineAgent, "analyze", new=AsyncMock(return_value=_good_agent_payload())),
             patch.object(main.SecurityAgent, "analyze", new=AsyncMock(return_value=_good_agent_payload())),
@@ -190,6 +237,7 @@ class P0PipelineE2ETests(unittest.IsolatedAsyncioTestCase):
                 new=AsyncMock(return_value={"factor": 0.9, "llm_off_topic": False, "reasons": []}),
             ),
             patch.object(main.CodeQualityAgent, "analyze", new=AsyncMock(return_value=_good_agent_payload())),
+            patch.object(main.AlgorithmAgent, "analyze", new=AsyncMock(return_value=_good_algorithm_payload())),
             patch.object(main.SeniorityAgent, "analyze", new=AsyncMock(return_value=_good_agent_payload())),
             patch.object(main.GuidelineAgent, "analyze", new=AsyncMock(return_value=_good_agent_payload())),
             patch.object(main.SecurityAgent, "analyze", new=AsyncMock(return_value=_good_agent_payload())),
@@ -259,6 +307,7 @@ class P0PipelineE2ETests(unittest.IsolatedAsyncioTestCase):
                 new=AsyncMock(return_value={"skipped": True, "relevance_factor": 1.0}),
             ),
             patch.object(main.CodeQualityAgent, "analyze", new=AsyncMock(return_value=_good_agent_payload())),
+            patch.object(main.AlgorithmAgent, "analyze", new=AsyncMock(return_value=_good_algorithm_payload())),
             patch.object(main.SeniorityAgent, "analyze", new=AsyncMock(return_value=_good_agent_payload())),
             patch.object(main.GuidelineAgent, "analyze", new=AsyncMock(return_value=_good_agent_payload())),
             patch.object(main.SecurityAgent, "analyze", new=AsyncMock(return_value=_good_agent_payload())),

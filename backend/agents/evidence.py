@@ -581,6 +581,38 @@ def _normalize_rejected_claims(rejected: list, source_lines: list[str]) -> list[
     return normalized
 
 
+def _rejected_claims_for_dropped_llm_claims(
+    raw_claims: list,
+    source_lines: list[str],
+    *,
+    ast_blocks: Optional[list[dict]] = None,
+) -> list[dict]:
+    """Convert LLM claims discarded by normalization into structured rejections."""
+    rejected: list[dict] = []
+    for raw in raw_claims:
+        if not isinstance(raw, dict):
+            continue
+        if _normalize_claims([raw], source_lines, ast_blocks=ast_blocks):
+            continue
+        feedback = _clean_evidence_text(
+            raw.get("feedback")
+            or raw.get("message")
+            or raw.get("description")
+            or raw.get("reason")
+            or "Desteklenmeyen bulgu"
+        )
+        agent_source = str(
+            raw.get("agent_source") or raw.get("agent") or raw.get("source") or "unknown"
+        ).strip() or "unknown"
+        rejected.append({
+            "claim": feedback,
+            "reason": "Somut kod kaniti bulunamadi veya iddia kaynak satirlariyla dogrulanamadi.",
+            "agent_source": agent_source,
+            "lines": _coerce_lines(raw.get("lines", raw.get("line", []))),
+        })
+    return rejected
+
+
 def _merge_claim_lists(*claim_lists: list[dict], max_items: int | None = None) -> list[dict]:
     merged: list[dict] = []
     seen: set[tuple[str, tuple[int, ...], str]] = set()
@@ -711,23 +743,46 @@ class EvidenceAgent(BaseAgent):
                 "llm_status": "skipped_no_claims",
             }
 
-        # Tam LLM tabanli: kanit eslestirme yalnizca LLM ciktisindan gelir. LLM cagrisi
-        # basarisizsa (sema/parse) `LLMInferenceError` yukari iletilir; diger ajanlarda
-        # oldugu gibi programatik ikame YOKTUR. Programatik on-harita yalnizca prompt ipucu
-        # (pre_validated) ve gelen iddia sayisi (total_in) icin kullanilir.
-        llm_result = await self._call_llm(
-            system_prompt=_EVIDENCE_SYSTEM_PROMPT,
-            user_prompt=user_prompt,
-            required_keys=[
-                "validated_claims",
-                "rejected_claims",
-                "total_claims_received",
-                "total_claims_validated",
-            ],
-            output_json_schema=EVIDENCE_OUTPUT_SCHEMA,
-            temperature=_EVIDENCE_LLM_TEMPERATURE,
-            num_predict=_EVIDENCE_NUM_PREDICT,
-        )
+        # LLM kanit eslestirmesi tercih edilir; LLM parse/sema hatasinda ise kullanici
+        # raporunu bos birakmamak icin yalnizca kaynak koddan dogrulanan programatik
+        # kanitlara dusulur.
+        try:
+            llm_result = await self._call_llm(
+                system_prompt=_EVIDENCE_SYSTEM_PROMPT,
+                user_prompt=user_prompt,
+                required_keys=[
+                    "validated_claims",
+                    "rejected_claims",
+                    "total_claims_received",
+                    "total_claims_validated",
+                ],
+                output_json_schema=EVIDENCE_OUTPUT_SCHEMA,
+                temperature=_EVIDENCE_LLM_TEMPERATURE,
+                num_predict=_EVIDENCE_NUM_PREDICT,
+            )
+        except LLMInferenceError as exc:
+            fallback = {
+                **programmatic,
+                "rejected_claims": _normalize_rejected_claims(
+                    programmatic.get("rejected_claims", []),
+                    source_code.splitlines(),
+                ),
+                "llm_error": str(exc)[:300],
+                "ast_block_count": len(ast_blocks),
+                "block_evidence_count": sum(
+                    1
+                    for c in programmatic.get("validated_claims", [])
+                    if isinstance(c, dict) and c.get("line_range")
+                ),
+                "evidence_quality_flags": ["programmatic_evidence_fallback"],
+            }
+            if ast_map.get("syntax_error"):
+                fallback["ast_syntax_error"] = ast_map.get("error", "")
+            return self._with_contract_metadata(
+                fallback,
+                llm_status="fallback",
+                guardrail_flags=["llm_inference_fallback"],
+            )
         if not isinstance(llm_result, dict):
             raise LLMInferenceError("[evidence] LLM yaniti gecersiz (JSON nesnesi bekleniyordu).")
 
@@ -754,7 +809,15 @@ class EvidenceAgent(BaseAgent):
         rejected = _first_list(llm_result, "rejected_claims", "rejectedClaims", "rejections")
         if not isinstance(rejected, list):
             rejected = []
-        llm_result["rejected_claims"] = _normalize_rejected_claims(rejected, source_lines)
+        dropped_rejections = _rejected_claims_for_dropped_llm_claims(
+            vclaims[:total_in] if total_in > 0 else vclaims,
+            source_lines,
+            ast_blocks=ast_blocks,
+        )
+        llm_result["rejected_claims"] = _normalize_rejected_claims(
+            list(rejected) + dropped_rejections,
+            source_lines,
+        )
         llm_result.setdefault("llm_status", "ok")
         llm_result["ast_block_count"] = len(ast_blocks)
         if ast_map.get("syntax_error"):

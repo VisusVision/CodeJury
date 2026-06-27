@@ -196,6 +196,8 @@ class TestAgentSandboxResultsTests(unittest.TestCase):
 
         self.assertEqual(result["llm_status"], "fallback")
         self.assertIn("llm_inference_fallback", result["guardrail_flags"])
+        self.assertEqual(result["schema_repair_count"], 0)
+        self.assertIsNone(result["confidence"])
         self.assertTrue(result["runs_successfully"])
         self.assertEqual(result["passed_tests"], 1)
         self.assertGreaterEqual(result["score"], 85)

@@ -169,6 +169,53 @@ CODE_QUALITY_OUTPUT_SCHEMA: dict[str, Any] = {
 _QUALITY_ENUM = ["poor", "fair", "good", "excellent"]
 _SEVERITY_ENUM = ["info", "low", "medium", "high", "critical"]
 
+ALGORITHM_OUTPUT_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "required": [
+        "detected_algorithms",
+        "data_structures",
+        "time_complexity",
+        "space_complexity",
+        "expected_complexity",
+        "complexity_gap",
+        "algorithm_analysis",
+        "data_structure_analysis",
+        "issues",
+        "score",
+    ],
+    "properties": {
+        "detected_algorithms": {"type": "array", "items": {"type": "string"}},
+        "data_structures": {"type": "array", "items": {"type": "string"}},
+        "time_complexity": {"type": "string"},
+        "space_complexity": {"type": "string"},
+        "expected_complexity": {"type": "string"},
+        "complexity_gap": {
+            "type": "string",
+            "enum": ["unknown", "worse_than_expected", "matches_expected", "better_than_expected"],
+        },
+        "algorithm_analysis": {"type": "string"},
+        "data_structure_analysis": {"type": "string"},
+        "issues": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "required": ["type", "description", "severity", "suggested_fix"],
+                "properties": {
+                    "type": {"type": "string"},
+                    "description": {"type": "string"},
+                    "severity": {"type": "string", "enum": _SEVERITY_ENUM},
+                    "suggested_fix": {"type": "string"},
+                    "line": {"type": ["integer", "null"]},
+                },
+                "additionalProperties": True,
+            },
+        },
+        "score": {"type": "number", "minimum": 0, "maximum": 100},
+        "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+    },
+    "additionalProperties": True,
+}
+
 
 def normalize_agent_severity(value: Any) -> str:
     """Map LLM severity synonyms to schema-safe enum values."""

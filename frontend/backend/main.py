@@ -22,7 +22,7 @@ import unicodedata
 import uuid
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Awaitable, Callable, Optional
 from urllib.parse import urlparse, urlunparse
 
 import asyncpg
@@ -67,6 +67,9 @@ _DEMO_MODE = os.getenv("DEMO_MODE", "0").strip().lower() in {"1", "true", "yes",
 _DB_POOL: asyncpg.Pool | None = None
 _TEMP_EVALUATIONS: dict[str, dict[str, Any]] = {}
 _TEMP_EVALUATIONS_LOCK = asyncio.Lock()
+_DEFAULT_STUDENT_PASSWORD = "demo123"
+_EMRETEST_STUDENT_NO = "230501013"
+_EMRETEST_STUDENT_PASSWORD = "emre123"
 
 
 def _evaluation_key(student_no: str, assignment_id: str | None) -> str:
@@ -95,6 +98,18 @@ _DEMO_STORE: dict[str, Any] = {
             "last_name": "Student",
             "class_year": 2,
             "department_id": "33333333-3333-4333-8333-333333333333",
+            "password_hash": "",
+            "created_at": datetime.utcnow().isoformat(),
+        },
+        {
+            "id": "22222222-2222-4222-8222-333333333333",
+            "student_no": _EMRETEST_STUDENT_NO,
+            "tc_no": "99999999999",
+            "first_name": "Emre",
+            "last_name": "Test",
+            "class_year": 2,
+            "department_id": "33333333-3333-4333-8333-333333333333",
+            "password_hash": "",
             "created_at": datetime.utcnow().isoformat(),
         }
     ],
@@ -321,6 +336,23 @@ def _ensure_demo_assignment_catalog() -> bool:
                 "last_name": "Student",
                 "class_year": 2,
                 "department_id": department_id,
+                "password_hash": "",
+                "created_at": _demo_now(),
+            }
+        )
+        changed = True
+
+    if not any(str(s.get("student_no")) == _EMRETEST_STUDENT_NO for s in students if isinstance(s, dict)):
+        students.append(
+            {
+                "id": "22222222-2222-4222-8222-333333333333",
+                "student_no": _EMRETEST_STUDENT_NO,
+                "tc_no": "99999999999",
+                "first_name": "Emre",
+                "last_name": "Test",
+                "class_year": 2,
+                "department_id": department_id,
+                "password_hash": "",
                 "created_at": _demo_now(),
             }
         )
@@ -429,6 +461,8 @@ def _startup_log() -> None:
     if _DEMO_MODE and _DEMO_STORE["teachers"] and not _DEMO_STORE["teachers"][0].get("password_hash"):
         _DEMO_STORE["teachers"][0]["password_hash"] = _hash_password("demo123")
         demo_store_changed = True
+    if _ensure_demo_student_passwords():
+        demo_store_changed = True
     if demo_store_changed:
         _save_demo_store_to_disk()
     print(
@@ -536,7 +570,7 @@ class AnalysisRequest(BaseModel):
 
 class StudentLoginRequest(BaseModel):
     student_no: str
-    tc_no: str
+    password: str
 
 
 class UploadHistoryRequest(BaseModel):
@@ -1154,6 +1188,423 @@ def _has_assignment_example_output_heading(text: str) -> bool:
             str(text or ""),
         )
     )
+
+
+_RESOURCE_RECOMMENDATION_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "required": ["resources"],
+    "properties": {
+        "resources": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "required": ["title", "url", "reason", "resourceType", "priority"],
+                "properties": {
+                    "title": {"type": "string"},
+                    "url": {"type": "string"},
+                    "reason": {"type": "string"},
+                    "resourceType": {"type": "string"},
+                    "priority": {"type": "string"},
+                },
+                "additionalProperties": True,
+            },
+        }
+    },
+    "additionalProperties": True,
+}
+
+_RESOURCE_LIBRARY: dict[str, list[dict[str, str]]] = {
+    "off-topic": [
+        {
+            "title": "Python Programlama Ödevlerinde Gereksinim Analizi",
+            "url": "https://realpython.com/python-application-layouts/",
+            "resourceType": "tutorial",
+        },
+        {
+            "title": "Problem Çözme ve Çıktıdan Gereksinim Çıkarma",
+            "url": "https://www.geeksforgeeks.org/python/how-to-solve-coding-problems/",
+            "resourceType": "practice",
+        },
+    ],
+    "runtime": [
+        {
+            "title": "Python Traceback Okuma Rehberi",
+            "url": "https://realpython.com/python-traceback/",
+            "resourceType": "tutorial",
+        },
+        {
+            "title": "Python argparse",
+            "url": "https://docs.python.org/3/library/argparse.html",
+            "resourceType": "docs",
+        },
+        {
+            "title": "Python Hata Ayıklama",
+            "url": "https://docs.python.org/3/library/pdb.html",
+            "resourceType": "docs",
+        },
+    ],
+    "syntax": [
+        {
+            "title": "Python Sözdizimi Hataları ve Yaygın Sebepler",
+            "url": "https://realpython.com/invalid-syntax-python/",
+            "resourceType": "tutorial",
+        },
+        {
+            "title": "Python Language Reference",
+            "url": "https://docs.python.org/3/reference/index.html",
+            "resourceType": "docs",
+        },
+    ],
+    "oop-mismatch": [
+        {
+            "title": "Python Classes and Objects",
+            "url": "https://docs.python.org/3/tutorial/classes.html",
+            "resourceType": "docs",
+        },
+        {
+            "title": "Python OOP Explained",
+            "url": "https://realpython.com/python3-object-oriented-programming/",
+            "resourceType": "tutorial",
+        },
+    ],
+    "api-mismatch": [
+        {
+            "title": "FastAPI Tutorial",
+            "url": "https://fastapi.tiangolo.com/tutorial/",
+            "resourceType": "docs",
+        },
+        {
+            "title": "REST API Tasarımı Temelleri",
+            "url": "https://developer.mozilla.org/en-US/docs/Glossary/REST",
+            "resourceType": "docs",
+        },
+    ],
+    "csv-processing": [
+        {
+            "title": "csv — CSV File Reading and Writing",
+            "url": "https://docs.python.org/3/library/csv.html",
+            "resourceType": "docs",
+        },
+        {
+            "title": "Python CSV İşleme Uygulamaları",
+            "url": "https://realpython.com/python-csv/",
+            "resourceType": "tutorial",
+        },
+    ],
+    "testing": [
+        {
+            "title": "Python unittest",
+            "url": "https://docs.python.org/3/library/unittest.html",
+            "resourceType": "docs",
+        },
+        {
+            "title": "Python Testing 101",
+            "url": "https://realpython.com/python-testing/",
+            "resourceType": "tutorial",
+        },
+    ],
+    "security": [
+        {
+            "title": "OWASP Top 10",
+            "url": "https://owasp.org/www-project-top-ten/",
+            "resourceType": "docs",
+        },
+        {
+            "title": "Python Security Best Practices",
+            "url": "https://realpython.com/python-assert-statement/",
+            "resourceType": "tutorial",
+        },
+    ],
+}
+
+
+def _resource_library_by_url() -> dict[str, dict[str, str]]:
+    out: dict[str, dict[str, str]] = {}
+    for items in _RESOURCE_LIBRARY.values():
+        for item in items:
+            out[str(item["url"]).strip()] = item
+    return out
+
+
+def _looks_placeholder_submission(source_code: str) -> bool:
+    text = str(source_code or "").strip().lower()
+    if len(text) < 24:
+        return True
+    tokens = ("todo", "pass", "coming soon", "placeholder", "lorem ipsum")
+    return any(token in text for token in tokens)
+
+
+def _resource_recommendation_categories(
+    *,
+    total_score: int,
+    relevance_score_warning: str | None,
+    task_alignment: dict[str, Any],
+    test_agent: dict[str, Any],
+    security_result: dict[str, Any],
+    source_code: str,
+    assignment_brief: str = "",
+) -> list[str]:
+    categories: list[str] = []
+
+    def _add(key: str) -> None:
+        if key not in categories:
+            categories.append(key)
+
+    align_factor = float(task_alignment.get("factor", 1.0) or 1.0) if isinstance(task_alignment, dict) else 1.0
+    llm_off_topic = bool(task_alignment.get("llm_off_topic")) if isinstance(task_alignment, dict) else False
+    reasons = list(task_alignment.get("reasons", [])) if isinstance(task_alignment, dict) else []
+    if llm_off_topic or align_factor < 0.35 or "llm_task_relevance_off_topic" in reasons:
+        _add("off-topic")
+
+    if _looks_placeholder_submission(source_code):
+        _add("syntax")
+
+    comp_ok = bool(test_agent.get("compilation_success", False)) if isinstance(test_agent, dict) else False
+    runs_ok = bool(test_agent.get("runs_successfully", False)) if isinstance(test_agent, dict) else False
+    runtime_errors = list(test_agent.get("runtime_errors", [])) if isinstance(test_agent, dict) else []
+    failed_tests = int(test_agent.get("failed_tests", 0) or 0) if isinstance(test_agent, dict) else 0
+    if not comp_ok:
+        _add("syntax")
+    if runtime_errors or not runs_ok:
+        _add("runtime")
+    if failed_tests > 0 or total_score < 70:
+        _add("testing")
+
+    if isinstance(security_result, dict):
+        risk = str(security_result.get("risk_level", "")).lower()
+        critical = int(security_result.get("critical_count", 0) or 0)
+        high = int(security_result.get("high_count", 0) or 0)
+        if risk in {"high", "critical"} or critical > 0 or high > 0:
+            _add("security")
+
+    brief_blob = str(assignment_brief or "")
+    if brief_blob:
+        if _assignment_requires_api_scope(brief_blob, ""):
+            source_lower = str(source_code or "").lower()
+            if not any(token in source_lower for token in ("fastapi", "flask", "@app.", "router", "endpoint", "request")):
+                _add("api-mismatch")
+        if _assignment_requires_oop_scope(brief_blob, ""):
+            if "class " not in str(source_code or "").lower():
+                _add("oop-mismatch")
+        if "csv" in brief_blob.lower() and "csv" not in str(source_code or "").lower():
+            _add("csv-processing")
+
+    if relevance_score_warning and total_score < 85:
+        _add("testing")
+    return categories
+
+
+def _recommendation_reason_for_category(
+    category: str,
+    *,
+    summary: str,
+    weaknesses: list[str],
+    recommendations: list[str],
+) -> str:
+    focus = next((text for text in [*(weaknesses or []), *(recommendations or []), summary] if str(text).strip()), "")
+    focus = str(focus).strip()
+    default_by_category = {
+        "off-topic": "Bu kaynak, ödev gereksinimini doğru okuyup çözümü doğru probleme hizalamanı destekler.",
+        "runtime": "Bu kaynak, çalışma zamanı hatalarını okuyup adım adım düzeltmene yardımcı olur.",
+        "syntax": "Bu kaynak, temel sözdizimi ve derleme hatalarını daha hızlı ayıklamana yardımcı olur.",
+        "oop-mismatch": "Bu kaynak, nesne yönelimli çözüm beklenen ödevlerde sınıf tasarımını güçlendirir.",
+        "api-mismatch": "Bu kaynak, endpoint ve request/response akışını doğru kurmana yardımcı olur.",
+        "csv-processing": "Bu kaynak, CSV okuma, doğrulama ve raporlama akışını tamamlamanı destekler.",
+        "testing": "Bu kaynak, eksik test senaryolarını ve beklenen çıktıları doğrulama pratiği kazandırır.",
+        "security": "Bu kaynak, riskli kod kalıplarını fark edip daha güvenli alternatiflere yönelmeni sağlar.",
+    }
+    if not focus:
+        return default_by_category.get(category, "Bu kaynak, bir sonraki revizyonda daha doğru teslim hazırlamana yardımcı olur.")
+    return f"{default_by_category.get(category, 'Bu kaynak, bir sonraki revizyonda daha iyi ilerlemene yardımcı olur.')} Odak: {focus[:180]}"
+
+
+def _fallback_resource_recommendations(
+    *,
+    category_keys: list[str],
+    report_language: str,
+    assignment_brief: str,
+    summary: str,
+    weaknesses: list[str],
+    recommendations: list[str],
+) -> list[dict[str, str]]:
+    chosen: list[dict[str, str]] = []
+    seen_urls: set[str] = set()
+    ordered_keys = list(category_keys) + ["testing"]
+    for key in ordered_keys:
+        for item in _RESOURCE_LIBRARY.get(key, []):
+            url = str(item["url"]).strip()
+            if not url or url in seen_urls:
+                continue
+            seen_urls.add(url)
+            chosen.append({
+                "title": str(item["title"]).strip(),
+                "url": url,
+                "reason": _recommendation_reason_for_category(
+                    key,
+                    summary=summary,
+                    weaknesses=weaknesses,
+                    recommendations=recommendations,
+                ),
+                "resourceType": str(item["resourceType"]).strip() or "tutorial",
+                "priority": "high" if key == "off-topic" or not chosen else "medium",
+            })
+            if len(chosen) >= 4:
+                return chosen
+    return chosen
+
+
+def _normalize_resource_recommendation_card(raw: Any, *, allowed_urls: dict[str, dict[str, str]]) -> dict[str, str] | None:
+    if not isinstance(raw, dict):
+        return None
+    url = str(raw.get("url") or "").strip()
+    if url not in allowed_urls:
+        return None
+    title = str(raw.get("title") or allowed_urls[url]["title"]).strip()
+    reason = str(raw.get("reason") or "").strip()
+    resource_type = str(raw.get("resourceType") or allowed_urls[url].get("resourceType") or "tutorial").strip().lower()
+    priority = str(raw.get("priority") or "medium").strip().lower()
+    if resource_type not in {"docs", "tutorial", "video", "practice"}:
+        resource_type = "tutorial"
+    if priority not in {"high", "medium"}:
+        priority = "medium"
+    if not title or not reason:
+        return None
+    return {
+        "title": title,
+        "url": url,
+        "reason": reason,
+        "resourceType": resource_type,
+        "priority": priority,
+    }
+
+
+async def _generate_resource_recommendations_with_nim(
+    *,
+    report_language: str,
+    assignment_brief: str,
+    rubric_summary: str,
+    summary: str,
+    weaknesses: list[str],
+    recommendations: list[str],
+    category_keys: list[str],
+) -> list[dict[str, str]]:
+    allowed_urls = _resource_library_by_url()
+    catalog_rows = [
+        {
+            "title": item["title"],
+            "url": item["url"],
+            "resourceType": item["resourceType"],
+            "category": category,
+        }
+        for category in category_keys
+        for item in _RESOURCE_LIBRARY.get(category, [])
+    ]
+    if not catalog_rows:
+        return []
+
+    payload = await chat_json(
+        system_prompt=(
+            "You generate student-facing study resource cards for a code-review PDF. "
+            "Return only JSON. Pick only from the provided resource catalog; never invent a URL."
+        ),
+        user_prompt=(
+            f"Report language: {report_language or 'tr'}\n"
+            f"Assignment brief:\n{assignment_brief}\n\n"
+            f"Rubric summary:\n{rubric_summary}\n\n"
+            f"Evaluation summary:\n{summary}\n\n"
+            f"Weaknesses:\n{json.dumps(weaknesses, ensure_ascii=False)}\n"
+            f"Recommendations:\n{json.dumps(recommendations, ensure_ascii=False)}\n"
+            f"Priority categories:\n{json.dumps(category_keys, ensure_ascii=False)}\n\n"
+            "Choose 2 to 4 resources from this catalog and explain why each one is useful for this specific student:\n"
+            f"{json.dumps(catalog_rows, ensure_ascii=False)}\n\n"
+            "Return JSON object: {\"resources\":[{\"title\":\"...\",\"url\":\"...\",\"reason\":\"...\",\"resourceType\":\"docs|tutorial|video|practice\",\"priority\":\"high|medium\"}]}"
+        ),
+        schema_hint=_RESOURCE_RECOMMENDATION_SCHEMA,
+        temperature=0.15,
+        num_predict=2048,
+        model=settings.ollama_coder_model,
+        use_cache=False,
+        provider_override="nvidia_nim",
+    )
+    cards = payload.get("resources", []) if isinstance(payload, dict) else []
+    normalized: list[dict[str, str]] = []
+    seen_urls: set[str] = set()
+    for item in cards:
+        card = _normalize_resource_recommendation_card(item, allowed_urls=allowed_urls)
+        if card is None or card["url"] in seen_urls:
+            continue
+        seen_urls.add(card["url"])
+        normalized.append(card)
+        if len(normalized) >= 4:
+            break
+    return normalized
+
+
+async def _build_resource_recommendations(
+    *,
+    total_score: int,
+    relevance_score_warning: str | None,
+    task_alignment: dict[str, Any],
+    test_agent: dict[str, Any],
+    security_result: dict[str, Any],
+    source_code: str,
+    assignment_brief: str,
+    rubric: list[dict[str, Any]],
+    summary: str,
+    weaknesses: list[str],
+    recommendations: list[str],
+    report_language: str,
+) -> list[dict[str, str]]:
+    category_keys = _resource_recommendation_categories(
+        total_score=total_score,
+        relevance_score_warning=relevance_score_warning,
+        task_alignment=task_alignment,
+        test_agent=test_agent,
+        security_result=security_result,
+        source_code=source_code,
+        assignment_brief=assignment_brief,
+    )
+    if not category_keys:
+        return []
+
+    fallback = _fallback_resource_recommendations(
+        category_keys=category_keys,
+        report_language=report_language,
+        assignment_brief=assignment_brief,
+        summary=summary,
+        weaknesses=weaknesses,
+        recommendations=recommendations,
+    )
+    rubric_summary = ", ".join(
+        f"{str(item.get('name') or item.get('label') or '').strip()} {item.get('score', 0)}/{item.get('maxScore', item.get('weight', 0))}"
+        for item in (rubric or [])[:8]
+        if isinstance(item, dict)
+    )
+    try:
+        generated = await _generate_resource_recommendations_with_nim(
+            report_language=report_language,
+            assignment_brief=assignment_brief,
+            rubric_summary=rubric_summary,
+            summary=summary,
+            weaknesses=weaknesses,
+            recommendations=recommendations,
+            category_keys=category_keys,
+        )
+    except Exception as exc:
+        logger.warning("[resource-recommendations] NIM onerisi basarisiz: %s", exc)
+        generated = []
+
+    merged: list[dict[str, str]] = []
+    seen_urls: set[str] = set()
+    for item in [*generated, *fallback]:
+        url = str(item.get("url") or "").strip()
+        if not url or url in seen_urls:
+            continue
+        seen_urls.add(url)
+        merged.append(item)
+        if len(merged) >= 4:
+            break
+    return merged
 
 
 def _rubric_description_is_template_noise(description: str) -> bool:
@@ -2947,8 +3398,10 @@ def _normalize_student_record_department(student: dict[str, Any]) -> dict[str, A
 
 
 def _demo_student_record(student: dict[str, Any]) -> dict[str, Any]:
+    safe_student = dict(student)
+    safe_student.pop("password_hash", None)
     return {
-        **student,
+        **safe_student,
         "department_name": _demo_department_name(student.get("department_id")),
     }
 
@@ -3015,6 +3468,7 @@ async def _ensure_db_schema(pool: asyncpg.Pool) -> None:
             tc_no TEXT NOT NULL,
             first_name TEXT NOT NULL,
             last_name TEXT NOT NULL,
+            password_hash TEXT,
             class_year SMALLINT NULL,
             department_id UUID NULL REFERENCES public.departments(id) ON DELETE SET NULL,
             created_at TIMESTAMPTZ NOT NULL DEFAULT now()
@@ -3062,6 +3516,9 @@ async def _ensure_db_schema(pool: asyncpg.Pool) -> None:
 
         ALTER TABLE public.students
             ADD COLUMN IF NOT EXISTS class_year SMALLINT;
+
+        ALTER TABLE public.students
+            ADD COLUMN IF NOT EXISTS password_hash TEXT;
 
         ALTER TABLE public.students
             ADD COLUMN IF NOT EXISTS department_id UUID REFERENCES public.departments(id) ON DELETE SET NULL;
@@ -3206,6 +3663,32 @@ async def _ensure_db_schema(pool: asyncpg.Pool) -> None:
         CREATE INDEX IF NOT EXISTS idx_assignment_test_cases_assignment_id
             ON public.assignment_test_cases(assignment_id, display_order ASC, created_at ASC);
         """)
+        rows = await pool.fetch(
+            """
+            SELECT id, student_no, password_hash
+            FROM public.students
+            WHERE password_hash IS NULL
+               OR password_hash = ''
+               OR student_no = $1
+            """,
+            _EMRETEST_STUDENT_NO,
+        )
+        for row in rows:
+            student_no = str(row["student_no"] or "").strip()
+            current_hash = str(row["password_hash"] or "")
+            if student_no == _EMRETEST_STUDENT_NO:
+                if _verify_password(_EMRETEST_STUDENT_PASSWORD, current_hash):
+                    continue
+                password = _EMRETEST_STUDENT_PASSWORD
+            elif current_hash:
+                continue
+            else:
+                password = _DEFAULT_STUDENT_PASSWORD
+            await pool.execute(
+                "UPDATE public.students SET password_hash = $1 WHERE id = $2",
+                _hash_password(password),
+                row["id"],
+            )
 
 
 def _hash_password(password: str) -> str:
@@ -3225,6 +3708,31 @@ def _verify_password(password: str, stored_hash: str) -> bool:
         return hmac.compare_digest(digest.hex(), hash_hex)
     except Exception:
         return False
+
+
+def _initial_student_password(student: dict[str, Any]) -> str:
+    student_no = str(student.get("student_no") or "").strip()
+    if student_no == _EMRETEST_STUDENT_NO:
+        return _EMRETEST_STUDENT_PASSWORD
+    return _DEFAULT_STUDENT_PASSWORD
+
+
+def _ensure_demo_student_passwords() -> bool:
+    if not _DEMO_MODE:
+        return False
+    changed = False
+    for student in _DEMO_STORE.setdefault("students", []):
+        if not isinstance(student, dict):
+            continue
+        desired_password = _initial_student_password(student)
+        current_hash = str(student.get("password_hash") or "")
+        if not current_hash or (
+            str(student.get("student_no") or "").strip() == _EMRETEST_STUDENT_NO
+            and not _verify_password(_EMRETEST_STUDENT_PASSWORD, current_hash)
+        ):
+            student["password_hash"] = _hash_password(desired_password)
+            changed = True
+    return changed
 
 
 def _parse_optional_datetime(value: str | None) -> datetime | None:
@@ -3538,6 +4046,7 @@ async def run_analysis_pipeline(
     faculty_rubric_criteria: list[dict[str, Any]] | None = None,
     test_cases: list[dict[str, Any]] | None = None,
     report_language: str = "tr",
+    progress_callback: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
 ) -> dict[str, Any]:
     if not tracemalloc.is_tracing():
         tracemalloc.start()
@@ -3549,6 +4058,7 @@ async def run_analysis_pipeline(
             faculty_rubric_criteria=faculty_rubric_criteria,
             test_cases=test_cases,
             report_language=report_language,
+            progress_callback=progress_callback,
         )
     finally:
         if tracemalloc.is_tracing():
@@ -3563,6 +4073,7 @@ async def _run_analysis_pipeline_body(
     faculty_rubric_criteria: list[dict[str, Any]] | None = None,
     test_cases: list[dict[str, Any]] | None = None,
     report_language: str = "tr",
+    progress_callback: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
 ) -> dict[str, Any]:
     start_time = time.time()
 
@@ -3689,7 +4200,7 @@ async def _run_analysis_pipeline_body(
             "expected_output": pipeline_test_cases,
             "source_code": file_content,
             "language": language,
-            "report_language": "tr",
+            "report_language": report_language,
             "assignment_description": brief,
             "faculty_rubric_criteria": fac,
             "task_alignment": task_alignment,
@@ -3707,7 +4218,7 @@ async def _run_analysis_pipeline_body(
     ev = await EvidenceAgent().analyze({
         "source_code": file_content,
         "language": language,
-        "report_language": "tr",
+        "report_language": report_language,
         "assignment_description": brief,
         "agent_findings": {
             "code_quality": cq,
@@ -3732,7 +4243,7 @@ async def _run_analysis_pipeline_body(
         "seniority": sn,
         "guideline": gl,
         "security": sc,
-        "report_language": "tr",
+        "report_language": report_language,
         "language": language,
         "assignment_description": brief,
         "task_alignment": task_alignment,
@@ -3806,7 +4317,11 @@ async def _run_analysis_pipeline_body(
             })
             evidence_lines.sort(key=lambda x: x["line"])
 
-    return {
+    summary = str(final.get("summary") or "").strip()
+    strengths = [str(item).strip() for item in (final.get("strengths", []) or []) if str(item).strip()]
+    weaknesses = [str(item).strip() for item in (final.get("weaknesses", []) or []) if str(item).strip()]
+    recommendation_lines = [str(item).strip() for item in (final.get("recommendations", []) or []) if str(item).strip()]
+    base_result = {
         "totalScore": total_score_rounded,
         "maxScore": 100,
         "rubric": rubric,
@@ -3818,8 +4333,14 @@ async def _run_analysis_pipeline_body(
         "memoryUsageMb": round(current_mem / 1024 / 1024, 1),
         "peakMemoryMb": round(peak_mem / 1024 / 1024, 1),
         "analysisEngine": _ANALYSIS_ENGINE,
+        "summary": summary,
+        "strengths": strengths,
+        "weaknesses": weaknesses,
+        "recommendations": recommendation_lines,
+        "resourceRecommendations": [],
         "relevanceScoreWarning": relevance_score_warning,
         "taskAlignment": task_alignment,
+        "reportStatus": "preparing",
         "agentDiagnostics": _build_agent_diagnostics(
             {
                 "code_quality": cq,
@@ -3834,6 +4355,33 @@ async def _run_analysis_pipeline_body(
             },
             task_alignment=task_alignment,
         ),
+    }
+
+    if progress_callback is not None:
+        try:
+            await progress_callback(dict(base_result))
+        except Exception:
+            logger.exception("analysis progress callback failed")
+
+    resource_recommendations = await _build_resource_recommendations(
+        total_score=total_score_rounded,
+        relevance_score_warning=relevance_score_warning,
+        task_alignment=task_alignment,
+        test_agent=ta if isinstance(ta, dict) else {},
+        security_result=sc if isinstance(sc, dict) else {},
+        source_code=file_content,
+        assignment_brief=brief,
+        rubric=rubric,
+        summary=summary,
+        weaknesses=weaknesses,
+        recommendations=recommendation_lines,
+        report_language=report_language,
+    )
+
+    return {
+        **base_result,
+        "resourceRecommendations": resource_recommendations,
+        "reportStatus": "ready",
     }
 
 
@@ -4422,31 +4970,38 @@ async def get_analysis_job_status(job_id: str):
 
 @app.post("/api/student/login")
 async def student_login(req: StudentLoginRequest):
+    student_no = req.student_no.strip()
+    password = req.password.strip()
+    if not student_no or not password:
+        raise HTTPException(status_code=400, detail="Ogrenci no ve sifre zorunludur")
+
     if _DEMO_MODE:
-        student_no = req.student_no.strip()
-        tc_no = req.tc_no.strip()
+        if _ensure_demo_student_passwords():
+            _save_demo_store_to_disk()
         for student in _DEMO_STORE["students"]:
-            if student["student_no"] == student_no and student["tc_no"] == tc_no:
+            if student["student_no"] == student_no and _verify_password(password, str(student.get("password_hash") or "")):
                 return _demo_student_record(student)
-        raise HTTPException(status_code=404, detail="Ogrenci bulunamadi")
+        raise HTTPException(status_code=401, detail="Ogrenci no veya sifre hatali")
 
     pool = await _get_db_pool()
     row = await pool.fetchrow(
         """
         SELECT s.id, s.student_no, s.tc_no, s.first_name, s.last_name, s.class_year, s.department_id,
+               s.password_hash,
                d.name AS department_name, s.created_at
         FROM public.students s
         LEFT JOIN public.departments d ON d.id = s.department_id
-        WHERE student_no = $1 AND tc_no = $2
+        WHERE student_no = $1
         LIMIT 1
         """,
-        req.student_no.strip(),
-        req.tc_no.strip(),
+        student_no,
     )
-    if row is None:
-        raise HTTPException(status_code=404, detail="Ogrenci bulunamadi")
+    if row is None or not _verify_password(password, str(row["password_hash"] or "")):
+        raise HTTPException(status_code=401, detail="Ogrenci no veya sifre hatali")
     await _sync_student_to_all_courses(pool, str(row["id"]))
-    return dict(row)
+    payload = dict(row)
+    payload.pop("password_hash", None)
+    return payload
 
 
 @app.post("/api/teacher/register")
@@ -5814,6 +6369,7 @@ async def create_student(req: StudentCreateRequest):
             "last_name": last_name,
             "class_year": class_year,
             "department_id": department_id,
+            "password_hash": _hash_password(_DEFAULT_STUDENT_PASSWORD),
             "created_at": _demo_now(),
         }
         _DEMO_STORE["students"].append(student)
@@ -5827,8 +6383,8 @@ async def create_student(req: StudentCreateRequest):
     try:
         row = await pool.fetchrow(
             """
-            INSERT INTO public.students (student_no, tc_no, first_name, last_name, class_year, department_id)
-            VALUES ($1, $2, $3, $4, $5, $6)
+            INSERT INTO public.students (student_no, tc_no, first_name, last_name, class_year, department_id, password_hash)
+            VALUES ($1, $2, $3, $4, $5, $6, $7)
             RETURNING id
             """,
             student_no,
@@ -5837,6 +6393,7 @@ async def create_student(req: StudentCreateRequest):
             last_name,
             class_year,
             department_id,
+            _hash_password(_DEFAULT_STUDENT_PASSWORD),
         )
     except asyncpg.ForeignKeyViolationError as exc:
         raise HTTPException(status_code=400, detail="Gecersiz bolum secimi") from exc
@@ -6069,6 +6626,7 @@ async def import_students_csv(file: UploadFile = File(...)):
                 "last_name": last_name,
                 "class_year": class_year,
                 "department_id": department_id,
+                "password_hash": _hash_password(_DEFAULT_STUDENT_PASSWORD),
                 "created_at": _demo_now(),
             }
             _DEMO_STORE["students"].append(student)
@@ -6151,8 +6709,8 @@ async def import_students_csv(file: UploadFile = File(...)):
         try:
             row_result = await pool.fetchrow(
                 """
-                INSERT INTO public.students (student_no, tc_no, first_name, last_name, class_year, department_id)
-                VALUES ($1, $2, $3, $4, $5, $6)
+                INSERT INTO public.students (student_no, tc_no, first_name, last_name, class_year, department_id, password_hash)
+                VALUES ($1, $2, $3, $4, $5, $6, $7)
                 RETURNING id
                 """,
                 student_no,
@@ -6161,6 +6719,7 @@ async def import_students_csv(file: UploadFile = File(...)):
                 last_name,
                 class_year,
                 department_id,
+                _hash_password(_DEFAULT_STUDENT_PASSWORD),
             )
         except asyncpg.ForeignKeyViolationError:
             skipped.append({

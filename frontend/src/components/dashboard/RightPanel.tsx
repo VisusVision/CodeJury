@@ -173,6 +173,7 @@ const RightPanel = ({
 
   const errorCount = findings.filter((f) => f.severity === "error").length;
   const warningCount = findings.filter((f) => f.severity === "warning").length;
+  const reportIsPreparing = report?.reportStatus === "preparing";
   const rubricPageSize = 5;
   const rubricTotalPages = report ? Math.max(1, Math.ceil(report.rubric.length / rubricPageSize)) : 1;
   const rubricStart = rubricPage * rubricPageSize;
@@ -313,14 +314,30 @@ const RightPanel = ({
               </div>
             ) : (
               <>
+                <div className={`rounded-xl border px-3 py-3 ${reportIsPreparing ? "border-primary/20 bg-primary/5" : "border-border bg-muted/30"}`}>
+                  <div className="flex items-start gap-3">
+                    <div className={`mt-0.5 rounded-full p-2 ${reportIsPreparing ? "bg-primary/10 text-primary" : "bg-success/10 text-success"}`}>
+                      <FileText className={`h-4 w-4 ${reportIsPreparing ? "animate-pulse" : ""}`} />
+                    </div>
+                    <div className="min-w-0">
+                      <p className="text-xs font-semibold text-foreground">
+                        {reportIsPreparing ? t("rightPanel.reportPreparingTitle") : t("rightPanel.reportReadyTitle")}
+                      </p>
+                      <p className="mt-1 text-[11px] leading-relaxed text-muted-foreground">
+                        {reportIsPreparing ? t("rightPanel.reportPreparingBody") : t("rightPanel.reportReadyBody")}
+                      </p>
+                    </div>
+                  </div>
+                </div>
+
                 {/* Download button */}
                 <button
                   onClick={onExportPdf}
-                  disabled={exporting}
+                  disabled={exporting || reportIsPreparing}
                   className="w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg bg-primary text-primary-foreground text-sm font-medium shadow-button-primary hover:brightness-110 transition-all disabled:opacity-50"
                 >
                   <Download className="h-4 w-4" />
-                  {exporting ? t("rightPanel.exporting") : t("rightPanel.exportPdf")}
+                  {exporting ? t("rightPanel.exporting") : reportIsPreparing ? t("rightPanel.reportPreparingShort") : t("rightPanel.exportPdf")}
                 </button>
 
                 {/* Score */}

@@ -26,6 +26,7 @@ import { type AgentStatus } from "@/components/dashboard/AgentCard";
 import LogPanel, { type LogEntry } from "@/components/dashboard/LogPanel";
 import CodeEditor, { type CodeAnnotation } from "@/components/dashboard/CodeEditor";
 import { type ReportData } from "@/components/dashboard/AnalysisReport";
+import { buildPdfReportSectionsHtml } from "@/components/dashboard/reportPdfSections";
 import { analyzeCode, createUploadHistoryRecord, getUploadHistoryRecords, getAssignmentQuestions, getCurrentEvaluation, submitEvaluation, type ApiAnalysisResult, type QuestionItem, type EvaluationRecord } from "@/services/api";
 import UploadHistory, { type UploadRecord } from "@/components/dashboard/UploadHistory";
 import ExecutionStats from "@/components/dashboard/ExecutionStats";
@@ -327,6 +328,44 @@ const savePersistedState = (assignmentId: string, studentNo: string, state: Pers
   }
 };
 
+function buildReportData(result: ApiAnalysisResult, fileContent: string): ReportData {
+  return {
+    totalScore: result.totalScore,
+    maxScore: result.maxScore,
+    rubric: result.rubric,
+    agents: result.agents.map((agent) => ({
+      ...agent,
+      icon: agentIconMap[agent.id] || FlaskConical,
+    })),
+    evidence: result.evidence,
+    rejectedClaims: result.rejectedClaims ?? [],
+    fileName: result.fileName,
+    fileContent,
+    executionTimeMs: result.executionTimeMs,
+    memoryUsageMb: result.memoryUsageMb,
+    peakMemoryMb: result.peakMemoryMb,
+    summary: result.summary ?? "",
+    strengths: result.strengths ?? [],
+    weaknesses: result.weaknesses ?? [],
+    recommendations: result.recommendations ?? [],
+    resourceRecommendations: result.resourceRecommendations ?? [],
+    relevanceScoreWarning: result.relevanceScoreWarning ?? undefined,
+    taskAlignment: result.taskAlignment,
+    reportStatus: result.reportStatus ?? "ready",
+  };
+}
+
+function buildCodeAnnotations(result: ApiAnalysisResult): CodeAnnotation[] {
+  return result.evidence
+    .filter((e) => e.line > 0)
+    .map((e) => ({
+      line: e.line,
+      severity: e.severity,
+      message: e.message,
+      agent: e.agent,
+    }));
+}
+
 const WorkspacePage = ({ sidebarTitle, sidebarSubtitle, headerTitle, assignmentDescription, assignmentId, studentNo, assignmentDueDate, onBack }: WorkspacePageProps) => {
   const { t, language } = useTranslation();
   const agentDefs: AgentDef[] = useMemo(() =>
@@ -521,6 +560,51 @@ const WorkspacePage = ({ sidebarTitle, sidebarSubtitle, headerTitle, assignmentD
     addLog("System", t("workspace.running"), "info");
 
     try {
+      const loggedAgentIds = new Set<string>();
+      let loggedFinalScore = false;
+      let loggedReportPreparing = false;
+
+      const applyAnalysisResult = (result: ApiAnalysisResult) => {
+        result.agents.forEach((agent) => {
+          setAgentStatuses((p) => ({ ...p, [agent.id]: "done" }));
+          const pct = Math.round((agent.score / agent.maxScore) * 100);
+          setAgentActions((p) => ({ ...p, [agent.id]: `${agent.summary} (${pct}%)` }));
+          if (!loggedAgentIds.has(agent.id)) {
+            addLog(agent.name, agent.summary, "success");
+            loggedAgentIds.add(agent.id);
+          }
+        });
+
+        const totalPct = Math.round((result.totalScore / result.maxScore) * 100);
+        setAgentStatuses((p) => ({ ...p, orchestrator: "done" }));
+        setAgentActions((p) => ({
+          ...p,
+          orchestrator: `${language === "tr" ? "Nihai puan" : "Final score"}: ${result.totalScore}/${result.maxScore}`,
+        }));
+        if (!loggedFinalScore) {
+          addLog(
+            t("agents.rubric"),
+            `${language === "tr" ? "Nihai puan" : "Final score"}: ${result.totalScore}/${result.maxScore} (${totalPct}%)`,
+            "success",
+          );
+          loggedFinalScore = true;
+        }
+
+        if (result.reportStatus === "preparing" && !loggedReportPreparing) {
+          addLog(
+            "System",
+            language === "tr"
+              ? "Ajan analizleri tamamlandı, rapor ve PDF hazırlanıyor."
+              : "Agent analysis is complete, the report and PDF are being prepared.",
+            "info",
+          );
+          loggedReportPreparing = true;
+        }
+
+        setReport(buildReportData(result, firstFile.content));
+        setFindings(buildCodeAnnotations(result));
+      };
+
       // Call the FastAPI backend
       const result: ApiAnalysisResult = await analyzeCode(
         firstFile.name,
@@ -529,55 +613,13 @@ const WorkspacePage = ({ sidebarTitle, sidebarSubtitle, headerTitle, assignmentD
         language,
         studentNo,
         abortController.signal,
+        (partialResult) => {
+          applyAnalysisResult(partialResult);
+        },
       );
 
-      // Update agent statuses from the result
-      result.agents.forEach((agent) => {
-        setAgentStatuses((p) => ({ ...p, [agent.id]: "done" }));
-        const pct = Math.round((agent.score / agent.maxScore) * 100);
-        setAgentActions((p) => ({ ...p, [agent.id]: `${agent.summary} (${pct}%)` }));
-        addLog(agent.name, agent.summary, "success");
-      });
-
-      // Set orchestrator as done
+      applyAnalysisResult(result);
       const totalPct = Math.round((result.totalScore / result.maxScore) * 100);
-      setAgentStatuses((p) => ({ ...p, orchestrator: "done" }));
-      setAgentActions((p) => ({ ...p, orchestrator: `${language === "tr" ? "Nihai puan" : "Final score"}: ${result.totalScore}/${result.maxScore}` }));
-      addLog(t("agents.rubric"), `${language === "tr" ? "Nihai puan" : "Final score"}: ${result.totalScore}/${result.maxScore} (${totalPct}%)`, "success");
-
-      // Map API agent icons
-      const agentIconForReport = result.agents.map((a) => ({
-        ...a,
-        icon: agentIconMap[a.id] || FlaskConical,
-      }));
-
-      // Build report
-      const reportData: ReportData = {
-        totalScore: result.totalScore,
-        maxScore: result.maxScore,
-        rubric: result.rubric,
-        agents: agentIconForReport,
-        evidence: result.evidence,
-        rejectedClaims: result.rejectedClaims ?? [],
-        fileName: result.fileName,
-        fileContent: firstFile.content,
-        executionTimeMs: result.executionTimeMs,
-        memoryUsageMb: result.memoryUsageMb,
-        peakMemoryMb: result.peakMemoryMb,
-        relevanceScoreWarning: result.relevanceScoreWarning ?? undefined,
-      };
-      setReport(reportData);
-
-      // Build code annotations from evidence
-      const codeAnnotations: CodeAnnotation[] = result.evidence
-        .filter((e) => e.line > 0)
-        .map((e) => ({
-        line: e.line,
-        severity: e.severity,
-        message: e.message,
-        agent: e.agent,
-      }));
-      setFindings(codeAnnotations);
 
       // Update upload records with score
       setUploadRecords((prev) => {
@@ -707,6 +749,10 @@ const WorkspacePage = ({ sidebarTitle, sidebarSubtitle, headerTitle, assignmentD
 
   const handleExportPdf = useCallback(async () => {
     if (!report) return;
+    if (report.reportStatus === "preparing") {
+      toast.info(language === "tr" ? "PDF rapor hala hazırlanıyor." : "The PDF report is still being prepared.");
+      return;
+    }
     setExporting(true);
     try {
       const tempDiv = document.createElement("div");
@@ -796,6 +842,15 @@ const WorkspacePage = ({ sidebarTitle, sidebarSubtitle, headerTitle, assignmentD
         </tr>
       `;
 
+      const narrativeSections = buildPdfReportSectionsHtml({
+        summary: report.summary ?? "",
+        strengths: report.strengths ?? [],
+        weaknesses: report.weaknesses ?? [],
+        recommendations: report.recommendations ?? [],
+        resourceRecommendations: report.resourceRecommendations ?? [],
+        language,
+      });
+
       tempDiv.innerHTML = `
         <div style="margin-bottom:10px;padding:10px 12px;border-radius:10px;background:${scoreBg};">
           <div style="display:flex;justify-content:space-between;gap:12px;align-items:flex-start;">
@@ -826,6 +881,8 @@ const WorkspacePage = ({ sidebarTitle, sidebarSubtitle, headerTitle, assignmentD
             ${agentCards}
           </div>
         </div>
+
+        ${narrativeSections}
 
         <div>
           <h2 style="font-size:13px;font-weight:800;color:#111827;margin:0 0 6px 0;">Satır Bazlı İyileştirme Önerileri</h2>
@@ -866,7 +923,7 @@ const WorkspacePage = ({ sidebarTitle, sidebarSubtitle, headerTitle, assignmentD
     } finally {
       setExporting(false);
     }
-  }, [findings, headerTitle, report, sidebarSubtitle, sidebarTitle, studentNo]);
+  }, [findings, headerTitle, language, report, sidebarSubtitle, sidebarTitle, studentNo]);
 
   const activeFileData = files.find((f) => f.name === activeFile);
   const hasFiles = files.length > 0;
@@ -874,6 +931,17 @@ const WorkspacePage = ({ sidebarTitle, sidebarSubtitle, headerTitle, assignmentD
   const hasEvaluationForCurrentAssignment = Boolean(currentEvaluation?.assignment_id && currentEvaluation.assignment_id === assignmentId);
   const evaluationButtonVisible = hasScoredUploadForCurrentAssignment || hasEvaluationForCurrentAssignment;
   const description = splitAssignmentDescription(assignmentDescription);
+  const statusText = !hasFiles
+    ? t("workspace.uploadFirst")
+    : `${files.length} ${language === "tr" ? "dosya yüklendi" : "files uploaded"}${
+        report?.reportStatus === "preparing"
+          ? " — " + t("workspace.reportPreparing")
+          : isRunning
+            ? " — " + t("workspace.running")
+            : report
+              ? " — " + t("workspace.analysisComplete")
+              : ""
+      }`;
   const evaluationButtonLabel = currentEvaluation?.status === "submitted"
     ? (language === "tr" ? "Değerlendirildi" : "Rated")
     : (language === "tr" ? "Değerlendir" : "Rate");
@@ -1037,7 +1105,8 @@ const WorkspacePage = ({ sidebarTitle, sidebarSubtitle, headerTitle, assignmentD
                   </div>
                 )}
               </div>
-              <p className="text-xs text-muted-foreground">
+              <p className="text-xs text-muted-foreground">{statusText}</p>
+              <p className="hidden">
                   {!hasFiles
                    ? t("workspace.uploadFirst")
                    : `${files.length} ${language === "tr" ? "dosya yüklendi" : "files uploaded"}${isRunning ? " — " + t("workspace.running") : report ? " — " + t("workspace.analysisComplete") : ""}`}

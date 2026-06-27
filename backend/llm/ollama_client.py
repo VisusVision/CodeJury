@@ -446,6 +446,7 @@ async def chat_json(
     *,
     model: str | None = None,
     use_cache: bool = True,
+    provider_override: str | None = None,
 ) -> dict | None:
     """Ollama chat endpoint'ine istek gonderir ve JSON parse eder.
 
@@ -456,7 +457,8 @@ async def chat_json(
     if not settings.ollama_enabled:
         return None
 
-    provider_is_nim = _provider_is_nvidia_nim(_provider_for_model(model))
+    provider = _normalize_provider(provider_override) or _provider_for_model(model)
+    provider_is_nim = _provider_is_nvidia_nim(provider)
     provider_name = "nvidia_nim" if provider_is_nim else "ollama"
     selected_model = _select_nim_model(model) if provider_is_nim else (model or settings.ollama_general_model)
     if provider_is_nim:

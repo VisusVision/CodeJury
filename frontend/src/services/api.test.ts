@@ -21,7 +21,27 @@ describe("analyzeCode", () => {
       })
       .mockResolvedValueOnce({
         ok: true,
-        json: async () => ({ job_id: "job-123", status: "completed", result: { totalScore: 93, maxScore: 100 } }),
+        json: async () => ({
+          job_id: "job-123",
+          status: "completed",
+          result: {
+            totalScore: 93,
+            maxScore: 100,
+            summary: "Genel olarak basarili.",
+            strengths: ["Kod calisiyor."],
+            weaknesses: [],
+            recommendations: ["Test ekleyin."],
+            resourceRecommendations: [],
+            taskAlignment: {
+              factor: 0.95,
+              programmatic_factor: 0.9,
+              llm_factor: 1,
+              llm_off_topic: false,
+              reasons: [],
+              capability_match: 1,
+            },
+          },
+        }),
       });
     vi.stubGlobal("fetch", fetchMock);
 
@@ -31,7 +51,74 @@ describe("analyzeCode", () => {
     const result = await promise;
 
     expect(result.totalScore).toBe(93);
+    expect(result.summary).toBe("Genel olarak basarili.");
+    expect(result.taskAlignment?.factor).toBe(0.95);
     expect(fetchMock).toHaveBeenNthCalledWith(2, "/api/analyze/jobs/job-123", { cache: "no-store" });
+  });
+
+  test("emits partial analysis results before report generation finishes", async () => {
+    vi.useFakeTimers();
+    const onProgress = vi.fn();
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ job_id: "job-123", status: "queued" }),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          job_id: "job-123",
+          status: "running",
+          updated_at: "2026-06-27T18:00:05Z",
+          report_status: "preparing",
+          result: {
+            totalScore: 78,
+            maxScore: 100,
+            rubric: [],
+            agents: [],
+            evidence: [],
+            fileName: "main.py",
+            executionTimeMs: 1234,
+            memoryUsageMb: 12,
+            peakMemoryMb: 18,
+            reportStatus: "preparing",
+          },
+        }),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          job_id: "job-123",
+          status: "completed",
+          updated_at: "2026-06-27T18:00:08Z",
+          report_status: "ready",
+          result: {
+            totalScore: 78,
+            maxScore: 100,
+            rubric: [],
+            agents: [],
+            evidence: [],
+            fileName: "main.py",
+            executionTimeMs: 1234,
+            memoryUsageMb: 12,
+            peakMemoryMb: 18,
+            reportStatus: "ready",
+            resourceRecommendations: [],
+          },
+        }),
+      });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const promise = analyzeCode("main.py", "print('ok')", "assignment-1", "tr", undefined, undefined, onProgress);
+    await vi.advanceTimersByTimeAsync(1500);
+    await vi.advanceTimersByTimeAsync(1500);
+    const result = await promise;
+
+    expect(onProgress).toHaveBeenCalledTimes(2);
+    expect(onProgress.mock.calls[0][0].reportStatus).toBe("preparing");
+    expect(onProgress.mock.calls[0][1]).toEqual({ status: "running", reportStatus: "preparing" });
+    expect(result.reportStatus).toBe("ready");
   });
 
   test("throws backend error when a queued analysis job fails", async () => {

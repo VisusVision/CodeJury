@@ -21,6 +21,7 @@ from backend.queue.analysis_jobs import (
     get_analysis_job,
     mark_analysis_job_completed,
     mark_analysis_job_running,
+    update_analysis_job_result,
 )
 
 logger = logging.getLogger(__name__)
@@ -117,6 +118,12 @@ async def process_analysis_job(
                 faculty_rubric_criteria=request.get("faculty_rubric_criteria") or [],
                 test_cases=request.get("test_cases") or [],
                 report_language=str(request.get("report_language") or "tr"),
+                progress_callback=lambda partial_result: update_analysis_job_result(
+                    store,
+                    job_id,
+                    partial_result,
+                    report_status="preparing",
+                ),
             ),
             timeout=settings.analysis_pipeline_timeout_seconds,
         )

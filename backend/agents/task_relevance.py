@@ -285,6 +285,15 @@ def _has_recognized_capability_requirement(text: str) -> bool:
             "parametre",
             "donmeli",
         ),
+        (
+            "two sum",
+            "iki toplam",
+            "hedef toplam",
+            "farkli indeks",
+            "farklı indeks",
+            "indeks",
+            "index",
+        ),
         ("pytest", "unittest", "unit test", "otomatik test"),
     )
     return any(any(_contains_marker(task_text, marker) for marker in group) for group in marker_groups)

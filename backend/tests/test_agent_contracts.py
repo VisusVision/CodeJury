@@ -3,6 +3,8 @@ import tempfile
 from unittest.mock import AsyncMock, patch
 
 from backend.agents.assignment_alignment import compute_brief_code_alignment
+from backend.agents.algorithm import AlgorithmAgent
+from backend.agents.base import BaseAgent, LLMInferenceError
 from backend.agents.code_quality import CodeQualityAgent
 from backend.agents.code_utils import get_code_metrics
 from backend.agents.guideline import GuidelineAgent
@@ -25,6 +27,160 @@ from backend.agents.test_agent import (
 )
 from backend.sandbox.executor import _simulate_sandbox
 from frontend.backend.main import _build_agent_diagnostics, _build_agents_list, _build_line_evidence
+
+
+class _DummyAgent(BaseAgent):
+    name = "dummy"
+
+    async def analyze(self, input_data: dict) -> dict:
+        return {}
+
+
+class BaseAgentMetadataContractTests(unittest.IsolatedAsyncioTestCase):
+    async def test_missing_required_key_repair_reports_repair_count(self):
+        agent = _DummyAgent()
+
+        async def fake_chat_json(**kwargs):
+            if "SCHEMA REPAIR" in kwargs["user_prompt"]:
+                return {"score": 88}
+            return {"summary": "ilk yanit"}
+
+        with (
+            patch.object(settings, "ollama_enabled", True),
+            patch("backend.agents.base.chat_json", new=AsyncMock(side_effect=fake_chat_json)),
+        ):
+            result = await agent._call_llm(
+                "system",
+                "user",
+                required_keys=["summary", "score"],
+            )
+
+        self.assertEqual(result["llm_status"], "repaired")
+        self.assertIn("missing_required_keys_repair", result["guardrail_flags"])
+        self.assertEqual(result["schema_repair_count"], 1)
+        self.assertIsNone(result["confidence"])
+
+
+class AgentFallbackContractTests(unittest.IsolatedAsyncioTestCase):
+    async def test_programmatic_agents_return_schema_safe_fallback_when_llm_fails(self):
+        cases = [
+            (
+                CodeQualityAgent(),
+                {
+                    "time_complexity",
+                    "space_complexity",
+                    "algorithm_analysis",
+                    "data_structure_analysis",
+                    "issues",
+                    "score",
+                },
+            ),
+            (
+                AlgorithmAgent(),
+                {
+                    "detected_algorithms",
+                    "data_structures",
+                    "time_complexity",
+                    "space_complexity",
+                    "expected_complexity",
+                    "complexity_gap",
+                    "algorithm_analysis",
+                    "data_structure_analysis",
+                    "issues",
+                    "score",
+                },
+            ),
+            (
+                GuidelineAgent(),
+                {
+                    "naming_quality",
+                    "documentation_quality",
+                    "clean_code_score",
+                    "style_guide_compliance",
+                    "style_violations",
+                    "has_docstrings",
+                    "has_type_hints",
+                    "function_length_ok",
+                    "nesting_depth_ok",
+                    "dry_violations",
+                    "score",
+                },
+            ),
+            (
+                SeniorityAgent(),
+                {
+                    "estimated_level",
+                    "modern_features_usage",
+                    "error_handling_quality",
+                    "abstraction_quality",
+                    "design_patterns",
+                    "maturity_indicators",
+                    "immaturity_indicators",
+                    "idiomatic_usage_score",
+                    "score",
+                },
+            ),
+            (
+                SecurityAgent(),
+                {
+                    "threats",
+                    "risk_level",
+                    "safe",
+                    "total_threats",
+                    "critical_count",
+                    "high_count",
+                    "blocked_imports",
+                    "score",
+                },
+            ),
+        ]
+
+        for agent, required in cases:
+            with self.subTest(agent=agent.name):
+                with patch.object(
+                    agent,
+                    "_call_llm",
+                    new=AsyncMock(side_effect=LLMInferenceError("bad json")),
+                ):
+                    result = await agent.analyze(
+                        {
+                            "source_code": "def add(a, b):\n    return a + b\n",
+                            "language": "python",
+                            "assignment_description": "Iki sayiyi toplayan fonksiyon yazin.",
+                        }
+                    )
+
+                self.assertTrue(required.issubset(result.keys()))
+                self.assertEqual(result["llm_status"], "fallback")
+                self.assertIn("llm_inference_fallback", result["guardrail_flags"])
+                self.assertEqual(result["schema_repair_count"], 0)
+                self.assertIsNone(result["confidence"])
+
+    async def test_evidence_agent_returns_programmatic_fallback_when_llm_fails(self):
+        agent = EvidenceAgent()
+
+        with patch.object(
+            agent,
+            "_call_llm",
+            new=AsyncMock(side_effect=LLMInferenceError("bad json")),
+        ):
+            result = await agent.analyze(
+                {
+                    "source_code": "print(1)\n",
+                    "language": "python",
+                    "agent_findings": {
+                        "test_agent": {
+                            "runtime_errors": ["ZeroDivisionError: division by zero"]
+                        }
+                    },
+                }
+            )
+
+        self.assertEqual(result["llm_status"], "fallback")
+        self.assertIn("llm_inference_fallback", result["guardrail_flags"])
+        self.assertEqual(result["schema_repair_count"], 0)
+        self.assertGreaterEqual(result["total_claims_validated"], 1)
+        self.assertIsInstance(result["rejected_claims"], list)
 
 
 class TaskRelevanceContractTests(unittest.TestCase):
@@ -339,6 +495,13 @@ print("Hava gunesli")
         self.assertGreaterEqual(_capability_match_signal(brief, None, code), 0.75)
         self.assertLess(_capability_match_signal(brief, None, unrelated), 0.45)
 
+    def test_short_explicit_two_sum_brief_rejects_unrelated_running_code(self):
+        brief = "Python ile Two Sum yazin; hedef toplam icin iki farkli indeks dondurun."
+        unrelated = "print('hava bugun gunesli')\n"
+
+        self.assertTrue(_has_recognized_capability_requirement(brief))
+        self.assertLess(_capability_match_signal(brief, None, unrelated), 0.25)
+
 
 class AgentDiagnosticsContractTests(unittest.TestCase):
     def test_diagnostics_are_safe_and_optional(self):
@@ -617,7 +780,7 @@ class AgentDiagnosticsContractTests(unittest.TestCase):
         self.assertEqual(evidence, [])
 
 
-class EvidenceNormalizationContractTests(unittest.TestCase):
+class EvidenceNormalizationContractTests(unittest.IsolatedAsyncioTestCase):
     def test_validated_claim_snippet_is_rebuilt_from_source(self):
         source = ["def add(a, b):", "    return a + b"]
         claims = [
@@ -756,6 +919,54 @@ class EvidenceNormalizationContractTests(unittest.TestCase):
         self.assertIn("ZeroDivisionError: division by zero", feedback)
         self.assertIn("stdout mismatch", feedback)
         self.assertIn("Runtime hatasi", feedback)
+
+    async def test_analyze_moves_dropped_unsupported_llm_claims_to_rejected_claims(self):
+        agent = EvidenceAgent()
+
+        with patch.object(
+            agent,
+            "_call_llm",
+            new=AsyncMock(
+                return_value={
+                    "validated_claims": [
+                        {
+                            "lines": [99],
+                            "feedback": "Satir 99: olmayan satirda hata var.",
+                            "agent_source": "code_quality",
+                            "severity": "high",
+                            "is_valid": True,
+                        }
+                    ],
+                    "rejected_claims": [],
+                    "total_claims_received": 1,
+                    "total_claims_validated": 1,
+                    "llm_status": "ok",
+                    "guardrail_flags": [],
+                }
+            ),
+        ):
+            result = await agent.analyze(
+                {
+                    "source_code": "print(1)\n",
+                    "language": "python",
+                    "agent_findings": {
+                        "code_quality": {
+                            "issues": [
+                                {
+                                    "description": "Olmayan satir iddiasi",
+                                    "severity": "high",
+                                }
+                            ]
+                        }
+                    },
+                }
+            )
+
+        self.assertEqual(result["validated_claims"], [])
+        self.assertEqual(result["total_claims_validated"], 0)
+        self.assertEqual(len(result["rejected_claims"]), 1)
+        self.assertEqual(result["rejected_claims"][0]["agent_source"], "code_quality")
+        self.assertIn("Somut kod kaniti", result["rejected_claims"][0]["reason"])
 
 
 class CodeComplexityContractTests(unittest.TestCase):

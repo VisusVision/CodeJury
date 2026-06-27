@@ -14,7 +14,7 @@ import ast
 import json
 import re
 
-from backend.agents.base import BaseAgent, build_llm_user_suffix, format_assignment_context_for_prompt
+from backend.agents.base import BaseAgent, LLMInferenceError, build_llm_user_suffix, format_assignment_context_for_prompt
 from backend.agents.json_output_schema import SECURITY_OUTPUT_SCHEMA
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -202,21 +202,28 @@ class SecurityAgent(BaseAgent):
             f"{build_llm_user_suffix(report_language=report_language)}"
         )
 
-        llm_result = await self._call_llm(
-            system_prompt=_SECURITY_SYSTEM_PROMPT,
-            user_prompt=user_prompt,
-            required_keys=[
-                "threats",
-                "risk_level",
-                "safe",
-                "total_threats",
-                "critical_count",
-                "high_count",
-                "blocked_imports",
-                "score",
-            ],
-            output_json_schema=SECURITY_OUTPUT_SCHEMA,
-        )
+        try:
+            llm_result = await self._call_llm(
+                system_prompt=_SECURITY_SYSTEM_PROMPT,
+                user_prompt=user_prompt,
+                required_keys=[
+                    "threats",
+                    "risk_level",
+                    "safe",
+                    "total_threats",
+                    "critical_count",
+                    "high_count",
+                    "blocked_imports",
+                    "score",
+                ],
+                output_json_schema=SECURITY_OUTPUT_SCHEMA,
+            )
+        except LLMInferenceError as exc:
+            return self._with_contract_metadata(
+                {**programmatic, "llm_error": str(exc)[:300]},
+                llm_status="fallback",
+                guardrail_flags=["llm_inference_fallback"],
+            )
 
         llm_th = llm_result.get("threats")
         if not isinstance(llm_th, list):

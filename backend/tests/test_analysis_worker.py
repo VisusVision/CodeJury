@@ -2,10 +2,10 @@ import asyncio
 import unittest
 from unittest.mock import AsyncMock, patch
 
-from backend.queue.analysis_jobs import AnalysisJobStore, create_analysis_job, get_analysis_job
 from backend.agents.base import LLMInferenceError
-from backend.workers import analysis_worker
+from backend.queue.analysis_jobs import AnalysisJobStore, create_analysis_job, get_analysis_job
 from backend.tests.test_analysis_jobs import FakeRedis
+from backend.workers import analysis_worker
 from backend.workers.analysis_worker import process_analysis_job
 
 
@@ -41,8 +41,34 @@ class AnalysisWorkerTests(unittest.IsolatedAsyncioTestCase):
         job = await get_analysis_job(self.store, "job-123")
         self.assertEqual(job["status"], "completed")
         self.assertEqual(job["result"], {"totalScore": 91})
+        self.assertEqual(job["report_status"], "ready")
         self.assertEqual(calls[0]["file_name"], "main.py")
         self.assertEqual(calls[0]["assignment_brief"], "Write a Python program.")
+
+    async def test_process_analysis_job_publishes_partial_result_before_completion(self):
+        await create_analysis_job(
+            self.store,
+            {
+                "file_name": "main.py",
+                "file_content": "print('ok')",
+                "report_language": "tr",
+            },
+        )
+
+        async def pipeline(**kwargs):
+            progress_callback = kwargs["progress_callback"]
+            await progress_callback({"totalScore": 61, "reportStatus": "preparing"})
+            preview_job = await get_analysis_job(self.store, "job-123")
+            self.assertEqual(preview_job["status"], "running")
+            self.assertEqual(preview_job["report_status"], "preparing")
+            self.assertEqual(preview_job["result"]["totalScore"], 61)
+            return {"totalScore": 84, "reportStatus": "ready"}
+
+        job = await process_analysis_job(self.store, "job-123", pipeline=pipeline)
+
+        self.assertEqual(job["status"], "completed")
+        self.assertEqual(job["report_status"], "ready")
+        self.assertEqual(job["result"]["totalScore"], 84)
 
     async def test_process_analysis_job_marks_failed_when_pipeline_raises(self):
         await create_analysis_job(self.store, {"file_name": "main.py", "file_content": "bad"})
