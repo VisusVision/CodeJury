@@ -29,6 +29,9 @@ _DEMO_DEPARTMENT_ID = "33333333-3333-4333-8333-333333333333"
 _DEMO_COURSE_ID = "44444444-4444-4444-8444-444444444444"
 _DEMO_STUDENT_NO = "20240001"
 _DEMO_STUDENT_TC = "11111111111"
+_DEMO_STUDENT_PASSWORD = "demo123"
+_EMRETEST_STUDENT_NO = "230501013"
+_EMRETEST_STUDENT_PASSWORD = "emre123"
 _DEMO_TEACHER_EMAIL = "demo@agentgrade.local"
 _DEMO_TEACHER_PASSWORD = "demo123"
 
@@ -43,6 +46,9 @@ class ApiEndpointTests(unittest.TestCase):
         main._DEMO_STORE["teachers"][0]["password_hash"] = main._hash_password(
             _DEMO_TEACHER_PASSWORD
         )
+        for student in main._DEMO_STORE["students"]:
+            if student["student_no"] == _DEMO_STUDENT_NO:
+                student["password_hash"] = main._hash_password(_DEMO_STUDENT_PASSWORD)
         # Disk yazimini engelle (gercek .demo_store.json'a dokunma).
         cls._save_patcher = patch.object(main, "_save_demo_store_to_disk", lambda: None)
         cls._save_patcher.start()
@@ -129,17 +135,32 @@ class ApiEndpointTests(unittest.TestCase):
     def test_student_login_valid(self):
         resp = self.client.post(
             "/api/student/login",
-            json={"student_no": _DEMO_STUDENT_NO, "tc_no": _DEMO_STUDENT_TC},
+            json={"student_no": _DEMO_STUDENT_NO, "password": _DEMO_STUDENT_PASSWORD},
         )
         self.assertEqual(resp.status_code, 200)
         self.assertEqual(resp.json()["student_no"], _DEMO_STUDENT_NO)
 
-    def test_student_login_wrong_tc_returns_404(self):
+    def test_student_login_wrong_password_returns_401(self):
         resp = self.client.post(
             "/api/student/login",
-            json={"student_no": _DEMO_STUDENT_NO, "tc_no": "00000000000"},
+            json={"student_no": _DEMO_STUDENT_NO, "password": "yanlis"},
         )
-        self.assertEqual(resp.status_code, 404)
+        self.assertEqual(resp.status_code, 401)
+
+    def test_student_login_rejects_legacy_tc_payload(self):
+        resp = self.client.post(
+            "/api/student/login",
+            json={"student_no": _DEMO_STUDENT_NO, "tc_no": _DEMO_STUDENT_TC},
+        )
+        self.assertEqual(resp.status_code, 422)
+
+    def test_student_login_emretest_password(self):
+        resp = self.client.post(
+            "/api/student/login",
+            json={"student_no": _EMRETEST_STUDENT_NO, "password": _EMRETEST_STUDENT_PASSWORD},
+        )
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.json()["student_no"], _EMRETEST_STUDENT_NO)
 
     # ── Teacher auth ────────────────────────────────────────────────────────────
     def test_teacher_register_valid(self):

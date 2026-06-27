@@ -9,7 +9,7 @@ Cikti:  CodeQualityOutput dict
 
 import json
 
-from backend.agents.base import BaseAgent, build_llm_user_suffix, format_assignment_context_for_prompt
+from backend.agents.base import BaseAgent, LLMInferenceError, build_llm_user_suffix, format_assignment_context_for_prompt
 from backend.agents.json_output_schema import CODE_QUALITY_OUTPUT_SCHEMA
 from backend.agents.code_utils import get_code_metrics, strip_comments
 
@@ -168,12 +168,19 @@ class CodeQualityAgent(BaseAgent):
             f"{build_llm_user_suffix(report_language=report_language)}"
         )
 
-        llm_result = await self._call_llm(
-            system_prompt=_SYSTEM_PROMPT,
-            user_prompt=user_prompt,
-            required_keys=["time_complexity", "score"],
-            output_json_schema=CODE_QUALITY_OUTPUT_SCHEMA,
-        )
+        try:
+            llm_result = await self._call_llm(
+                system_prompt=_SYSTEM_PROMPT,
+                user_prompt=user_prompt,
+                required_keys=["time_complexity", "score"],
+                output_json_schema=CODE_QUALITY_OUTPUT_SCHEMA,
+            )
+        except LLMInferenceError as exc:
+            return self._with_contract_metadata(
+                {**programmatic, "llm_error": str(exc)[:300]},
+                llm_status="fallback",
+                guardrail_flags=["llm_inference_fallback"],
+            )
 
         llm_result["score"] = self._safe_int(llm_result.get("score"), 50)
         if not isinstance(llm_result.get("issues"), list):

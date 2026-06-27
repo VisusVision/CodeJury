@@ -9,6 +9,7 @@ from backend.queue.analysis_jobs import (
     get_analysis_job,
     mark_analysis_job_completed,
     mark_analysis_job_running,
+    update_analysis_job_result,
 )
 
 
@@ -80,9 +81,26 @@ class AnalysisJobStoreTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(job["status"], "completed")
         self.assertEqual(job["result"], {"totalScore": 95})
+        self.assertEqual(job["report_status"], "ready")
         self.assertEqual(job["attempts"], 1)
         self.assertIn("started_at", job)
         self.assertIn("finished_at", job)
+
+    async def test_running_job_can_expose_partial_result_before_completion(self):
+        await create_analysis_job(self.store, {"file_name": "main.py"})
+
+        await mark_analysis_job_running(self.store, "job-123")
+        await update_analysis_job_result(
+            self.store,
+            "job-123",
+            {"totalScore": 72, "reportStatus": "preparing"},
+            report_status="preparing",
+        )
+        job = await get_analysis_job(self.store, "job-123")
+
+        self.assertEqual(job["status"], "running")
+        self.assertEqual(job["report_status"], "preparing")
+        self.assertEqual(job["result"], {"totalScore": 72, "reportStatus": "preparing"})
 
     async def test_failed_update_stores_safe_error(self):
         await create_analysis_job(self.store, {"file_name": "main.py"})

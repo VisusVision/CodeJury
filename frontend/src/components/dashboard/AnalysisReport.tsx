@@ -55,6 +55,23 @@ interface AgentReport {
 
 type LineEvidence = EvidenceItem;
 
+export interface ResourceRecommendation {
+  title: string;
+  url: string;
+  reason: string;
+  resourceType: "docs" | "tutorial" | "video" | "practice";
+  priority: "high" | "medium";
+}
+
+export interface TaskAlignment {
+  factor: number;
+  programmatic_factor?: number;
+  llm_factor?: number | null;
+  llm_off_topic: boolean;
+  reasons: string[];
+  capability_match?: number;
+}
+
 export interface ReportData {
   totalScore: number;
   maxScore: number;
@@ -67,8 +84,15 @@ export interface ReportData {
   executionTimeMs: number;
   memoryUsageMb: number;
   peakMemoryMb: number;
+  summary?: string;
+  strengths?: string[];
+  weaknesses?: string[];
+  recommendations?: string[];
+  resourceRecommendations?: ResourceRecommendation[];
   /** Düşük not + zayıf görev uyumu uyarısı (API) */
   relevanceScoreWarning?: string | null;
+  taskAlignment?: TaskAlignment;
+  reportStatus?: "preparing" | "ready";
 }
 
 /* ─── Mock report generator ─── */
@@ -195,7 +219,23 @@ export function generateMockReport(fileName: string, fileContent: string): Repor
   const memoryUsageMb = Math.round((Math.random() * 80 + 20) * 10) / 10;
   const peakMemoryMb = Math.round((memoryUsageMb + Math.random() * 40) * 10) / 10;
 
-  return { totalScore, maxScore, rubric, agents, evidence: evidenceLines, fileName, fileContent, executionTimeMs, memoryUsageMb, peakMemoryMb };
+  return {
+    totalScore,
+    maxScore,
+    rubric,
+    agents,
+    evidence: evidenceLines,
+    fileName,
+    fileContent,
+    executionTimeMs,
+    memoryUsageMb,
+    peakMemoryMb,
+    summary: "Genel olarak odev beklentisini karsilayan bir cozum var; yine de bazi alanlarda gelistirme firsati bulunuyor.",
+    strengths: ["Temel is akisinin ana hatlari kurulmus."],
+    weaknesses: ["Bazi bolumlerde daha acik hata yonetimi ve test kapsami gerekli."],
+    recommendations: ["Kenar durumlari icin ilave test ekleyin."],
+    resourceRecommendations: [],
+  };
 }
 
 /* ─── Sub-components ─── */
@@ -479,6 +519,67 @@ const AnalysisReport = ({ report, onClose }: AnalysisReportProps) => {
           >
             <AlertTriangle className="h-5 w-5 shrink-0 text-amber-600 dark:text-amber-400 mt-0.5" />
             <p className="leading-relaxed">{report.relevanceScoreWarning}</p>
+          </div>
+        ) : null}
+
+        {report.summary || (report.strengths?.length ?? 0) > 0 || (report.weaknesses?.length ?? 0) > 0 || (report.recommendations?.length ?? 0) > 0 ? (
+          <div className="rounded-xl bg-card shadow-card p-6 space-y-4">
+            {report.summary ? (
+              <div>
+                <h3 className="text-sm font-semibold text-foreground">Genel Değerlendirme</h3>
+                <p className="text-sm text-muted-foreground mt-2 leading-relaxed">{report.summary}</p>
+              </div>
+            ) : null}
+            {report.strengths?.length ? (
+              <div>
+                <h3 className="text-sm font-semibold text-foreground">Güçlü Yönler</h3>
+                <ul className="mt-2 space-y-1 text-sm text-muted-foreground list-disc pl-5">
+                  {report.strengths.map((item) => <li key={`strength-${item}`}>{item}</li>)}
+                </ul>
+              </div>
+            ) : null}
+            {report.weaknesses?.length ? (
+              <div>
+                <h3 className="text-sm font-semibold text-foreground">Geliştirilmesi Gereken Yönler</h3>
+                <ul className="mt-2 space-y-1 text-sm text-muted-foreground list-disc pl-5">
+                  {report.weaknesses.map((item) => <li key={`weakness-${item}`}>{item}</li>)}
+                </ul>
+              </div>
+            ) : null}
+            {report.recommendations?.length ? (
+              <div>
+                <h3 className="text-sm font-semibold text-foreground">Yapılacaklar / Öneriler</h3>
+                <ul className="mt-2 space-y-1 text-sm text-muted-foreground list-disc pl-5">
+                  {report.recommendations.map((item) => <li key={`recommendation-${item}`}>{item}</li>)}
+                </ul>
+              </div>
+            ) : null}
+          </div>
+        ) : null}
+
+        {report.resourceRecommendations?.length ? (
+          <div className="rounded-xl bg-card shadow-card p-6">
+            <h3 className="text-sm font-semibold text-foreground">Öğrenci İçin Kaynak Önerileri</h3>
+            <div className="mt-3 grid gap-3 sm:grid-cols-2">
+              {report.resourceRecommendations.map((item) => (
+                <a
+                  key={item.url}
+                  href={item.url}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="rounded-xl border border-primary/15 bg-primary/5 p-4 transition-colors hover:border-primary/35"
+                >
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="text-sm font-semibold text-foreground">{item.title}</div>
+                    <span className="rounded-full bg-background px-2 py-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+                      {item.priority}
+                    </span>
+                  </div>
+                  <p className="mt-2 text-xs text-muted-foreground leading-relaxed">{item.reason}</p>
+                  <p className="mt-3 break-all text-[11px] text-primary">{item.url}</p>
+                </a>
+              ))}
+            </div>
           </div>
         ) : null}
 

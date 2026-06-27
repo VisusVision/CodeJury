@@ -95,7 +95,7 @@ async def get_analysis_job(store: AnalysisJobStore, job_id: str) -> dict[str, An
         "updated_at": decoded.get("updated_at"),
         "attempts": int(decoded.get("attempts") or 0),
     }
-    for field in ("started_at", "finished_at", "error"):
+    for field in ("started_at", "finished_at", "error", "report_status"):
         if decoded.get(field):
             job[field] = decoded[field]
     request = _loads_optional(decoded.get("request"))
@@ -113,7 +113,29 @@ async def mark_analysis_job_running(store: AnalysisJobStore, job_id: str) -> dic
     now = store.clock()
     await store.redis.hset(
         store.key(job_id),
-        mapping={"status": "running", "started_at": now, "updated_at": now, "attempts": attempts},
+        mapping={
+            "status": "running",
+            "started_at": now,
+            "updated_at": now,
+            "attempts": attempts,
+            "report_status": "preparing",
+        },
+    )
+    await store.redis.expire(store.key(job_id), store.job_ttl_seconds)
+    return await get_analysis_job(store, job_id)
+
+
+async def update_analysis_job_result(
+    store: AnalysisJobStore,
+    job_id: str,
+    result: dict[str, Any],
+    *,
+    report_status: str = "preparing",
+) -> dict[str, Any]:
+    now = store.clock()
+    await store.redis.hset(
+        store.key(job_id),
+        mapping={"result": _json_dumps(result), "report_status": report_status, "updated_at": now},
     )
     await store.redis.expire(store.key(job_id), store.job_ttl_seconds)
     return await get_analysis_job(store, job_id)
@@ -123,7 +145,13 @@ async def mark_analysis_job_completed(store: AnalysisJobStore, job_id: str, resu
     now = store.clock()
     await store.redis.hset(
         store.key(job_id),
-        mapping={"status": "completed", "result": _json_dumps(result), "finished_at": now, "updated_at": now},
+        mapping={
+            "status": "completed",
+            "result": _json_dumps(result),
+            "finished_at": now,
+            "updated_at": now,
+            "report_status": "ready",
+        },
     )
     await store.redis.expire(store.key(job_id), store.job_ttl_seconds)
     return await get_analysis_job(store, job_id)

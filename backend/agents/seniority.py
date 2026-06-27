@@ -9,7 +9,7 @@ Cikti:  SeniorityOutput dict
 
 import json
 
-from backend.agents.base import BaseAgent, build_llm_user_suffix, format_assignment_context_for_prompt
+from backend.agents.base import BaseAgent, LLMInferenceError, build_llm_user_suffix, format_assignment_context_for_prompt
 from backend.agents.code_utils import get_code_metrics, strip_comments
 from backend.agents.json_output_schema import SENIORITY_OUTPUT_SCHEMA
 
@@ -91,22 +91,29 @@ class SeniorityAgent(BaseAgent):
             f"{build_llm_user_suffix(report_language=report_language)}"
         )
 
-        llm_result = await self._call_llm(
-            system_prompt=_SENIORITY_SYSTEM_PROMPT,
-            user_prompt=user_prompt,
-            required_keys=[
-                "estimated_level",
-                "modern_features_usage",
-                "error_handling_quality",
-                "abstraction_quality",
-                "design_patterns",
-                "maturity_indicators",
-                "immaturity_indicators",
-                "idiomatic_usage_score",
-                "score",
-            ],
-            output_json_schema=SENIORITY_OUTPUT_SCHEMA,
-        )
+        try:
+            llm_result = await self._call_llm(
+                system_prompt=_SENIORITY_SYSTEM_PROMPT,
+                user_prompt=user_prompt,
+                required_keys=[
+                    "estimated_level",
+                    "modern_features_usage",
+                    "error_handling_quality",
+                    "abstraction_quality",
+                    "design_patterns",
+                    "maturity_indicators",
+                    "immaturity_indicators",
+                    "idiomatic_usage_score",
+                    "score",
+                ],
+                output_json_schema=SENIORITY_OUTPUT_SCHEMA,
+            )
+        except LLMInferenceError as exc:
+            return self._with_contract_metadata(
+                {**programmatic, "llm_error": str(exc)[:300]},
+                llm_status="fallback",
+                guardrail_flags=["llm_inference_fallback"],
+            )
 
         llm_result["score"] = self._safe_int(llm_result.get("score"), 50)
         if "idiomatic_usage_score" in llm_result:

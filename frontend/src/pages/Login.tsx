@@ -15,7 +15,7 @@ const Login = () => {
 
   // Student state
   const [studentNo, setStudentNo] = useState("");
-  const [tcNo, setTcNo] = useState("");
+  const [studentPassword, setStudentPassword] = useState("");
 
   // Teacher state
   const [email, setEmail] = useState("");
@@ -31,13 +31,13 @@ const Login = () => {
   const handleStudentLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     setError("");
-    if (!studentNo.trim() || !tcNo.trim()) {
+    if (!studentNo.trim() || !studentPassword.trim()) {
       setError(t("login.studentNotFound"));
       return;
     }
     setLoading(true);
     try {
-      const student = await loginStudent(studentNo.trim(), tcNo.trim());
+      const student = await loginStudent(studentNo.trim(), studentPassword.trim());
       if (!student) {
         setError(t("login.studentNotFound"));
         setLoading(false);
@@ -145,11 +145,11 @@ const Login = () => {
               />
             </div>
             <div>
-              <label className="block text-sm font-medium text-foreground mb-1.5">{t("login.tcNo")}</label>
+              <label className="block text-sm font-medium text-foreground mb-1.5">{t("login.password")}</label>
               <input
                 type="password"
-                value={tcNo}
-                onChange={(e) => setTcNo(e.target.value)}
+                value={studentPassword}
+                onChange={(e) => setStudentPassword(e.target.value)}
                 placeholder="•••••••••••"
                 className="w-full px-3 py-2.5 rounded-lg border border-input bg-background text-foreground text-sm placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring"
               />

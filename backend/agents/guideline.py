@@ -11,7 +11,7 @@ import json
 import re
 from typing import Any
 
-from backend.agents.base import BaseAgent, build_llm_user_suffix, format_assignment_context_for_prompt
+from backend.agents.base import BaseAgent, LLMInferenceError, build_llm_user_suffix, format_assignment_context_for_prompt
 from backend.agents.code_utils import get_code_metrics, strip_comments
 from backend.agents.json_output_schema import GUIDELINE_OUTPUT_SCHEMA, normalize_agent_severity
 
@@ -171,24 +171,31 @@ class GuidelineAgent(BaseAgent):
             f"{build_llm_user_suffix(report_language=report_language)}"
         )
 
-        llm_result = await self._call_llm(
-            system_prompt=_GUIDELINE_SYSTEM_PROMPT,
-            user_prompt=user_prompt,
-            required_keys=[
-                "naming_quality",
-                "documentation_quality",
-                "clean_code_score",
-                "style_guide_compliance",
-                "style_violations",
-                "has_docstrings",
-                "has_type_hints",
-                "function_length_ok",
-                "nesting_depth_ok",
-                "dry_violations",
-                "score",
-            ],
-            output_json_schema=GUIDELINE_OUTPUT_SCHEMA,
-        )
+        try:
+            llm_result = await self._call_llm(
+                system_prompt=_GUIDELINE_SYSTEM_PROMPT,
+                user_prompt=user_prompt,
+                required_keys=[
+                    "naming_quality",
+                    "documentation_quality",
+                    "clean_code_score",
+                    "style_guide_compliance",
+                    "style_violations",
+                    "has_docstrings",
+                    "has_type_hints",
+                    "function_length_ok",
+                    "nesting_depth_ok",
+                    "dry_violations",
+                    "score",
+                ],
+                output_json_schema=GUIDELINE_OUTPUT_SCHEMA,
+            )
+        except LLMInferenceError as exc:
+            return self._with_contract_metadata(
+                {**programmatic, "llm_error": str(exc)[:300]},
+                llm_status="fallback",
+                guardrail_flags=["llm_inference_fallback"],
+            )
         if not isinstance(llm_result, dict):
             llm_result = {}
 

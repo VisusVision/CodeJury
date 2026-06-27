@@ -63,6 +63,23 @@ export interface ApiRejectedClaim {
   reason: string;
 }
 
+export interface ApiResourceRecommendation {
+  title: string;
+  url: string;
+  reason: string;
+  resourceType: "docs" | "tutorial" | "video" | "practice";
+  priority: "high" | "medium";
+}
+
+export interface ApiTaskAlignment {
+  factor: number;
+  programmatic_factor?: number;
+  llm_factor?: number | null;
+  llm_off_topic: boolean;
+  reasons: string[];
+  capability_match?: number;
+}
+
 export interface ApiAnalysisResult {
   totalScore: number;
   maxScore: number;
@@ -76,8 +93,15 @@ export interface ApiAnalysisResult {
   peakMemoryMb: number;
   /** Backend rubrik duzeltmeleri; sessionStorage surumu ile eslestirmek icin */
   analysisEngine?: string;
+  summary?: string;
+  strengths?: string[];
+  weaknesses?: string[];
+  recommendations?: string[];
+  resourceRecommendations?: ApiResourceRecommendation[];
   /** Dusuk not + zayif gorev uyumu (backend kosullu) */
   relevanceScoreWarning?: string | null;
+  taskAlignment?: ApiTaskAlignment;
+  reportStatus?: "preparing" | "ready";
 }
 
 interface AnalysisJobAccepted {
@@ -88,8 +112,15 @@ interface AnalysisJobAccepted {
 interface AnalysisJobStatus {
   job_id: string;
   status: "queued" | "running" | "completed" | "failed";
+  updated_at?: string;
+  report_status?: "preparing" | "ready";
   result?: ApiAnalysisResult;
   error?: string;
+}
+
+interface AnalysisJobProgressMeta {
+  status: AnalysisJobStatus["status"];
+  reportStatus: "preparing" | "ready";
 }
 
 export interface Student {
@@ -292,7 +323,12 @@ function isAnalysisJobAccepted(value: unknown): value is AnalysisJobAccepted {
   return typeof record.job_id === "string" && (record.status === "queued" || record.status === "running");
 }
 
-async function pollAnalysisJob(jobId: string, signal?: AbortSignal): Promise<ApiAnalysisResult> {
+async function pollAnalysisJob(
+  jobId: string,
+  signal?: AbortSignal,
+  onProgress?: (result: ApiAnalysisResult, meta: AnalysisJobProgressMeta) => void,
+): Promise<ApiAnalysisResult> {
+  let lastProgressToken = "";
   for (let attempt = 0; attempt < ANALYSIS_POLL_MAX_ATTEMPTS; attempt += 1) {
     if (signal?.aborted) {
       throw new DOMException("Analiz iptal edildi.", "AbortError");
@@ -309,11 +345,30 @@ async function pollAnalysisJob(jobId: string, signal?: AbortSignal): Promise<Api
       throw new Error(apiErrorMessage(errorText, `Analiz durumu alinamadi (${response.status})`));
     }
     const job = (await response.json()) as AnalysisJobStatus;
+    if (job.result && onProgress) {
+      const progressToken = `${job.status}:${job.report_status || job.result.reportStatus || "preparing"}:${job.updated_at || attempt}`;
+      if (progressToken !== lastProgressToken) {
+        lastProgressToken = progressToken;
+        onProgress(
+          {
+            ...job.result,
+            reportStatus: job.result.reportStatus || job.report_status || (job.status === "completed" ? "ready" : "preparing"),
+          },
+          {
+            status: job.status,
+            reportStatus: job.report_status || job.result.reportStatus || (job.status === "completed" ? "ready" : "preparing"),
+          },
+        );
+      }
+    }
     if (job.status === "completed") {
       if (!job.result) {
         throw new Error("Analiz tamamlandi ancak sonuc alinamadi.");
       }
-      return job.result;
+      return {
+        ...job.result,
+        reportStatus: job.result.reportStatus || job.report_status || "ready",
+      };
     }
     if (job.status === "failed") {
       throw new Error(job.error || "Analiz tamamlanamadi. Lutfen tekrar deneyin.");
@@ -329,6 +384,7 @@ export async function analyzeCode(
   reportLanguage?: string,
   studentNo?: string,
   signal?: AbortSignal,
+  onProgress?: (result: ApiAnalysisResult, meta: AnalysisJobProgressMeta) => void,
 ): Promise<ApiAnalysisResult> {
   let response: Response;
   try {
@@ -361,7 +417,7 @@ export async function analyzeCode(
 
   const payload = await response.json();
   if (isAnalysisJobAccepted(payload)) {
-    return pollAnalysisJob(payload.job_id, signal);
+    return pollAnalysisJob(payload.job_id, signal, onProgress);
   }
   return payload as ApiAnalysisResult;
 }
@@ -375,14 +431,14 @@ export async function checkHealth(): Promise<boolean> {
   }
 }
 
-export async function loginStudent(studentNo: string, tcNo: string): Promise<Student | null> {
+export async function loginStudent(studentNo: string, password: string): Promise<Student | null> {
   const response = await fetch(`${API_BASE_URL}/api/student/login`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ student_no: studentNo, tc_no: tcNo }),
+    body: JSON.stringify({ student_no: studentNo, password }),
   });
 
-  if (response.status === 404) return null;
+  if (response.status === 401 || response.status === 404) return null;
 
   if (!response.ok) {
     const errorText = await response.text();

@@ -160,6 +160,7 @@ class BaseAgent(ABC):
             raise LLMInferenceError(f"[{self.name}] LLM returned an empty or unparseable response.")
 
         repaired = False
+        schema_repair_count = 0
         guardrail_flags: list[str] = []
         if required_keys:
             result = self._unwrap_required_response(result, required_keys)
@@ -170,6 +171,7 @@ class BaseAgent(ABC):
                 if not missing:
                     break
                 repaired = True
+                schema_repair_count += 1
                 guardrail_flags.append("missing_required_keys_repair")
                 logger.warning(
                     "[%s] LLM yanitinda eksik alanlar: %s; onarim denemesi %d/%d",
@@ -228,6 +230,7 @@ class BaseAgent(ABC):
                         + "; ".join(schema_msgs[:8])
                     )
                 repaired = True
+                schema_repair_count += 1
                 guardrail_flags.append("json_schema_repair")
                 logger.warning(
                     "[%s] JSON Schema ihlali; onarim denemesi %d/%d: %s",
@@ -274,6 +277,7 @@ class BaseAgent(ABC):
             result,
             llm_status="repaired" if repaired else "ok",
             guardrail_flags=guardrail_flags,
+            schema_repair_count=schema_repair_count,
         )
 
     @staticmethod
@@ -282,6 +286,7 @@ class BaseAgent(ABC):
         *,
         llm_status: str,
         guardrail_flags: list[str] | None = None,
+        schema_repair_count: int = 0,
     ) -> dict[str, Any]:
         """Attach common, non-breaking agent metadata."""
         if not isinstance(result, dict):
@@ -296,6 +301,11 @@ class BaseAgent(ABC):
             if flag not in flags:
                 flags.append(flag)
         out["guardrail_flags"] = flags
+        try:
+            existing_repair_count = int(out.get("schema_repair_count") or 0)
+        except (TypeError, ValueError):
+            existing_repair_count = 0
+        out["schema_repair_count"] = max(existing_repair_count, int(schema_repair_count or 0))
         # Confidence: yalnizca LLM gercekten 0-1 araliginda bir deger verdiyse koru.
         # Aksi halde yaniltici sahte 0.0 yerine None birak (UI gizler, JSON dururst kalir).
         conf = out.get("confidence")

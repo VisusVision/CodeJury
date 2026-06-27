@@ -251,21 +251,23 @@ class TestAgent(BaseAgent):
                 output_json_schema=TEST_AGENT_OUTPUT_SCHEMA,
             )
         except LLMInferenceError as exc:
-            llm_result = {
-                "compilation_success": programmatic["compilation_success"],
-                "runs_successfully": programmatic["runs_successfully"],
-                "passed_tests": programmatic["passed_tests"],
-                "failed_tests": programmatic["failed_tests"],
-                "test_failures": list(programmatic.get("test_failures") or []),
-                "runtime_errors": list(programmatic.get("runtime_errors") or []),
-                "edge_case_handling": programmatic.get("edge_case_handling", "fair"),
-                "edge_cases_observed": [],
-                "performance_notes": programmatic.get("performance_notes", ""),
-                "score": programmatic["score"],
-                "llm_status": "fallback",
-                "guardrail_flags": ["llm_inference_fallback"],
-                "llm_error": str(exc)[:300],
-            }
+            llm_result = self._with_contract_metadata(
+                {
+                    "compilation_success": programmatic["compilation_success"],
+                    "runs_successfully": programmatic["runs_successfully"],
+                    "passed_tests": programmatic["passed_tests"],
+                    "failed_tests": programmatic["failed_tests"],
+                    "test_failures": list(programmatic.get("test_failures") or []),
+                    "runtime_errors": list(programmatic.get("runtime_errors") or []),
+                    "edge_case_handling": programmatic.get("edge_case_handling", "fair"),
+                    "edge_cases_observed": [],
+                    "performance_notes": programmatic.get("performance_notes", ""),
+                    "score": programmatic["score"],
+                    "llm_error": str(exc)[:300],
+                },
+                llm_status="fallback",
+                guardrail_flags=["llm_inference_fallback"],
+            )
 
         # Sandbox-olgusal alanlar: her zaman programatik (hallucinasyonu onler)
         llm_result["compilation_success"] = programmatic["compilation_success"]
