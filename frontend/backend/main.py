@@ -4274,16 +4274,21 @@ async def _run_analysis_pipeline_body(
     # ---- Frontend ApiAnalysisResult formatina donustur ----
 
     # Rubric
+    faculty_mode = bool(fac)
     rubric = []
     for item in final.get("rubric_breakdown", []):
         w = int(item.get("weight", 100))
         raw_score = float(item.get("score", 0))
-        # Default evaluator rows use 0..100 scores, faculty rows use 0..weight points.
-        # The frontend expects points against maxScore=weight, so normalize percent-like rows.
-        if w > 0 and raw_score > w:
-            item_score = int(round(raw_score * w / 100.0))
+        # Faculty rows store earned points (0..weight). Default rows store 0..100 row percents.
+        if faculty_mode:
+            if w > 0 and raw_score > w + 0.5:
+                item_score = int(round(raw_score * w / 100.0))
+            else:
+                item_score = int(round(raw_score))
+        elif w > 0:
+            item_score = int(round(max(0.0, min(100.0, raw_score)) * w / 100.0))
         else:
-            item_score = int(round(raw_score))
+            item_score = 0
         item_score = max(0, min(w, item_score))
         rubric.append({
             "name": item.get("label", item.get("criterion", "")),
@@ -4292,15 +4297,37 @@ async def _run_analysis_pipeline_body(
             "maxScore": w,
         })
 
+    total_score = final.get("final_score", 0)
+    total_score_rounded = int(round(float(total_score or 0)))
+    rubric_points = sum(int(row.get("score", 0) or 0) for row in rubric)
+    if rubric and abs(rubric_points - total_score_rounded) > 4:
+        target = max(0, total_score_rounded)
+        excess = rubric_points - target
+        if excess > 0:
+            adjustable = [
+                row for row in rubric
+                if row.get("score", 0) > 0
+                and "guven" not in str(row.get("name", "")).lower()
+                and "security" not in str(row.get("name", "")).lower()
+            ]
+            adjustable.sort(key=lambda row: int(row.get("score", 0) or 0), reverse=True)
+            while excess > 0 and adjustable:
+                for row in adjustable:
+                    if excess <= 0:
+                        break
+                    score = int(row.get("score", 0) or 0)
+                    if score <= 0:
+                        continue
+                    row["score"] = score - 1
+                    excess -= 1
+                adjustable = [row for row in adjustable if int(row.get("score", 0) or 0) > 0]
+
     # Agent raporlari
     agents_list = _build_agents_list(cq, sn, gl, sc, ta, ev, alg, auth)
 
     # Line evidence
     evidence_lines = _build_line_evidence(cq, gl, sc, ev, file_content, task_alignment=task_alignment)
     rejected_claims = _build_rejected_claims_response(ev)
-
-    total_score = final.get("final_score", 0)
-    total_score_rounded = int(round(float(total_score or 0)))
 
     _ctx = "\n".join(
         x for x in (brief, _rubric_criteria_text(fac if fac else None)) if x
