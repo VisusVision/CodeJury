@@ -670,6 +670,37 @@ class AgentDiagnosticsContractTests(unittest.TestCase):
         self.assertEqual(len(evidence), 2)
         self.assertTrue(all(item["severity"] in {"success", "info"} for item in evidence))
 
+    def test_line_evidence_off_topic_positive_claims_are_warning_not_success(self):
+        code = (
+            "def fibonacci(n):\n"
+            "    return n if n < 2 else fibonacci(n - 1) + fibonacci(n - 2)\n"
+        )
+        task_alignment = {
+            "factor": 0.12,
+            "llm_off_topic": True,
+            "capability_match": 0.05,
+            "reasons": ["llm_task_relevance_off_topic"],
+        }
+        evidence = _build_line_evidence(
+            {"issues": []},
+            {"style_violations": []},
+            {"threats": []},
+            {
+                "validated_claims": [
+                    {
+                        "feedback": "Kod dogru bir sekilde fibonacci hesapliyor.",
+                        "severity": "high",
+                        "lines": [1],
+                        "agent_source": "code_quality",
+                    }
+                ]
+            },
+            code,
+            task_alignment=task_alignment,
+        )
+        self.assertEqual(len(evidence), 1)
+        self.assertEqual(evidence[0]["severity"], "warning")
+
     def test_line_evidence_ignores_out_of_range_and_duplicate_findings(self):
         evidence = _build_line_evidence(
             {"issues": []},

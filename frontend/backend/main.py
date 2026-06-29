@@ -3143,6 +3143,19 @@ def _map_severity_for_message(sev: str, message: str = "") -> str:
     return mapped
 
 
+def _is_off_topic_evidence_context(task_alignment: dict | None) -> bool:
+    from backend.agents.evidence import _is_off_topic_task_alignment
+
+    return _is_off_topic_task_alignment(task_alignment)
+
+
+def _map_line_evidence_severity(sev: str, message: str, *, off_topic: bool) -> str:
+    mapped = _map_severity_for_message(sev, message)
+    if off_topic and mapped == "success":
+        return "warning"
+    return mapped
+
+
 def _line_from_text(raw: Any) -> int | None:
     text = str(raw or "")
     match = re.search(r"(\d+)", text)
@@ -4219,6 +4232,7 @@ async def _run_analysis_pipeline_body(
         "language": language,
         "report_language": report_language,
         "assignment_description": brief,
+        "task_alignment": task_alignment,
         "agent_findings": {
             "code_quality": cq,
             "algorithm": alg,
@@ -4282,7 +4296,7 @@ async def _run_analysis_pipeline_body(
     agents_list = _build_agents_list(cq, sn, gl, sc, ta, ev, alg, auth)
 
     # Line evidence
-    evidence_lines = _build_line_evidence(cq, gl, sc, ev, file_content)
+    evidence_lines = _build_line_evidence(cq, gl, sc, ev, file_content, task_alignment=task_alignment)
     rejected_claims = _build_rejected_claims_response(ev)
 
     total_score = final.get("final_score", 0)
@@ -4746,13 +4760,14 @@ def _build_agents_list(cq, sn, gl, sc, ta, ev, alg=None, auth=None) -> list[dict
     return _normalize_agents_for_frontend(agents)
 
 
-def _build_line_evidence(cq, gl, sc, ev, source_code: str) -> list[dict]:
+def _build_line_evidence(cq, gl, sc, ev, source_code: str, *, task_alignment: dict | None = None) -> list[dict]:
     """Satir bazli evidence listesi olustur (frontend code editor icin)."""
     evidence = []
     seen: set[tuple[int, str]] = set()
     seen_semantic: set[tuple[int, str]] = set()
     source_lines = (source_code or "").splitlines()
     max_line = max(1, len(source_lines))
+    off_topic = _is_off_topic_evidence_context(task_alignment)
 
     _AGENT_LABEL = {
         "code_quality": "Kod Kalitesi",
@@ -4810,7 +4825,7 @@ def _build_line_evidence(cq, gl, sc, ev, source_code: str) -> list[dict]:
             "scope": "file",
             "agent": agent,
             "message": msg,
-            "severity": _map_severity_for_message(sev, msg),
+            "severity": _map_line_evidence_severity(sev, msg, off_topic=off_topic),
         })
 
     def _add(line: int | None, agent: str, msg: str, sev: str):
@@ -4832,7 +4847,7 @@ def _build_line_evidence(cq, gl, sc, ev, source_code: str) -> list[dict]:
             "line": line,
             "agent": agent,
             "message": msg,
-            "severity": _map_severity_for_message(sev, msg),
+            "severity": _map_line_evidence_severity(sev, msg, off_topic=off_topic),
         })
 
     _NODE_TYPE_LABEL = {

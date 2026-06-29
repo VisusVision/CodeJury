@@ -121,29 +121,102 @@ def _normalize_severity(value) -> str:
     return normalize_agent_severity(value)
 
 
-def _adjust_severity_from_feedback(feedback: str, severity: str) -> str:
-    """Downgrade severity when feedback text describes correct/successful behavior."""
-    text = (feedback or "").strip()
-    if not text:
-        return severity
-    lower = text.lower()
+_POSITIVE_FEEDBACK_TERMS = (
+    "doğru bir şekilde",
+    "dogru bir sekilde",
+    "doğru şekilde",
+    "dogru sekilde",
+    "uyumlu",
+    "basariyla",
+    "başarıyla",
+    "correctly",
+    "successfully",
+    "tanımlanmış",
+    "tanimlanmis",
+    "reddiyor",
+    "baslatiyor",
+    "başlatıyor",
+    "donduruyor",
+    "döndürüyor",
+    "dogru",
+    "basarili",
+    "basarılı",
+    "iyi",
+    "temiz",
+    "guclu",
+    "güçlü",
+    "eksiksiz",
+    "properly",
+    "correct",
+    "success",
+)
+
+
+def _feedback_is_positive(feedback: str) -> bool:
+    lower = (feedback or "").strip().lower()
+    if not lower:
+        return False
     negative = (
-        "eksik", "yok", "hata", "yanlis", "yanlış", "sorun", "magic number",
-        "docstring yok", "tehdit", "anti-pattern", "sql injection", "eval(",
+        "eksik",
+        "yok",
+        "hata",
+        "yanlis",
+        "yanlış",
+        "sorun",
+        "magic number",
+        "docstring yok",
+        "tehdit",
+        "anti-pattern",
+        "sql injection",
+        "eval(",
     )
     if any(term in lower for term in negative):
+        return False
+    return any(term in lower for term in _POSITIVE_FEEDBACK_TERMS)
+
+
+def _is_off_topic_task_alignment(task_alignment: dict | None) -> bool:
+    if not isinstance(task_alignment, dict):
+        return False
+    if bool(task_alignment.get("llm_off_topic")):
+        return True
+    reasons = task_alignment.get("reasons")
+    if isinstance(reasons, list) and any(
+        reason in {"llm_task_relevance_off_topic", "cross_domain_mismatch", "deterministic_capability_mismatch"}
+        for reason in reasons
+    ):
+        return True
+    try:
+        factor = float(task_alignment.get("factor", 1.0) or 1.0)
+        capability = float(task_alignment.get("capability_match", 1.0) or 1.0)
+    except (TypeError, ValueError):
+        return False
+    return capability <= 0.24 or factor < 0.35
+
+
+def _adjust_severity_from_feedback(feedback: str, severity: str) -> str:
+    """Downgrade severity when feedback text describes correct/successful behavior."""
+    if not _feedback_is_positive(feedback):
         return severity
-    positive = (
-        "doğru bir şekilde", "dogru bir sekilde", "doğru şekilde", "dogru sekilde",
-        "uyumlu", "basariyla", "başarıyla", "correctly", "successfully",
-        "tanımlanmış", "tanimlanmis", "reddiyor", "baslatiyor", "başlatıyor",
-        "donduruyor", "döndürüyor",
-    )
-    if any(term in lower for term in positive):
-        if severity in ("high", "critical"):
-            return "info"
-        if severity == "medium":
-            return "low"
+    if severity in ("high", "critical"):
+        return "info"
+    if severity == "medium":
+        return "low"
+    return severity
+
+
+def _adjust_severity_for_topic_alignment(
+    feedback: str,
+    severity: str,
+    task_alignment: dict | None,
+) -> str:
+    """Off-topic submissions should not emit high-severity praise for unrelated code."""
+    if not _is_off_topic_task_alignment(task_alignment):
+        return severity
+    if _feedback_is_positive(feedback):
+        return "info"
+    if severity in ("high", "critical"):
+        return "medium"
     return severity
 
 
@@ -373,6 +446,7 @@ def _normalize_claims(
     source_lines: list[str],
     *,
     ast_blocks: Optional[list[dict]] = None,
+    task_alignment: dict | None = None,
 ) -> list[dict]:
     blocks = ast_blocks or []
     block_idx = {b["id"]: b for b in blocks}
@@ -409,9 +483,13 @@ def _normalize_claims(
         agent_source = str(
             claim.get("agent_source", claim.get("agent", claim.get("source", "unknown")))
         )
-        severity = _adjust_severity_from_feedback(
+        severity = _adjust_severity_for_topic_alignment(
             feedback,
-            _normalize_severity(claim.get("severity", "medium")),
+            _adjust_severity_from_feedback(
+                feedback,
+                _normalize_severity(claim.get("severity", "medium")),
+            ),
+            task_alignment,
         )
 
         # ---- Block-level evidence ----
@@ -648,6 +726,8 @@ class EvidenceAgent(BaseAgent):
         agent_findings = input_data["agent_findings"]
         language = input_data.get("language", "python")
         report_language = input_data.get("report_language") or "tr"
+        task_alignment = input_data.get("task_alignment")
+        task_alignment = task_alignment if isinstance(task_alignment, dict) else None
 
         programmatic = self._programmatic_analysis(source_code, agent_findings, language)
 
@@ -778,6 +858,21 @@ class EvidenceAgent(BaseAgent):
             }
             if ast_map.get("syntax_error"):
                 fallback["ast_syntax_error"] = ast_map.get("error", "")
+            validated = []
+            for claim in fallback.get("validated_claims", []):
+                if not isinstance(claim, dict):
+                    continue
+                feedback = str(claim.get("feedback", ""))
+                severity = _adjust_severity_for_topic_alignment(
+                    feedback,
+                    _adjust_severity_from_feedback(
+                        feedback,
+                        _normalize_severity(claim.get("severity", "medium")),
+                    ),
+                    task_alignment,
+                )
+                validated.append({**claim, "severity": severity})
+            fallback["validated_claims"] = validated
             return self._with_contract_metadata(
                 fallback,
                 llm_status="fallback",
@@ -801,7 +896,12 @@ class EvidenceAgent(BaseAgent):
         source_lines = source_code.splitlines()
         # Kaynak satirlari yalnizca snippet/satir bicimlendirmesi icin kullanilir
         # (sunum); kanit secimi tamamen LLM'e aittir.
-        norm = _normalize_claims(vclaims, source_lines, ast_blocks=ast_blocks)
+        norm = _normalize_claims(
+            vclaims,
+            source_lines,
+            ast_blocks=ast_blocks,
+            task_alignment=task_alignment,
+        )
         if total_in > 0:
             norm = norm[:total_in]
         llm_result["validated_claims"] = norm

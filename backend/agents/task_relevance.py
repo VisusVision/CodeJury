@@ -776,6 +776,32 @@ def _capability_match_signal(
         ),
         (
             {
+                "kitap",
+                "kutuphane",
+                "uye",
+                "odunc",
+                "iade",
+                "library",
+                "book",
+                "member",
+                "loan",
+                "borrow",
+            },
+            {
+                "class ",
+                "kitap",
+                "uye",
+                "kutuphane",
+                "odunc",
+                "iade",
+                "borrow",
+                "loan",
+                "__init__",
+                "self.",
+            },
+        ),
+        (
+            {
                 "banka",
                 "hesap",
                 "yatir",

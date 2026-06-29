@@ -314,6 +314,39 @@ class TestAgentSandboxResultsTests(unittest.TestCase):
         self.assertTrue(any("ZeroDivisionError" in err for err in built["runtime_errors"]))
         self.assertLessEqual(built["score"], 35)
 
+    def test_mixed_pass_fail_sandbox_cases_get_partial_credit(self):
+        built = _programmatic_from_sandbox_tests(
+            [
+                {
+                    "name": "normal_case",
+                    "stdin": "4\n",
+                    "passed": True,
+                    "actual_stdout": "16\n",
+                    "expected_stdout": "16\n",
+                },
+                {
+                    "name": "zero_division_edge",
+                    "stdin": "10 0\n",
+                    "passed": False,
+                    "actual_stderr": "ZeroDivisionError: division by zero",
+                    "expected_stdout": "HATA\n",
+                    "error": "Exit code: expected=0, actual=1",
+                },
+            ],
+            exit_code=1,
+            exec_time_ms=8,
+            peak_memory_mb=1.0,
+            stderr="",
+        )
+
+        self.assertIsNotNone(built)
+        assert built is not None
+        self.assertFalse(built["runs_successfully"])
+        self.assertEqual(built["passed_tests"], 1)
+        self.assertEqual(built["failed_tests"], 1)
+        self.assertGreaterEqual(built["score"], 22)
+        self.assertLessEqual(built["score"], 55)
+
     def test_programmatic_analysis_marks_hidden_sandbox_cases_from_expected_metadata(self):
         sandbox = {
             "compilation_success": True,
