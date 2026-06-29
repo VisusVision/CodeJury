@@ -253,6 +253,7 @@ class MasterEvaluatorAgent(BaseAgent):
                 input_data.get("security", {}),
                 faculty_mode=True,
             )
+            self._sync_rubric_to_final_score(llm_result, faculty_mode=True)
             return llm_result
 
         user_prompt = (
@@ -306,6 +307,7 @@ class MasterEvaluatorAgent(BaseAgent):
             input_data.get("security", {}),
             faculty_mode=False,
         )
+        self._sync_rubric_to_final_score(llm_result, faculty_mode=False)
         return llm_result
 
     @staticmethod
@@ -450,6 +452,169 @@ class MasterEvaluatorAgent(BaseAgent):
             return
         final = round(100.0 * accumulated / total_weight, 1)
         llm_result["final_score"] = max(0.0, min(100.0, final))
+
+    @classmethod
+    def _breakdown_derived_percent(cls, llm_result: dict[str, Any], *, faculty_mode: bool) -> float:
+        raw_bd = llm_result.get("rubric_breakdown")
+        if not isinstance(raw_bd, list) or not raw_bd:
+            return 0.0
+        if faculty_mode:
+            total_max = 0
+            total_earned = 0
+            for row in raw_bd:
+                if not isinstance(row, dict):
+                    continue
+                try:
+                    total_max += int(round(float(row.get("weight", 0) or 0)))
+                    total_earned += int(round(float(row.get("score", 0) or 0)))
+                except (TypeError, ValueError):
+                    continue
+            if total_max <= 0:
+                return 0.0
+            return round(100.0 * total_earned / total_max, 1)
+        total_weight = 0.0
+        accumulated = 0.0
+        for row in raw_bd:
+            if not isinstance(row, dict):
+                continue
+            try:
+                w = float(row.get("weight", 0) or 0)
+                s = float(row.get("score", 0) or 0)
+            except (TypeError, ValueError):
+                continue
+            if w <= 0:
+                continue
+            total_weight += w
+            accumulated += max(0.0, min(100.0, s)) * w / 100.0
+        if total_weight <= 0:
+            return 0.0
+        return round(100.0 * accumulated / total_weight, 1)
+
+    @classmethod
+    def _trim_breakdown_to_target_percent(
+        cls,
+        llm_result: dict[str, Any],
+        target_percent: float,
+        *,
+        faculty_mode: bool,
+        note: str,
+    ) -> None:
+        raw_bd = llm_result.get("rubric_breakdown")
+        if not isinstance(raw_bd, list) or not raw_bd:
+            return
+        target_percent = max(0.0, min(100.0, round(float(target_percent), 1)))
+        sync_note = note.strip()
+
+        def _row_sort_key(row: dict[str, Any]) -> tuple[int, int]:
+            security = cls._is_security_row(row)
+            try:
+                score = int(round(float(row.get("score", 0) or 0)))
+            except (TypeError, ValueError):
+                score = 0
+            return (1 if security else 0, -score)
+
+        for _ in range(500):
+            derived = cls._breakdown_derived_percent(llm_result, faculty_mode=faculty_mode)
+            if derived <= target_percent + 0.05:
+                break
+            if faculty_mode:
+                total_max = sum(
+                    int(round(float(row.get("weight", 0) or 0)))
+                    for row in raw_bd
+                    if isinstance(row, dict)
+                )
+                if total_max <= 0:
+                    break
+                target_earned = int(round(total_max * target_percent / 100.0))
+                total_earned = sum(
+                    int(round(float(row.get("score", 0) or 0)))
+                    for row in raw_bd
+                    if isinstance(row, dict)
+                )
+                if total_earned <= target_earned:
+                    break
+            else:
+                factor = target_percent / derived if derived > 0 else 0.0
+                scaled = False
+                for row in raw_bd:
+                    if not isinstance(row, dict) or cls._is_security_row(row):
+                        continue
+                    try:
+                        weight = float(row.get("weight", 0) or 0)
+                        score = float(row.get("score", 0) or 0)
+                    except (TypeError, ValueError):
+                        continue
+                    if weight <= 0:
+                        continue
+                    new_score = int(round(max(0.0, min(100.0, score * factor))))
+                    if new_score != int(round(score)):
+                        row["score"] = new_score
+                        row["weighted_score"] = round(new_score * weight / 100.0, 2)
+                        scaled = True
+                        if sync_note and sync_note not in str(row.get("justification", "")):
+                            just = str(row.get("justification", "")).strip()
+                            row["justification"] = f"{just} {sync_note}".strip() if just else sync_note
+                if scaled:
+                    continue
+
+            trimmable = [row for row in raw_bd if isinstance(row, dict)]
+            trimmable.sort(key=_row_sort_key)
+            trimmed = False
+            for row in trimmable:
+                try:
+                    score = int(round(float(row.get("score", 0) or 0)))
+                except (TypeError, ValueError):
+                    continue
+                if score <= 0:
+                    continue
+                row["score"] = score - 1
+                if faculty_mode:
+                    row["weighted_score"] = float(row["score"])
+                else:
+                    try:
+                        weight = float(row.get("weight", 0) or 0)
+                    except (TypeError, ValueError):
+                        weight = 0.0
+                    row["weighted_score"] = round(float(row["score"]) * weight / 100.0, 2)
+                if sync_note and sync_note not in str(row.get("justification", "")):
+                    just = str(row.get("justification", "")).strip()
+                    row["justification"] = f"{just} {sync_note}".strip() if just else sync_note
+                trimmed = True
+                break
+            if not trimmed:
+                break
+
+        if faculty_mode:
+            cls._recompute_faculty_final_score(llm_result)
+        else:
+            cls._recompute_default_final_score(llm_result)
+        llm_result["final_score"] = round(
+            max(0.0, min(100.0, min(float(llm_result.get("final_score", 0) or 0), target_percent))),
+            1,
+        )
+
+    @classmethod
+    def _sync_rubric_to_final_score(cls, llm_result: dict[str, Any], *, faculty_mode: bool) -> None:
+        """After guard caps, rubric row totals must not exceed final_score."""
+        try:
+            target = float(llm_result.get("final_score", 0) or 0)
+        except (TypeError, ValueError):
+            target = 0.0
+        target = max(0.0, min(100.0, round(target, 1)))
+        derived = cls._breakdown_derived_percent(llm_result, faculty_mode=faculty_mode)
+        if derived <= target + 0.05:
+            if faculty_mode:
+                cls._recompute_faculty_final_score(llm_result)
+            else:
+                cls._recompute_default_final_score(llm_result)
+            return
+        note = "Nihai puan sinirlama sonrasi rubrik satirlari totalScore ile hizalandi."
+        cls._trim_breakdown_to_target_percent(
+            llm_result,
+            target,
+            faculty_mode=faculty_mode,
+            note=note,
+        )
 
     @staticmethod
     def _alignment_score_cap(alignment_factor: float) -> float:
@@ -625,6 +790,7 @@ class MasterEvaluatorAgent(BaseAgent):
                     continue
             guarded = round(100.0 * total_earned / total_max, 1) if total_max > 0 else 0.0
         else:
+            cls._recompute_default_final_score(llm_result)
             try:
                 guarded = float(llm_result.get("final_score", 0))
             except (TypeError, ValueError):
@@ -1075,7 +1241,7 @@ class MasterEvaluatorAgent(BaseAgent):
         else:
             cls._recompute_default_final_score(llm_result)
             try:
-                guarded = float(llm_result.get("final_score", 0))
+                guarded = float(llm_result.get("final_score", 0) or 0)
             except (TypeError, ValueError):
                 guarded = 0.0
 

@@ -203,6 +203,18 @@ def _merge_str_lists(*lists: list[str], fallback: list[str] | None = None, limit
     return merged or list(fallback or [])
 
 
+_COMPLEXITY_GAP_VALUES = frozenset(
+    {"unknown", "worse_than_expected", "matches_expected", "better_than_expected"}
+)
+
+
+def _normalize_complexity_gap(value: Any) -> str:
+    gap = str(value or "").strip()
+    if gap in _COMPLEXITY_GAP_VALUES:
+        return gap
+    return "unknown"
+
+
 def _complexity_gap(actual: str, expected: str) -> str:
     if not expected:
         return "unknown"
@@ -433,6 +445,7 @@ class AlgorithmAgent(BaseAgent):
         if not isinstance(result, dict):
             return result
         normalized = dict(result)
+        normalized["complexity_gap"] = _normalize_complexity_gap(normalized.get("complexity_gap"))
         normalized["issues"] = _normalize_algorithm_issues(normalized.get("issues"))
         normalized["detected_algorithms"] = _safe_str_list(
             normalized.get("detected_algorithms"),

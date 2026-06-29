@@ -212,11 +212,7 @@ def _validate(kind: CaseKind, report: dict[str, Any]) -> list[str]:
     llm_status = _agent_llm_status(report)
 
     if rubric_sum and abs(rubric_sum - total) > 4:
-        # Default rubric row points can exceed capped totalScore after alignment guards.
-        alignment_capped = off_topic or warning or align < 0.85
-        low_score_case = kind in {"alakasiz", "syntax"} or total <= 50
-        if not (alignment_capped or low_score_case):
-            issues.append(f"rubric_sum {rubric_sum} != total {total}")
+        issues.append(f"rubric_sum {rubric_sum} != total {total}")
 
     allowed_status = {"ok", "repaired", "skipped_no_claims", "fallback", "unknown"}
     bad_llm = {k: v for k, v in llm_status.items() if v not in allowed_status}

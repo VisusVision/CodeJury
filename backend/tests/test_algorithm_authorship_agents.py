@@ -315,6 +315,13 @@ def first(values):
         self.assertLessEqual(capped["score"], 12)
         self.assertEqual(capped["complexity_gap"], "unknown")
 
+    def test_empty_complexity_gap_normalizes_to_unknown_before_schema(self):
+        agent = AlgorithmAgent()
+        normalized = agent._pre_schema_normalize({"complexity_gap": "", "issues": []}, None)
+        self.assertEqual(normalized["complexity_gap"], "unknown")
+        normalized2 = agent._pre_schema_normalize({"complexity_gap": "not-a-valid-gap", "issues": []}, None)
+        self.assertEqual(normalized2["complexity_gap"], "unknown")
+
 
 class AIAuthorshipAgentTests(unittest.IsolatedAsyncioTestCase):
     async def test_reports_risk_without_emitting_grade_fields(self):

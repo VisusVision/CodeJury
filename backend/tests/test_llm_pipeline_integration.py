@@ -129,20 +129,22 @@ class EvidenceAnalyzeTests(unittest.IsolatedAsyncioTestCase):
         # Snippet, LLM vermese de kaynaktan yeniden uretilir.
         self.assertEqual(result["validated_claims"][0]["code_snippet"], "    return a + b")
 
-    async def test_llm_failure_raises_without_deterministic_fallback(self):
-        """LLM basarisiz olursa programatik ikame YOK; hata yukari iletilir."""
+    async def test_llm_failure_uses_programmatic_fallback(self):
+        """LLM basarisiz olursa kaynak-kod dogrulanmis programatik kanitlara dusulur."""
         from backend.agents.base import LLMInferenceError
 
         agent = EvidenceAgent()
         with patch.object(agent, "_call_llm", new=AsyncMock(side_effect=LLMInferenceError("boom"))):
-            with self.assertRaises(LLMInferenceError):
-                await agent.analyze({
-                    "source_code": _SIMPLE_PYTHON,
-                    "language": "python",
-                    "agent_findings": {
-                        "code_quality": {"issues": [{"description": "Toplama", "severity": "medium", "line": 2}]},
-                    },
-                })
+            result = await agent.analyze({
+                "source_code": _SIMPLE_PYTHON,
+                "language": "python",
+                "agent_findings": {
+                    "code_quality": {"issues": [{"description": "Toplama", "severity": "medium", "line": 2}]},
+                },
+            })
+        self.assertEqual(result.get("llm_status"), "fallback")
+        self.assertIn("programmatic_evidence_fallback", result.get("evidence_quality_flags", []))
+        self.assertGreaterEqual(int(result.get("total_claims_validated", 0) or 0), 0)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -172,7 +174,34 @@ class MasterEvaluatorGuardTests(unittest.TestCase):
             {"brief_alignment_factor": 0.15, "brief_alignment_reasons": ["llm_task_relevance_off_topic"]},
             faculty_mode=False,
         )
+        MasterEvaluatorAgent._sync_rubric_to_final_score(result, faculty_mode=False)
         self.assertLessEqual(result["final_score"], 28.0)
+        derived = MasterEvaluatorAgent._breakdown_derived_percent(result, faculty_mode=False)
+        self.assertLessEqual(derived, result["final_score"] + 1.0)
+
+    def test_faculty_alignment_cap_syncs_rubric_to_final_score(self):
+        result = {
+            "final_score": 90.0,
+            "rubric_breakdown": [
+                {"label": "Fonksiyonellik", "weight": 40, "score": 36, "weighted_score": 36.0, "justification": ""},
+                {"label": "Kod Kalitesi", "weight": 30, "score": 27, "weighted_score": 27.0, "justification": ""},
+                {"label": "Guvenlik", "weight": 30, "score": 27, "weighted_score": 27.0, "justification": ""},
+            ],
+            "weaknesses": [],
+        }
+        programmatic = {
+            "final_score": 70.0,
+            "brief_alignment_factor": 0.40,
+            "programmatic_alignment_factor": 0.40,
+            "capability_match": 0.20,
+            "sandbox_runs_ok": True,
+            "brief_alignment_reasons": ["llm_task_relevance_off_topic"],
+        }
+        MasterEvaluatorAgent._apply_brief_alignment_guard(result, programmatic, faculty_mode=True)
+        MasterEvaluatorAgent._sync_rubric_to_final_score(result, faculty_mode=True)
+        self.assertLessEqual(float(result["final_score"]), 28.0)
+        derived = MasterEvaluatorAgent._breakdown_derived_percent(result, faculty_mode=True)
+        self.assertLessEqual(derived, float(result["final_score"]) + 1.0)
 
     def test_aligned_submission_is_not_capped(self):
         result = {

@@ -141,7 +141,12 @@ def _programmatic_from_sandbox_tests(
 
     total_tests = max(passed + failed, 1)
     if not runs_ok:
-        score = 15 if failed else 25
+        if passed > 0:
+            correctness_pct = (passed / total_tests) * 100.0
+            score = int(correctness_pct * 0.55) + 12
+            score = max(22, min(55, score))
+        else:
+            score = 15 if failed else 25
     else:
         correctness_pct = (passed / total_tests) * 100
         score = int(correctness_pct * 0.7) + 15
@@ -650,7 +655,12 @@ class TestAgent(BaseAgent):
 
         total_tests = max(passed + failed, 1)
         if not runs_ok:
-            score = 15
+            if passed > 0:
+                correctness_pct = (passed / total_tests) * 100.0
+                score = int(correctness_pct * 0.55) + 12
+                score = max(22, min(55, score))
+            else:
+                score = 15
         else:
             correctness_pct = (passed / total_tests) * 100
             score = int(correctness_pct * 0.7)
