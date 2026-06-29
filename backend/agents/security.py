@@ -93,6 +93,40 @@ _SERVICE_HINT_TOKENS = (
     "request",
 )
 
+_ASSIGNMENT_MISMATCH_TOKENS = (
+    "gorev",
+    "odev",
+    "assignment",
+    "faktoriyel",
+    "factorial",
+    "alakasiz",
+    "off-topic",
+    "off topic",
+    "topic mismatch",
+    "yanlis dosya",
+    "yanlis odev",
+    "beklenen",
+    "teslim",
+    "deliverable",
+    "parantez",
+    "problem farkli",
+)
+
+_REAL_SECURITY_SIGNALS = (
+    "eval(",
+    "exec(",
+    "os.system",
+    "os.popen",
+    "subprocess",
+    "pickle",
+    "injection",
+    "shell",
+    "command_inject",
+    "code_injection",
+    "deserialization",
+    "sandbox_escape",
+)
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # SQL INJECTION TESPITI
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -234,6 +268,10 @@ class SecurityAgent(BaseAgent):
             assignment_description=str(input_data.get("assignment_description") or ""),
         )
         merged_th = _merge_threat_lists(llm_th, programmatic["threats"])
+        merged_th = [
+            t for t in merged_th
+            if isinstance(t, dict) and not SecurityAgent._is_assignment_mismatch_threat(t)
+        ]
         llm_result["threats"] = merged_th
         rsum = _risk_summary_from_threats(merged_th)
         llm_result["risk_level"] = rsum["risk_level"]
@@ -252,6 +290,33 @@ class SecurityAgent(BaseAgent):
         llm_score = self._safe_int(llm_result.get("score"), 50)
         rule_score = _score_from_threats(merged_th)
         final_score, capped = _final_security_score(llm_score, rule_score, merged_th)
+        task = input_data.get("task_alignment")
+        if isinstance(task, dict) and bool(task.get("llm_off_topic")):
+            real_threats = [
+                t for t in merged_th
+                if isinstance(t, dict) and not SecurityAgent._is_assignment_mismatch_threat(t)
+            ]
+            if not real_threats:
+                final_score = max(final_score, 95)
+                llm_result["risk_level"] = "safe"
+                llm_result["safe"] = True
+                llm_result["critical_count"] = 0
+                llm_result["high_count"] = 0
+                llm_result["threats"] = []
+            else:
+                destructive = any(
+                    isinstance(t, dict)
+                    and str(t.get("severity", "")).lower() in {"critical", "high"}
+                    and str(t.get("type", "")).lower()
+                    in {"command_inject", "code_injection", "deserialization", "sandbox_escape"}
+                    for t in real_threats
+                )
+                if not destructive:
+                    final_score = max(final_score, 85)
+                    llm_result["risk_level"] = "low"
+                    llm_result["safe"] = True
+                    llm_result["critical_count"] = 0
+                    llm_result["high_count"] = 0
         llm_result["score"] = final_score
         llm_result["score_model"] = max(0, min(100, llm_score))
         llm_result["score_rule"] = rule_score
@@ -259,6 +324,16 @@ class SecurityAgent(BaseAgent):
             llm_result["score_rule_capped"] = True
 
         return llm_result
+
+    @staticmethod
+    def _is_assignment_mismatch_threat(threat: dict) -> bool:
+        blob = " ".join(
+            str(threat.get(key) or "")
+            for key in ("type", "description", "detail")
+        ).lower()
+        if any(signal in blob for signal in _REAL_SECURITY_SIGNALS):
+            return False
+        return any(token in blob for token in _ASSIGNMENT_MISMATCH_TOKENS)
 
     @staticmethod
     def _calibrate_coursework_threats(
@@ -361,6 +436,8 @@ class SecurityAgent(BaseAgent):
 
         for raw in threats:
             if not isinstance(raw, dict):
+                continue
+            if SecurityAgent._is_assignment_mismatch_threat(raw):
                 continue
             t = dict(raw)
             desc = str(t.get("description", "")).lower()

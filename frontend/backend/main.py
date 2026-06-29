@@ -1478,7 +1478,7 @@ def _normalize_resource_recommendation_card(raw: Any, *, allowed_urls: dict[str,
     }
 
 
-async def _generate_resource_recommendations_with_nim(
+async def _generate_resource_recommendations(
     *,
     report_language: str,
     assignment_brief: str,
@@ -1524,7 +1524,6 @@ async def _generate_resource_recommendations_with_nim(
         num_predict=2048,
         model=settings.ollama_coder_model,
         use_cache=False,
-        provider_override="nvidia_nim",
     )
     cards = payload.get("resources", []) if isinstance(payload, dict) else []
     normalized: list[dict[str, str]] = []
@@ -1581,7 +1580,7 @@ async def _build_resource_recommendations(
         if isinstance(item, dict)
     )
     try:
-        generated = await _generate_resource_recommendations_with_nim(
+        generated = await _generate_resource_recommendations(
             report_language=report_language,
             assignment_brief=assignment_brief,
             rubric_summary=rubric_summary,
@@ -4425,15 +4424,38 @@ def _agent_report_metadata(output: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _normalize_test_case_result(case: dict[str, Any]) -> dict[str, Any]:
+    name = str(case.get("test_name") or case.get("name") or "test").strip() or "test"
+    visibility = str(case.get("visibility") or "public").strip().lower()
+    if visibility not in {"public", "hidden"}:
+        visibility = "public"
+    expected = str(case.get("expected") or case.get("expected_stdout") or "")
+    actual = str(case.get("actual") or case.get("actual_stdout") or "")
+    stdin = str(case.get("input") or case.get("stdin") or "")
+    return {
+        "name": name[:120],
+        "input": stdin[:4000],
+        "expected": expected[:4000],
+        "actual": actual[:4000],
+        "passed": bool(case.get("passed")),
+        "visibility": visibility,
+        "matchPct": float(case.get("match_pct") or case.get("matchPct") or (100.0 if case.get("passed") else 0.0)),
+        "diffDetail": str(case.get("diff_detail") or case.get("error") or "")[:1000],
+    }
+
+
 def _build_agents_list(cq, sn, gl, sc, ta, ev, alg=None, auth=None) -> list[dict]:
     """Her ajan icin frontend'in beklegi formatta rapor olustur."""
     agents = []
 
     # Testing Agent
     test_findings = []
+    test_case_results = []
     for case in ta.get("test_results", []) or []:
         if not isinstance(case, dict):
             continue
+        normalized_case = _normalize_test_case_result(case)
+        test_case_results.append(normalized_case)
         name = str(case.get("test_name") or case.get("name") or "test").strip()
         stdin = str(case.get("input") or case.get("stdin") or "").strip()
         expected = str(case.get("expected") or case.get("expected_stdout") or "").strip()
@@ -4443,12 +4465,12 @@ def _build_agents_list(cq, sn, gl, sc, ta, ev, alg=None, auth=None) -> list[dict
         status_text = "gecti" if passed_case else "basarisiz"
         parts = [f"Test {name} {status_text}"]
         if is_hidden:
-            parts.append("Girdi/cikti gizli test")
-        elif stdin:
+            parts.append("Gizli test")
+        if stdin:
             parts.append(f"Girdi: {stdin[:120]}")
-        if not is_hidden and expected:
+        if expected:
             parts.append(f"Beklenen: {expected[:160]}")
-        if not is_hidden and actual:
+        if actual:
             parts.append(f"Gercek: {actual[:160]}")
         test_findings.append({
             "severity": "info" if passed_case else "error",
@@ -4509,6 +4531,7 @@ def _build_agents_list(cq, sn, gl, sc, ta, ev, alg=None, auth=None) -> list[dict
         "score": ta.get("score", 0),
         "maxScore": 100,
         "findings": test_findings,
+        "testResults": test_case_results,
         **_agent_report_metadata(ta),
     })
 

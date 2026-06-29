@@ -131,9 +131,15 @@ def _count_nested_loops(node: ast.AST, depth: int = 0) -> tuple[int, int]:
 
 
 _NLOGN_BUILTINS = {"sorted", "sort", "heapify", "nsmallest", "nlargest"}
-_N_BUILTINS = {"sum", "max", "min", "any", "all", "len", "enumerate", "zip",
+_N_BUILTINS = {"sum", "max", "min", "any", "all", "enumerate", "zip",
                "map", "filter", "reversed", "set", "list", "tuple", "dict",
                "Counter", "Counter.most_common"}
+
+
+def _is_self_method_call(func: ast.AST, method_name: str) -> bool:
+    if not isinstance(func, ast.Attribute) or func.attr != method_name:
+        return False
+    return isinstance(func.value, ast.Name) and func.value.id in {"self", "cls"}
 
 
 def _estimate_complexity(func_node: ast.FunctionDef | ast.AsyncFunctionDef) -> str:
@@ -153,7 +159,9 @@ def _estimate_complexity(func_node: ast.FunctionDef | ast.AsyncFunctionDef) -> s
             elif isinstance(node.func, ast.Attribute):
                 call_name = node.func.attr
 
-            if call_name == func_name:
+            if isinstance(node.func, ast.Name) and call_name == func_name:
+                has_recursion = True
+            elif _is_self_method_call(node.func, func_name):
                 has_recursion = True
             if call_name in _NLOGN_BUILTINS:
                 uses_nlogn = True
@@ -195,7 +203,7 @@ def _function_calls_self(func_node: ast.AST) -> bool:
         if isinstance(n, ast.Call):
             if isinstance(n.func, ast.Name) and n.func.id == name:
                 return True
-            if isinstance(n.func, ast.Attribute) and n.func.attr == name:
+            if _is_self_method_call(n.func, name):
                 return True
     return False
 

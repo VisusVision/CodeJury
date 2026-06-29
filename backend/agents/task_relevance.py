@@ -295,6 +295,17 @@ def _has_recognized_capability_requirement(text: str) -> bool:
             "index",
         ),
         ("pytest", "unittest", "unit test", "otomatik test"),
+        (
+            "parantez",
+            "parenthesis",
+            "bracket",
+            "denge",
+            "balanced",
+            "stack",
+            "yigit",
+            "monotonic",
+            "next greater",
+        ),
     )
     return any(any(_contains_marker(task_text, marker) for marker in group) for group in marker_groups)
 
@@ -603,6 +614,37 @@ def _capability_match_signal(
     if grade_pass_task and grade_pass_code:
         return 0.86
 
+    stack_parentheses_task = any(
+        marker in task_fold
+        for marker in ("parantez", "parenthesis", "bracket", "denge", "balanced", "stack", "yigit", "monotonic")
+    )
+    stack_parentheses_code = (
+        (
+            "stack" in code_fold
+            and any(
+                marker in code_fold
+                for marker in (".append(", ".pop(", ".pop()", "is_balanced", "pairs", "while stack")
+            )
+        )
+        or (
+            "is_balanced" in code_fold
+            and any(marker in code_fold for marker in ("pairs", "()", "[]", "{}", ".replace(", "evet", "hayir"))
+        )
+    )
+    if stack_parentheses_task and stack_parentheses_code:
+        return 0.86
+
+    two_sum_task = any(
+        marker in task_fold
+        for marker in ("two sum", "iki toplam", "hedef toplam", "toplami", "farkli eleman", "farklı eleman")
+    )
+    two_sum_code = (
+        any(marker in code_fold for marker in ("target", "seen", "enumerate(", "need"))
+        and any(marker in code_fold for marker in ("input(", "print("))
+    )
+    if two_sum_task and two_sum_code:
+        return 0.86
+
     groups: list[tuple[set[str], set[str]]] = [
         (
             {"api", "endpoint", "http", "server", "post", "put", "get", "route"},
@@ -845,6 +887,31 @@ def _capability_match_signal(
             {"pytest", "unittest", "unit test", "otomatik test"},
             {"assert ", "pytest", "unittest", "test_"},
         ),
+        (
+            {
+                "parantez",
+                "parenthesis",
+                "bracket",
+                "denge",
+                "balanced",
+                "stack",
+                "yigit",
+                "monotonic",
+                "next greater",
+            },
+            {
+                "stack",
+                ".append(",
+                ".pop(",
+                ".pop()",
+                "pairs",
+                "is_balanced",
+                "balanced",
+                "open",
+                "close",
+                "while stack",
+            },
+        ),
     ]
 
     required = 0
@@ -994,6 +1061,14 @@ def merge_task_alignment(
 
     # High-capability and clearly fulfilling submissions should not drift too low
     # due model variance.
+    if (
+        out["programmatic_factor"] >= 0.95
+        and not off
+        and capability_signal >= 0.55
+        and llm_f < 0.72
+    ):
+        llm_f = max(llm_f, 0.72)
+
     if (
         out["programmatic_factor"] >= 0.95
         and not off

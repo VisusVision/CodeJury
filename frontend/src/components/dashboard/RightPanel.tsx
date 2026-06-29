@@ -14,7 +14,7 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import AgentCard, { type AgentStatus } from "./AgentCard";
-import type { ReportData } from "./AnalysisReport";
+import type { ReportData, TestResult } from "./AnalysisReport";
 import type { CodeAnnotation } from "./CodeEditor";
 import { useTranslation } from "@/i18n/LanguageContext";
 
@@ -151,6 +151,42 @@ function RubricDetailRow({ name, score, maxScore }: { name: string; score: numbe
 
 /* ─── Main Component ─── */
 
+function TestCasePreview({ test }: { test: TestResult }) {
+  const passed = Boolean(test.passed);
+  const Icon = passed ? CheckCircle2 : XCircle;
+
+  return (
+    <div className="rounded-lg border border-border bg-background px-3 py-2.5">
+      <div className="mb-2 flex items-center gap-2">
+        <Icon className={`h-3.5 w-3.5 ${passed ? "text-success" : "text-destructive"}`} />
+        <span className="min-w-0 flex-1 truncate text-xs font-semibold text-foreground">{test.name}</span>
+        {test.visibility === "hidden" ? (
+          <span className="rounded-full bg-muted px-1.5 py-0.5 text-[9px] font-semibold text-muted-foreground">
+            Gizli
+          </span>
+        ) : null}
+        <span className={`rounded-full px-1.5 py-0.5 text-[9px] font-semibold ${passed ? "bg-success/10 text-success" : "bg-destructive/10 text-destructive"}`}>
+          {passed ? "Gecti" : "Basarisiz"}
+        </span>
+      </div>
+      <div className="grid gap-2">
+        {[
+          ["Input", test.input],
+          ["Beklenen Output", test.expected],
+          ["Senin Output'un", test.actual],
+        ].map(([label, value]) => (
+          <div key={label}>
+            <div className="mb-1 text-[9px] font-semibold uppercase text-muted-foreground">{label}</div>
+            <pre className="max-h-24 overflow-auto rounded-md bg-muted/50 px-2 py-1.5 font-mono-code text-[10px] leading-relaxed text-foreground whitespace-pre-wrap break-words">
+              {String(value || "").trim() || "(cikti yok)"}
+            </pre>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 const RightPanel = ({
   agents,
   agentStatuses,
@@ -179,6 +215,8 @@ const RightPanel = ({
   const rubricStart = rubricPage * rubricPageSize;
   const rubricEnd = rubricStart + rubricPageSize;
   const rubricItems = report?.rubric.slice(rubricStart, rubricEnd) ?? [];
+  const testingAgent = report?.agents.find((agent) => agent.id === "testing");
+  const testResults = testingAgent?.testResults ?? [];
 
   useEffect(() => {
     setRubricPage(0);
@@ -428,6 +466,17 @@ const RightPanel = ({
                     );
                   })}
                 </div>
+
+                {testResults.length > 0 ? (
+                  <div className="space-y-2">
+                    <h3 className="text-xs font-semibold text-foreground">Test Case Sonuclari</h3>
+                    <div className="space-y-2">
+                      {testResults.map((test, index) => (
+                        <TestCasePreview key={`${test.name}-${index}`} test={test} />
+                      ))}
+                    </div>
+                  </div>
+                ) : null}
 
               </>
             )}

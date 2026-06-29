@@ -82,6 +82,31 @@ class TestAgentSandboxResultsTests(unittest.TestCase):
         self.assertGreaterEqual(result["score"], 70)
         self.assertEqual(len(result["test_results"]), 2)
 
+    def test_empty_expected_output_list_uses_smoke_result(self):
+        sandbox = {
+            "compilation_success": True,
+            "exit_code": 0,
+            "stdout": "ok\n",
+            "stderr": "",
+            "execution_time_ms": 5,
+            "peak_memory_mb": 0.5,
+            "test_results": [],
+        }
+
+        result = TestAgent()._programmatic_analysis(
+            sandbox,
+            [],
+            "print('ok')\n",
+            "python",
+            assignment_description="Basit calisan Python programi.",
+            task_alignment={"factor": 0.9, "reasons": []},
+        )
+
+        self.assertEqual(result["passed_tests"], 1)
+        self.assertEqual(result["failed_tests"], 0)
+        self.assertEqual(result["total_tests"], 1)
+        self.assertGreaterEqual(result["score"], 80)
+
     def test_analyze_drops_llm_runtime_error_when_formal_tests_pass(self):
         sandbox = {
             "compilation_success": True,
@@ -359,6 +384,10 @@ class TestAgentSandboxResultsTests(unittest.TestCase):
 
         testing = next(agent for agent in agents if agent["id"] == "testing")
         messages = "\n".join(finding["message"] for finding in testing["findings"])
+        self.assertEqual(len(testing["testResults"]), 2)
+        self.assertEqual(testing["testResults"][0]["name"], "normal_case")
+        self.assertEqual(testing["testResults"][0]["input"], "4\n")
+        self.assertEqual(testing["testResults"][1]["actual"], "ZeroDivisionError\n")
         self.assertIn("normal_case", messages)
         self.assertIn("Girdi: 4", messages)
         self.assertIn("Beklenen: 16", messages)
@@ -396,10 +425,15 @@ class TestAgentSandboxResultsTests(unittest.TestCase):
 
         testing = next(agent for agent in agents if agent["id"] == "testing")
         messages = "\n".join(finding["message"] for finding in testing["findings"])
+        self.assertEqual(testing["testResults"][0]["visibility"], "hidden")
+        self.assertEqual(testing["testResults"][0]["input"], "10 0\n")
+        self.assertEqual(testing["testResults"][0]["expected"], "HATA\n")
+        self.assertEqual(testing["testResults"][0]["actual"], "ZeroDivisionError\n")
         self.assertIn("hidden_edge", messages)
-        self.assertNotIn("Girdi: 10 0", messages)
-        self.assertNotIn("Beklenen: HATA", messages)
-        self.assertNotIn("Gercek: ZeroDivisionError", messages)
+        self.assertIn("Gizli test", messages)
+        self.assertIn("Girdi: 10 0", messages)
+        self.assertIn("Beklenen: HATA", messages)
+        self.assertIn("Gercek: ZeroDivisionError", messages)
 
 
 if __name__ == "__main__":

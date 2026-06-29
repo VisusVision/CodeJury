@@ -47,8 +47,8 @@ class ResourceRecommendationTests(unittest.TestCase):
         self.assertIn("security", categories)
 
 
-class ResourceRecommendationNimTests(unittest.IsolatedAsyncioTestCase):
-    async def test_nim_generation_requests_nvidia_provider_and_normalizes_cards(self):
+class ResourceRecommendationGenerationTests(unittest.IsolatedAsyncioTestCase):
+    async def test_generation_uses_default_coder_routing_and_normalizes_cards(self):
         with patch.object(
             main,
             "chat_json",
@@ -66,7 +66,7 @@ class ResourceRecommendationNimTests(unittest.IsolatedAsyncioTestCase):
                 }
             ),
         ) as chat_json_mock:
-            cards = await main._generate_resource_recommendations_with_nim(
+            cards = await main._generate_resource_recommendations(
                 report_language="tr",
                 assignment_brief="CLI odevi",
                 rubric_summary="Fonksiyonellik, test ve hata yonetimi",
@@ -79,7 +79,7 @@ class ResourceRecommendationNimTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(cards[0]["resourceType"], "docs")
         self.assertEqual(cards[0]["priority"], "high")
         self.assertTrue(cards[0]["url"].startswith("https://"))
-        self.assertEqual(chat_json_mock.await_args.kwargs["provider_override"], "nvidia_nim")
+        self.assertNotIn("provider_override", chat_json_mock.await_args.kwargs)
 
 
 if __name__ == "__main__":

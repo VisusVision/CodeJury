@@ -82,18 +82,18 @@ export function buildPdfReportSectionsHtml({
     ? `
       <div style="margin-top:10px;">
         <h2 style="font-size:13px;font-weight:800;color:#111827;margin:0 0 6px 0;">${copy.resources}</h2>
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">
+        <div style="display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;align-items:stretch;">
           ${resourceRecommendations.map((item) => `
-            <div style="border:1px solid #dbeafe;border-radius:10px;background:#f8fbff;padding:10px;">
+            <div style="border:1px solid #dbeafe;border-radius:10px;background:#f8fbff;padding:10px;height:100%;box-sizing:border-box;display:flex;flex-direction:column;">
               <div style="display:flex;justify-content:space-between;gap:6px;align-items:flex-start;">
                 <div style="font-size:11px;font-weight:800;color:#111827;line-height:1.35;">${escapeHtml(item.title)}</div>
                 <div style="font-size:9px;font-weight:700;color:${item.priority === "high" ? "#b45309" : "#1d4ed8"};white-space:nowrap;">
                   ${item.priority === "high" ? copy.priorityHigh : copy.priorityMedium}
                 </div>
               </div>
-              <div style="font-size:10px;color:#2563eb;margin-top:4px;word-break:break-all;">${escapeHtml(item.url)}</div>
-              <div style="font-size:11px;color:#374151;line-height:1.45;margin-top:6px;">${escapeHtml(item.reason)}</div>
-              <div style="font-size:10px;color:#6b7280;margin-top:6px;">${escapeHtml(copy.open)} • ${escapeHtml(item.resourceType)}</div>
+              <div style="font-size:10px;color:#2563eb;margin-top:4px;line-height:1.35;word-break:break-word;overflow-wrap:anywhere;">${escapeHtml(item.url)}</div>
+              <div style="font-size:11px;color:#374151;line-height:1.45;margin-top:6px;flex:1;">${escapeHtml(item.reason)}</div>
+              <div style="font-size:10px;color:#6b7280;margin-top:auto;padding-top:6px;">${escapeHtml(copy.open)} • ${escapeHtml(item.resourceType)}</div>
             </div>
           `).join("")}
         </div>

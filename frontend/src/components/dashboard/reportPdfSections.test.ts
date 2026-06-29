@@ -27,6 +27,28 @@ describe("buildPdfReportSectionsHtml", () => {
     expect(html).toContain("https://docs.python.org/3/library/argparse.html");
   });
 
+  test("renders resource cards with stretch layout styles for stable PDF alignment", () => {
+    const html = buildPdfReportSectionsHtml({
+      summary: "",
+      strengths: [],
+      weaknesses: [],
+      recommendations: [],
+      resourceRecommendations: [
+        {
+          title: "Uzun baslikli kaynak",
+          url: "https://example.com/really/long/path/that/should/wrap/cleanly/in/pdf/output",
+          reason: "Kart icerigi farkli uzunluklarda olsa da alt satirlar hizali kalmali.",
+          resourceType: "tutorial",
+          priority: "medium",
+        },
+      ],
+    });
+
+    expect(html).toContain("align-items:stretch");
+    expect(html).toContain("height:100%;box-sizing:border-box;display:flex;flex-direction:column");
+    expect(html).toContain("overflow-wrap:anywhere");
+  });
+
   test("omits optional sections when arrays are empty", () => {
     const html = buildPdfReportSectionsHtml({
       summary: "",

@@ -32,6 +32,17 @@ export interface ApiFinding {
   code?: string | null;
 }
 
+export interface ApiTestResult {
+  name: string;
+  input: string;
+  expected: string;
+  actual: string;
+  passed: boolean;
+  visibility?: "public" | "hidden";
+  matchPct?: number;
+  diffDetail?: string;
+}
+
 export interface ApiAgentReport {
   id: string;
   name: string;
@@ -39,6 +50,7 @@ export interface ApiAgentReport {
   score: number;
   maxScore: number;
   findings: ApiFinding[];
+  testResults?: ApiTestResult[];
 }
 
 export interface ApiRubricCategory {
