@@ -378,6 +378,53 @@ def _merge_algorithm_results(programmatic: dict[str, Any], llm_result: dict[str,
     return merged
 
 
+def _apply_task_relevance_cap(result: dict[str, Any], input_data: dict[str, Any]) -> dict[str, Any]:
+    """Topic mismatch is graded by task relevance, not algorithm complexity alone."""
+    task = input_data.get("task_alignment")
+    if not isinstance(task, dict):
+        return result
+
+    off_topic = bool(task.get("llm_off_topic"))
+    reasons = task.get("reasons") if isinstance(task.get("reasons"), list) else []
+    try:
+        capability = float(task.get("capability_match", 1.0) or 1.0)
+    except (TypeError, ValueError):
+        capability = 1.0
+    try:
+        factor = float(task.get("factor", 1.0) or 1.0)
+    except (TypeError, ValueError):
+        factor = 1.0
+
+    hard_off = (
+        off_topic
+        or "deterministic_capability_mismatch" in reasons
+        or "cross_domain_mismatch" in reasons
+        or capability <= 0.24
+    )
+    capped = dict(result)
+    score = int(capped.get("score") or 0)
+    if hard_off:
+        capped["score"] = min(score, 12)
+        capped["complexity_gap"] = "unknown"
+        issues = _normalize_algorithm_issues(capped.get("issues"))
+        if not any(str(item.get("type")) == "task_mismatch" for item in issues):
+            issues.insert(
+                0,
+                {
+                    "type": "task_mismatch",
+                    "description": "Kod odevin istedigi algoritma/gorev ile uyusmuyor; karmasiklik analizi ikincil.",
+                    "severity": "high",
+                    "suggested_fix": "Odev aciklamasindaki temel problemi dogrudan uygulayin.",
+                },
+            )
+        capped["issues"] = issues[:10]
+        return capped
+
+    if factor < 0.45 or capability < 0.45:
+        capped["score"] = min(score, 40)
+    return capped
+
+
 class AlgorithmAgent(BaseAgent):
     name = "algorithm"
     description = "Algoritma, veri yapisi ve karmasiklik analizi"
@@ -423,9 +470,9 @@ class AlgorithmAgent(BaseAgent):
             )
         except LLMInferenceError as exc:
             return self._with_contract_metadata(
-                {**programmatic, "llm_error": str(exc)[:300]},
+                _apply_task_relevance_cap({**programmatic, "llm_error": str(exc)[:300]}, input_data),
                 llm_status="fallback",
                 guardrail_flags=["llm_inference_fallback"],
             )
 
-        return _merge_algorithm_results(programmatic, llm_result)
+        return _apply_task_relevance_cap(_merge_algorithm_results(programmatic, llm_result), input_data)

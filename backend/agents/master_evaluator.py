@@ -35,7 +35,7 @@ def normalize_faculty_rubric_criteria(raw: Any) -> list[dict[str, Any]]:
             continue
         desc = str(item.get("description", "")).strip()
         try:
-            mx = int(round(float(item.get("max_score", 0))))
+            mx = int(round(float(item.get("max_score") or item.get("weight") or 0)))
         except (TypeError, ValueError):
             mx = 0
         if mx < 1:

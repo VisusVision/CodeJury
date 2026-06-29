@@ -9,7 +9,7 @@ from backend.agents.code_quality import CodeQualityAgent
 from backend.agents.code_utils import get_code_metrics
 from backend.agents.guideline import GuidelineAgent
 from backend.agents.evidence import EvidenceAgent, _normalize_claims, _normalize_rejected_claims
-from backend.agents.master_evaluator import MasterEvaluatorAgent
+from backend.agents.master_evaluator import MasterEvaluatorAgent, normalize_faculty_rubric_criteria
 from backend.agents.security import SecurityAgent
 from backend.agents.seniority import SeniorityAgent
 from backend.agents.task_relevance import (
@@ -500,6 +500,35 @@ print("Hava gunesli")
         unrelated = "print('hava bugun gunesli')\n"
 
         self.assertTrue(_has_recognized_capability_requirement(brief))
+        self.assertLess(_capability_match_signal(brief, None, unrelated), 0.25)
+
+    def test_capability_match_detects_parentheses_stack_assignment(self):
+        brief = (
+            "Python ile parantez dengeleme cozumunu yazin. Tek satir stdin alin; "
+            "dengeli ise EVET degilse HAYIR yazdirin. Stack tabanli O(n) tek gecis beklenir."
+        )
+        code = """
+PAIRS = {")": "(", "]": "[", "}": "{"}
+def is_balanced(text):
+    stack = []
+    for ch in text.strip():
+        if ch in PAIRS.values():
+            stack.append(ch)
+        elif ch in PAIRS and (not stack or stack[-1] != PAIRS[ch]):
+            return False
+        elif ch in PAIRS:
+            stack.pop()
+    return not stack
+print("EVET" if is_balanced(input()) else "HAYIR")
+"""
+        unrelated = """
+n = int(input())
+f = 1
+for i in range(2, n + 1):
+    f *= i
+print(f)
+"""
+        self.assertGreaterEqual(_capability_match_signal(brief, None, code), 0.75)
         self.assertLess(_capability_match_signal(brief, None, unrelated), 0.25)
 
 
@@ -1430,6 +1459,52 @@ class TestAgentLLMContractTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertGreaterEqual(result["score"], 80)
 
+    async def test_all_formal_tests_pass_use_blend_not_raw_llm_when_alignment_is_partial(self):
+        agent = TestAgent()
+        test_cases = [
+            {"name": "case_a", "visibility": "public", "stdin": "([])\n", "expected_stdout": "EVET\n"},
+            {"name": "case_b", "visibility": "hidden", "stdin": "())\n", "expected_stdout": "HAYIR\n"},
+        ]
+        with patch.object(
+            agent,
+            "_call_llm",
+            new=AsyncMock(
+                return_value={
+                    "compilation_success": True,
+                    "runs_successfully": True,
+                    "passed_tests": 2,
+                    "failed_tests": 0,
+                    "test_failures": [],
+                    "runtime_errors": [],
+                    "edge_case_handling": "fair",
+                    "edge_cases_observed": [],
+                    "performance_notes": "Calisti.",
+                    "score": 30,
+                }
+            ),
+        ):
+            result = await agent.analyze({
+                "sandbox_result": {
+                    "compilation_success": True,
+                    "exit_code": 0,
+                    "stdout": "",
+                    "stderr": "",
+                    "execution_time_ms": 12,
+                    "peak_memory_mb": 10,
+                    "test_results": [
+                        {"name": "case_a", "passed": True, "expected_stdout": "EVET\n", "actual_stdout": "EVET\n"},
+                        {"name": "case_b", "passed": True, "expected_stdout": "HAYIR\n", "actual_stdout": "HAYIR\n"},
+                    ],
+                },
+                "expected_output": test_cases,
+                "source_code": "stack=[]\nprint('EVET')",
+                "language": "python",
+                "assignment_description": "Parantez dengeleme stack cozumu yazin.",
+                "task_alignment": {"factor": 0.5, "reasons": []},
+            })
+
+        self.assertGreaterEqual(result["score"], 60)
+
     async def test_service_timeout_keeps_programmatic_success_when_llm_is_pessimistic(self):
         code = "from http.server import HTTPServer, BaseHTTPRequestHandler\nHTTPServer(('127.0.0.1', 8000), BaseHTTPRequestHandler).serve_forever()\n"
         agent = TestAgent()
@@ -1503,6 +1578,13 @@ class MasterEvaluatorContractTests(unittest.TestCase):
         functionality = next(row for row in result["rubric_breakdown"] if row["criterion"] == "functionality")
         self.assertEqual(functionality["score"], 68)
         self.assertGreaterEqual(result["final_score"], 65)
+
+    def test_normalize_faculty_rubric_accepts_weight_alias(self):
+        rows = normalize_faculty_rubric_criteria([
+            {"name": "A", "description": "x", "weight": 40},
+            {"name": "B", "description": "y", "max_score": 60},
+        ])
+        self.assertEqual([row["max_score"] for row in rows], [40, 60])
 
     def test_sandbox_fallback_uses_system_tempdir(self):
         real_tempdir = tempfile.TemporaryDirectory

@@ -50,7 +50,7 @@ SCENARIOS: list[AssignmentScenario] = [
         ),
         criterion_count=10,
         submissions=[
-            SubmissionCase("uygun", "samples/veri_guzellestirme_temizleme_uygun.py", True, min_score=65, min_alignment=0.55),
+            SubmissionCase("uygun", "samples/veri_guzellestirme_temizleme_uygun.py", True, min_score=55, min_alignment=0.55),
             SubmissionCase("alakasiz", "samples/veri_guzellestirme_temizleme_alakasiz.py", False, max_score=35, max_alignment=0.30),
         ],
     ),

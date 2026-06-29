@@ -2,7 +2,7 @@ import unittest
 from unittest.mock import AsyncMock, patch
 
 from backend.agents.ai_authorship import AIAuthorshipAgent
-from backend.agents.algorithm import AlgorithmAgent
+from backend.agents.algorithm import AlgorithmAgent, _apply_task_relevance_cap
 from backend.agents.base import LLMInferenceError
 from backend.core.config import settings
 
@@ -201,6 +201,41 @@ def factorial(n):
         self.assertIn("recursion", result["detected_algorithms"])
         self.assertNotEqual(result["detected_algorithms"], ["general_iteration"])
 
+    async def test_stack_wrapper_methods_do_not_look_recursive(self):
+        code = """
+class Stack:
+    def __init__(self):
+        self._items = []
+
+    def push(self, item):
+        self._items.append(item)
+
+    def pop(self):
+        if self.is_empty():
+            raise IndexError("empty stack")
+        return self._items.pop()
+
+    def peek(self):
+        if self.is_empty():
+            raise IndexError("empty stack")
+        return self._items[-1]
+
+    def is_empty(self):
+        return len(self._items) == 0
+"""
+
+        result = await AlgorithmAgent().analyze(
+            {
+                "source_code": code,
+                "language": "python",
+                "assignment_description": "Stack LIFO veri yapisi yazin; push islemi O(1) olmalidir.",
+            }
+        )
+
+        self.assertEqual(result["time_complexity"], "O(1)")
+        self.assertNotIn("recursion", result["detected_algorithms"])
+        self.assertEqual(result["complexity_gap"], "matches_expected")
+
     async def test_normalizes_malformed_llm_issue_objects_before_schema_validation(self):
         code = """
 def two_sum(values, target):
@@ -259,6 +294,26 @@ def first(values):
         )
 
         self.assertNotIn("tuple", result["data_structures"])
+
+    def test_task_relevance_cap_limits_off_topic_algorithm_score(self):
+        payload = {
+            "score": 90,
+            "complexity_gap": "matches_expected",
+            "issues": [],
+        }
+        capped = _apply_task_relevance_cap(
+            payload,
+            {
+                "task_alignment": {
+                    "llm_off_topic": True,
+                    "capability_match": 0.0,
+                    "factor": 0.1,
+                    "reasons": ["llm_task_relevance_off_topic"],
+                }
+            },
+        )
+        self.assertLessEqual(capped["score"], 12)
+        self.assertEqual(capped["complexity_gap"], "unknown")
 
 
 class AIAuthorshipAgentTests(unittest.IsolatedAsyncioTestCase):

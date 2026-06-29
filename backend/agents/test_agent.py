@@ -303,14 +303,23 @@ class TestAgent(BaseAgent):
         )
         if af < 0.999:
             blended = int(round(prog_s + (llm_s - prog_s) * af))
-            llm_result["score"] = max(0, min(100, min(llm_s, max(prog_s, blended))))
+            all_formal_pass = (
+                programmatic["runs_successfully"]
+                and programmatic.get("failed_tests", 0) == 0
+                and int(programmatic.get("total_tests", 0) or 0) > 0
+            )
+            if all_formal_pass:
+                # Passing every formal test: follow alignment blend, not raw LLM pessimism.
+                llm_result["score"] = max(0, min(100, max(blended, min(prog_s, llm_s))))
+            else:
+                llm_result["score"] = max(0, min(100, min(llm_s, max(prog_s, blended))))
         else:
             llm_result["score"] = llm_s
         if (
             programmatic["runs_successfully"]
             and programmatic.get("failed_tests", 0) == 0
             and not programmatic.get("runtime_errors")
-            and af >= 0.7
+            and af >= 0.55
         ):
             # LLM may pessimistically over-penalize smoke-only student submissions for
             # missing advanced edge-case scaffolding. Factual successful execution and
@@ -391,13 +400,14 @@ class TestAgent(BaseAgent):
             and _looks_like_cli_usage_error(stderr)
         )
 
+        formal_expected_cases = expected if isinstance(expected, list) and expected else None
         sandbox_tests = _programmatic_from_sandbox_tests(
             sandbox.get("test_results") or [],
             exit_code=exit_code,
             exec_time_ms=exec_time,
             peak_memory_mb=peak_mem,
             stderr=stderr,
-            expected_cases=expected if isinstance(expected, list) else None,
+            expected_cases=formal_expected_cases,
         )
         if sandbox_tests is not None:
             return _finish(sandbox_tests)
@@ -522,8 +532,8 @@ class TestAgent(BaseAgent):
         failed = 0
         assignment_mismatch_fail = False
 
-        if isinstance(expected, list):
-            for idx, tc in enumerate(expected, 1):
+        if formal_expected_cases is not None:
+            for idx, tc in enumerate(formal_expected_cases, 1):
                 tc_name = tc.get("name", f"Test #{idx}")
                 tc_input = tc.get("input", "")
                 tc_expected = tc.get("expected", "")

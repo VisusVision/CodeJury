@@ -799,8 +799,8 @@ const WorkspacePage = ({ sidebarTitle, sidebarSubtitle, headerTitle, assignmentD
         .map((category) => {
           const pct = Math.round((category.score / category.maxScore) * 100);
           return `
-            <div style="padding:8px 10px;border:1px solid #d1d5db;border-radius:8px;background:#ffffff;font-size:11px;display:flex;justify-content:space-between;gap:8px;align-items:center;min-height:38px;">
-              <span style="font-weight:600;color:#111827;line-height:1.2;">${escapeHtml(category.name)}</span>
+            <div style="padding:8px 10px;border:1px solid #d1d5db;border-radius:8px;background:#ffffff;font-size:11px;display:flex;justify-content:space-between;gap:8px;align-items:center;min-height:38px;height:100%;box-sizing:border-box;">
+              <span style="font-weight:600;color:#111827;line-height:1.2;min-width:0;overflow-wrap:anywhere;">${escapeHtml(category.name)}</span>
               <span style="font-weight:700;color:#111827;white-space:nowrap;">${pct}/100</span>
             </div>
           `;
@@ -811,12 +811,45 @@ const WorkspacePage = ({ sidebarTitle, sidebarSubtitle, headerTitle, assignmentD
         .map((agent) => {
           const pct = Math.round((agent.score / agent.maxScore) * 100);
           return `
-            <div style="padding:8px 10px;border:1px solid #e5e7eb;border-radius:8px;background:#f9fafb;font-size:11px;min-height:58px;">
+            <div style="padding:8px 10px;border:1px solid #e5e7eb;border-radius:8px;background:#f9fafb;font-size:11px;min-height:58px;height:100%;box-sizing:border-box;display:flex;flex-direction:column;">
               <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:4px;">
-                <span style="font-weight:700;color:#111827;line-height:1.2;">${escapeHtml(agent.name)}</span>
+                <span style="font-weight:700;color:#111827;line-height:1.2;min-width:0;overflow-wrap:anywhere;">${escapeHtml(agent.name)}</span>
                 <span style="font-weight:700;color:#111827;white-space:nowrap;">${pct}%</span>
               </div>
-              <div style="color:#4b5563;line-height:1.3;">${escapeHtml(agent.summary)}</div>
+              <div style="color:#4b5563;line-height:1.3;flex:1;overflow-wrap:anywhere;">${escapeHtml(agent.summary)}</div>
+            </div>
+          `;
+        })
+        .join("");
+
+      const testingAgent = report.agents.find((agent) => agent.id === "testing");
+      const testCaseCards = (testingAgent?.testResults ?? [])
+        .map((test, index) => {
+          const statusColor = test.passed ? "#047857" : "#dc2626";
+          const statusBg = test.passed ? "#ecfdf5" : "#fef2f2";
+          const visibility = test.visibility === "hidden" ? "Gizli test" : `Test ${index + 1}`;
+          const empty = "(cikti yok)";
+          return `
+            <div style="border:1px solid #e5e7eb;border-radius:8px;background:#ffffff;padding:8px 10px;break-inside:avoid;">
+              <div style="display:flex;justify-content:space-between;gap:8px;align-items:center;margin-bottom:6px;">
+                <div style="font-size:11px;font-weight:800;color:#111827;line-height:1.2;min-width:0;overflow-wrap:anywhere;">${escapeHtml(test.name)}</div>
+                <div style="display:flex;gap:4px;align-items:center;white-space:nowrap;">
+                  <span style="font-size:9px;font-weight:700;color:#6b7280;background:#f3f4f6;border-radius:999px;padding:2px 6px;">${visibility}</span>
+                  <span style="font-size:9px;font-weight:800;color:${statusColor};background:${statusBg};border-radius:999px;padding:2px 6px;">${test.passed ? "Gecti" : "Basarisiz"}</span>
+                </div>
+              </div>
+              <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;">
+                ${[
+                  ["Input", test.input],
+                  ["Beklenen Output", test.expected],
+                  ["Senin Output'un", test.actual],
+                ].map(([label, value]) => `
+                  <div>
+                    <div style="font-size:9px;font-weight:800;color:#6b7280;text-transform:uppercase;margin-bottom:3px;">${escapeHtml(label)}</div>
+                    <div style="min-height:34px;max-height:78px;overflow:hidden;border:1px solid #e5e7eb;border-radius:6px;background:#f9fafb;padding:6px;font-family:monospace;font-size:9.5px;line-height:1.35;color:#111827;white-space:pre-wrap;overflow-wrap:anywhere;">${escapeHtml(String(value || "").trim() || empty)}</div>
+                  </div>
+                `).join("")}
+              </div>
             </div>
           `;
         })
@@ -870,17 +903,26 @@ const WorkspacePage = ({ sidebarTitle, sidebarSubtitle, headerTitle, assignmentD
 
         <div style="margin-bottom:8px;">
           <h2 style="font-size:13px;font-weight:800;color:#111827;margin:0 0 6px 0;">Değerlendirme Kriterleri</h2>
-          <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;">
+          <div style="display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:6px;align-items:stretch;">
             ${rubricCards}
           </div>
         </div>
 
         <div style="margin-bottom:8px;">
           <h2 style="font-size:13px;font-weight:800;color:#111827;margin:0 0 6px 0;">Ajan Özetleri</h2>
-          <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;">
+          <div style="display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:6px;align-items:stretch;">
             ${agentCards}
           </div>
         </div>
+
+        ${testCaseCards ? `
+          <div style="margin-bottom:8px;">
+            <h2 style="font-size:13px;font-weight:800;color:#111827;margin:0 0 6px 0;">Test Case Sonuclari</h2>
+            <div style="display:grid;gap:6px;">
+              ${testCaseCards}
+            </div>
+          </div>
+        ` : ""}
 
         ${narrativeSections}
 
