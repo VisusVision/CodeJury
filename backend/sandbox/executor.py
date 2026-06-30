@@ -35,6 +35,7 @@ _FALLBACK = {
     "static_analysis": {},
     "code_metrics": {},
     "summary": {},
+    "execution_backend": "simulation",
 }
 
 
@@ -159,6 +160,7 @@ def run_in_sandbox(
             "code_metrics":        report.get("code_metrics", {}),
             "summary":             summary,
             "fixtures_provided":   bool(normalized_files),
+            "execution_backend":   "pool",
         }
 
     except TimeoutError as e:
@@ -347,4 +349,5 @@ def _simulate_sandbox(
         result["exit_code"] = 1
 
     result["fixtures_provided"] = bool(_normalize_workdir_files(files))
+    result["execution_backend"] = "simulation"
     return result

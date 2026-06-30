@@ -63,6 +63,10 @@ class SimulateSandboxTests(unittest.TestCase):
         self.assertTrue(result["compilation_success"])
         self.assertEqual(result["exit_code"], 0)
 
+    def test_simulation_marks_execution_backend(self):
+        result = _simulate_sandbox("print('ok')\n")
+        self.assertEqual(result.get("execution_backend"), "simulation")
+
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # run_in_sandbox
@@ -123,7 +127,7 @@ class RunInSandboxTests(unittest.TestCase):
         required = {
             "stdout", "stderr", "exit_code", "execution_time_ms", "peak_memory_mb",
             "compilation_success", "timed_out", "memory_exceeded", "test_results",
-            "static_analysis", "code_metrics", "summary",
+            "static_analysis", "code_metrics", "summary", "execution_backend",
         }
         self.assertTrue(required.issubset(set(_FALLBACK.keys())))
 
@@ -132,6 +136,7 @@ class RunInSandboxTests(unittest.TestCase):
             result = run_in_sandbox("print('hello')\n", "python")
         self.assertEqual(result["exit_code"], 0)
         self.assertIn("hello", result["stdout"])
+        self.assertEqual(result.get("execution_backend"), "simulation")
 
     def test_pool_not_ready_falls_back_to_simulation(self):
         pool = MagicMock()
@@ -162,6 +167,7 @@ class RunInSandboxTests(unittest.TestCase):
         self.assertEqual(result["stdout"], "5")
         self.assertEqual(result["exit_code"], 0)
         self.assertTrue(result["compilation_success"])
+        self.assertEqual(result.get("execution_backend"), "pool")
         pool.release.assert_called_once_with(slot, ok=True)
 
     def test_http_error_returns_fallback_and_releases_slot(self):

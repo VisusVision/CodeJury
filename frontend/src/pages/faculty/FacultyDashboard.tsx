@@ -15,6 +15,7 @@ import AssignmentChatbot from "@/components/faculty/AssignmentChatbot";
 import { buildAssignmentExample, descriptionWithExample, exampleBody } from "@/components/faculty/assignmentExample";
 import SettingsPanel from "@/components/faculty/SettingsPanel";
 import StudentsPanel from "@/components/faculty/StudentsPanel";
+import RuntimeHealthBadge from "@/components/dashboard/RuntimeHealthBadge";
 import { toast } from "sonner";
 import {
   createAssignment,
@@ -373,6 +374,10 @@ const FacultyDashboard = () => {
             </button>
           ))}
         </nav>
+
+        <div className="px-3 pb-2">
+          <RuntimeHealthBadge className="w-full" />
+        </div>
 
         <div className="p-3 border-t border-border/50">
           <button

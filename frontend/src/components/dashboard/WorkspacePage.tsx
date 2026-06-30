@@ -31,6 +31,7 @@ import { analyzeCode, createUploadHistoryRecord, getUploadHistoryRecords, getAss
 import UploadHistory, { type UploadRecord } from "@/components/dashboard/UploadHistory";
 import ExecutionStats from "@/components/dashboard/ExecutionStats";
 import RightPanel from "@/components/dashboard/RightPanel";
+import RuntimeHealthBadge from "@/components/dashboard/RuntimeHealthBadge";
 import { cn } from "@/lib/utils";
 import { useTranslation } from "@/i18n/LanguageContext";
 import { splitAssignmentDescription } from "@/lib/assignmentDescription";
@@ -352,6 +353,7 @@ function buildReportData(result: ApiAnalysisResult, fileContent: string): Report
     relevanceScoreWarning: result.relevanceScoreWarning ?? undefined,
     taskAlignment: result.taskAlignment,
     reportStatus: result.reportStatus ?? "ready",
+    agentDiagnostics: result.agentDiagnostics,
   };
 }
 
@@ -1174,6 +1176,7 @@ const WorkspacePage = ({ sidebarTitle, sidebarSubtitle, headerTitle, assignmentD
               description.body || description.expectedOutput ? "pt-32" : "pt-0"
             )}
           >
+              <RuntimeHealthBadge compact className="hidden md:inline-flex" />
               {evaluationButtonVisible && (
                 <button
                   type="button"

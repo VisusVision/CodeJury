@@ -152,6 +152,14 @@ class AnalysisWorkerTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(started)
         initialize_mock.assert_not_called()
 
+    async def test_worker_sandbox_pool_returns_false_when_init_raises(self):
+        with patch.dict("os.environ", {"ANALYSIS_WORKER_SANDBOX_POOL": "1"}, clear=False):
+            with patch("backend.sandbox.pool_manager.initialize_pool", side_effect=RuntimeError("docker down")):
+                with patch.object(analysis_worker.logger, "exception"):
+                    started = analysis_worker.initialize_worker_sandbox_pool()
+
+        self.assertFalse(started)
+
 
 if __name__ == "__main__":
     unittest.main()

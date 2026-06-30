@@ -47,6 +47,11 @@ from backend.agents.assignment_safety import AssignmentSafetyAgent
 from backend.agents.project_context import build_project_context
 from backend.core.config import settings
 from backend.llm.ollama_client import chat_json, get_llm_diagnostics_snapshot
+from backend.ops.runtime_diagnostics import (
+    build_analysis_runtime_meta,
+    get_llm_config_snapshot,
+    get_sandbox_pool_snapshot,
+)
 from backend.queue.analysis_jobs import (
     AnalysisJobNotFound,
     AnalysisJobStore,
@@ -4394,6 +4399,8 @@ async def _run_analysis_pipeline_body(
                 "master": final,
             },
             task_alignment=task_alignment,
+            pipeline_ms=elapsed_ms,
+            sandbox_backend=str(sandbox_result.get("execution_backend") or "simulation"),
         ),
     }
 
@@ -4429,6 +4436,8 @@ def _build_agent_diagnostics(
     agent_outputs: dict[str, dict[str, Any]],
     *,
     task_alignment: dict[str, Any],
+    pipeline_ms: int = 0,
+    sandbox_backend: str = "simulation",
 ) -> dict[str, Any]:
     """Safe diagnostic summary for debugging agent behavior; no prompts or secrets."""
     agents: list[dict[str, Any]] = []
@@ -4452,6 +4461,10 @@ def _build_agent_diagnostics(
             "llm_off_topic": task_alignment.get("llm_off_topic"),
             "reasons": task_alignment.get("reasons", []),
         },
+        "runtime": build_analysis_runtime_meta(
+            pipeline_ms=pipeline_ms,
+            sandbox_backend=sandbox_backend,
+        ),
         "lastLlmCall": get_llm_diagnostics_snapshot(),
     }
 
@@ -4962,6 +4975,8 @@ async def health(response: Response):
         "analysis_engine": _ANALYSIS_ENGINE,
         "demo_mode": _DEMO_MODE,
         "main_py": str(_MAIN_FILE),
+        "llm": get_llm_config_snapshot(),
+        "sandbox": get_sandbox_pool_snapshot(),
     }
 
 

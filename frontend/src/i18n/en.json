@@ -84,6 +84,10 @@
     "noTasks": "No tasks assigned to this assignment.",
     "loadError": "An error occurred while loading data"
   },
+  "runtimeHealth": {
+    "title": "System status",
+    "loading": "loading…"
+  },
   "workspace": {
     "title": "Agent Studio",
     "subtitle": "Multi-Agent Code Review System",
@@ -436,6 +440,10 @@
     "agentSummaries": "Agent Summaries",
     "rubricScores": "Rubric Scores",
     "items": "items",
-    "total": "total"
+    "total": "total",
+    "runtimeTitle": "Runtime",
+    "llmModels": "LLM models",
+    "sandbox": "Sandbox",
+    "pipelineMs": "Pipeline time"
   }
 }

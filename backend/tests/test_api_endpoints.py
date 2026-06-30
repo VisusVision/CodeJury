@@ -75,6 +75,20 @@ class ApiEndpointTests(unittest.TestCase):
         self.assertEqual(data["package"], "frontend")
         self.assertTrue(data["demo_mode"])
 
+    def test_health_includes_llm_and_sandbox_runtime_config(self):
+        resp = self.client.get("/api/health")
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+        llm = data.get("llm")
+        sandbox = data.get("sandbox")
+        self.assertIsInstance(llm, dict)
+        self.assertIsInstance(sandbox, dict)
+        self.assertIn("general_model", llm)
+        self.assertIn("coder_model", llm)
+        self.assertIn("enabled", llm)
+        self.assertIn("mode", sandbox)
+        self.assertIn("pool_ready", sandbox)
+
     # ── Students ────────────────────────────────────────────────────────────────
     def test_list_students_returns_seeded_student(self):
         resp = self.client.get("/api/students")

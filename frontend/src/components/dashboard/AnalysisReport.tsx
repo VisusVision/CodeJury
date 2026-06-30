@@ -105,6 +105,7 @@ export interface ReportData {
   relevanceScoreWarning?: string | null;
   taskAlignment?: TaskAlignment;
   reportStatus?: "preparing" | "ready";
+  agentDiagnostics?: import("@/services/api").ApiAgentDiagnostics;
 }
 
 /* ─── Mock report generator ─── */

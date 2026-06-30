@@ -217,6 +217,10 @@ const RightPanel = ({
   const rubricItems = report?.rubric.slice(rubricStart, rubricEnd) ?? [];
   const testingAgent = report?.agents.find((agent) => agent.id === "testing");
   const testResults = testingAgent?.testResults ?? [];
+  const runtime = report?.agentDiagnostics?.runtime;
+  const llmRuntime = runtime?.llm;
+  const sandboxRuntime = runtime?.sandbox;
+  const diagnosticAgents = report?.agentDiagnostics?.agents ?? [];
 
   useEffect(() => {
     setRubricPage(0);
@@ -273,6 +277,42 @@ const RightPanel = ({
         {/* Süreç Tab */}
         {activeTab === "process" && (
           <div className="p-3 space-y-2">
+            {runtime && (
+              <div className="rounded-lg border border-border bg-muted/30 p-3 text-[11px] space-y-1.5">
+                <div className="font-semibold text-foreground text-xs">{t("rightPanel.runtimeTitle")}</div>
+                {llmRuntime && (
+                  <div className="text-muted-foreground">
+                    <span className="text-foreground/80">{t("rightPanel.llmModels")}:</span>{" "}
+                    {llmRuntime.general_model} / {llmRuntime.coder_model}
+                  </div>
+                )}
+                {sandboxRuntime && (
+                  <div className="text-muted-foreground">
+                    <span className="text-foreground/80">{t("rightPanel.sandbox")}:</span>{" "}
+                    {sandboxRuntime.execution_backend ?? sandboxRuntime.mode}
+                    {sandboxRuntime.pool_ready ? ` (${sandboxRuntime.available_count}/${sandboxRuntime.container_count})` : ""}
+                  </div>
+                )}
+                {typeof runtime.pipeline_ms === "number" && runtime.pipeline_ms > 0 && (
+                  <div className="text-muted-foreground">
+                    <span className="text-foreground/80">{t("rightPanel.pipelineMs")}:</span> {runtime.pipeline_ms} ms
+                  </div>
+                )}
+                {diagnosticAgents.length > 0 && (
+                  <div className="pt-1 space-y-0.5 border-t border-border/60 mt-1">
+                    {diagnosticAgents.map((row) => (
+                      <div key={row.id} className="flex justify-between gap-2 text-muted-foreground">
+                        <span className="truncate">{row.id}</span>
+                        <span className="shrink-0 tabular-nums">
+                          {row.llm_status}
+                          {row.guardrail_flags?.length ? ` · ${row.guardrail_flags.join(", ")}` : ""}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
             {agents.map((agent) => (
               <AgentCard
                 key={agent.id}
