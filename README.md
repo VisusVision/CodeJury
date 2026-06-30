@@ -13,6 +13,21 @@
 
 ---
 
+## Run Locally (Single User)
+
+Pick one path after cloning:
+
+| Goal | Command | Docs |
+|------|---------|------|
+| **Quick UI demo** (no Docker) | `npm run setup:demo` then `npm run dev:full` | [LOCAL_QUICKSTART.md](LOCAL_QUICKSTART.md) (TR) |
+| **Full AI grading** (Docker + Ollama) | `npm run setup` then `npm run dev:full` | [INSTALL.md](INSTALL.md) |
+
+Open **http://localhost:8080**. Verify: `npm run check:prereqs` and `cd frontend && npm run verify:health`.
+
+Demo credentials (when `DEMO_MODE=1`): teacher `demo@agentgrade.local` / `demo123`, student `20240001` / `11111111111`.
+
+---
+
 ## Overview
 
 **CodeJury** is an AI-powered programming assignment evaluation platform designed for both educators and students.

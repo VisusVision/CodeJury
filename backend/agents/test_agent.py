@@ -329,6 +329,20 @@ class TestAgent(BaseAgent):
             if "test_agent_score_repaired_sandbox_pass" not in flags:
                 flags.append("test_agent_score_repaired_sandbox_pass")
             llm_result["guardrail_flags"] = flags
+        elif (
+            programmatic.get("service_runtime_accepted")
+            and programmatic.get("runs_successfully")
+            and int(prog_s) > int(llm_result["score"])
+        ):
+            llm_result["score"] = max(int(llm_result["score"]), int(prog_s))
+            flags = [
+                str(flag)
+                for flag in (llm_result.get("guardrail_flags") or [])
+                if str(flag).strip()
+            ] if isinstance(llm_result.get("guardrail_flags"), list) else []
+            if "test_agent_score_repaired_service_runtime" not in flags:
+                flags.append("test_agent_score_repaired_service_runtime")
+            llm_result["guardrail_flags"] = flags
 
         observed = llm_result.get("edge_cases_observed")
         if not isinstance(observed, list):
@@ -438,6 +452,7 @@ class TestAgent(BaseAgent):
                     "testte hata olarak sayilmadi."
                 ),
                 "score": 68 if align_f >= 0.7 else 50,
+                "service_runtime_accepted": True,
             })
 
         if mem_exceeded and not service_program:
@@ -466,6 +481,7 @@ class TestAgent(BaseAgent):
                     "calisma basarisizligi sayilmadi."
                 ),
                 "score": 62 if align_f >= 0.7 else 48,
+                "service_runtime_accepted": True,
             })
 
         if cli_usage_exit:

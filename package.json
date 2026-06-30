@@ -6,6 +6,7 @@
     "dev:frontend": "npm --prefix frontend run dev:vite",
     "dev:api": "node frontend/scripts/dev-api.mjs",
     "check:prereqs": "node scripts/check-prereqs.mjs",
+    "verify:all": "node scripts/check-prereqs.mjs && npm --prefix frontend run verify:health",
     "setup": "node scripts/run-installer.mjs",
     "setup:demo": "node scripts/run-installer.mjs --demo",
     "setup:skip-checks": "node scripts/run-installer.mjs --skip-checks"

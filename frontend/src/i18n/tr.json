@@ -49,6 +49,12 @@
     "registerLink": "Kayıt olun",
     "studentNotFound": "Öğrenci bulunamadı. Lütfen bilgilerinizi kontrol edin.",
     "networkError": "Sunucuya bağlanılamadı",
+    "demoModeTitle": "Demo hesapları",
+    "demoModeHint": "Hızlı deneme modu aktif. Aşağıdaki hesaplarla giriş yapabilirsiniz.",
+    "demoTeacher": "Öğretmen",
+    "demoStudent": "Öğrenci",
+    "demoFillStudent": "Demo öğrenci bilgilerini doldur",
+    "demoFillTeacher": "Demo öğretmen bilgilerini doldur",
     "welcomeTitle": "Kodunu Yükle, AI Değerlendirsin",
     "welcomeDesc": "Yapay zeka destekli çoklu ajan sistemi ile kodunu anında analiz et, detaylı geri bildirim al.",
     "features": {
@@ -107,6 +113,12 @@
     "supportedFormats": "Desteklenen formatlar",
     "maxSize": "Maksimum dosya boyutu",
     "analysisComplete": "Analiz tamamlandı!",
+    "preflight": {
+      "healthUnavailable": "API'ye ulaşılamıyor. npm run dev:full ile sunucuyu başlatın.",
+      "llmDisabled": "LLM kapalı veya Ollama çalışmıyor. ollama serve ve model indirmeyi kontrol edin.",
+      "sandboxSimulation": "Sandbox simülasyon modunda; Docker pool yoksa kod çalıştırma sınırlı olabilir.",
+      "durationHint": "İlk analiz 3–8 dakika sürebilir; bu normaldir."
+    },
     "analysisError": "Analiz sırasında hata oluştu",
     "backToWorkspace": "Çalışma Alanına Dön",
     "backToAssignments": "Ödevlere Dön",

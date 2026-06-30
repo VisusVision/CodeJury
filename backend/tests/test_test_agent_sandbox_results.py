@@ -241,6 +241,61 @@ class TestAgentSandboxResultsTests(unittest.TestCase):
         self.assertGreaterEqual(result["score"], 50)
         self.assertIn("test_agent_score_repaired_sandbox_pass", result.get("guardrail_flags", []))
 
+    def test_service_timeout_llm_score_repaired_from_programmatic(self):
+        code = (
+            "from http.server import BaseHTTPRequestHandler, HTTPServer\n"
+            "class H(BaseHTTPRequestHandler):\n"
+            "    pass\n"
+            "HTTPServer(('127.0.0.1', 8080), H).serve_forever()\n"
+        )
+        sandbox = {
+            "compilation_success": True,
+            "exit_code": 1,
+            "stdout": "",
+            "stderr": "TimeoutError: code did not finish within 10 seconds",
+            "timed_out": True,
+            "execution_time_ms": 10000,
+            "peak_memory_mb": 12,
+            "test_results": [],
+        }
+        agent = TestAgent()
+
+        async def run_case():
+            with patch.object(
+                agent,
+                "_call_llm",
+                new=AsyncMock(
+                    return_value={
+                        "compilation_success": True,
+                        "runs_successfully": True,
+                        "passed_tests": 1,
+                        "failed_tests": 0,
+                        "test_failures": [],
+                        "runtime_errors": [],
+                        "edge_case_handling": "fair",
+                        "edge_cases_observed": [],
+                        "performance_notes": "Timeout.",
+                        "score": 10,
+                    }
+                ),
+            ):
+                return await agent.analyze(
+                    {
+                        "sandbox_result": sandbox,
+                        "expected_output": [],
+                        "source_code": code,
+                        "language": "python",
+                        "assignment_description": "POST /clean ve PUT /beautify endpointleri sunan mini API gelistirin.",
+                        "task_alignment": {"factor": 1.0, "reasons": []},
+                    }
+                )
+
+        result = asyncio.run(run_case())
+
+        self.assertTrue(result["runs_successfully"])
+        self.assertGreaterEqual(result["score"], 50)
+        self.assertIn("test_agent_score_repaired_service_runtime", result.get("guardrail_flags", []))
+
     def test_analyze_falls_back_when_llm_response_missing_score(self):
         sandbox = {
             "compilation_success": True,

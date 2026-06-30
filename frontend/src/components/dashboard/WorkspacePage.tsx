@@ -27,7 +27,7 @@ import LogPanel, { type LogEntry } from "@/components/dashboard/LogPanel";
 import CodeEditor, { type CodeAnnotation } from "@/components/dashboard/CodeEditor";
 import { type ReportData } from "@/components/dashboard/AnalysisReport";
 import { buildPdfReportSectionsHtml } from "@/components/dashboard/reportPdfSections";
-import { analyzeCode, createUploadHistoryRecord, getUploadHistoryRecords, getAssignmentQuestions, getCurrentEvaluation, submitEvaluation, type ApiAnalysisResult, type QuestionItem, type EvaluationRecord } from "@/services/api";
+import { analyzeCode, createUploadHistoryRecord, getUploadHistoryRecords, getAssignmentQuestions, getCurrentEvaluation, submitEvaluation, fetchHealth, type ApiAnalysisResult, type QuestionItem, type EvaluationRecord } from "@/services/api";
 import UploadHistory, { type UploadRecord } from "@/components/dashboard/UploadHistory";
 import ExecutionStats from "@/components/dashboard/ExecutionStats";
 import RightPanel from "@/components/dashboard/RightPanel";
@@ -35,6 +35,7 @@ import RuntimeHealthBadge from "@/components/dashboard/RuntimeHealthBadge";
 import { cn } from "@/lib/utils";
 import { useTranslation } from "@/i18n/LanguageContext";
 import { splitAssignmentDescription } from "@/lib/assignmentDescription";
+import { checkAnalysisPreflight } from "@/lib/analysisPreflight";
 
 interface UploadedFile {
   name: string;
@@ -529,6 +530,22 @@ const WorkspacePage = ({ sidebarTitle, sidebarSubtitle, headerTitle, assignmentD
       return;
     }
     if (files.length === 0) return;
+
+    const health = await fetchHealth();
+    const preflight = checkAnalysisPreflight(health, {
+      healthUnavailable: t("workspace.preflight.healthUnavailable"),
+      llmDisabled: t("workspace.preflight.llmDisabled"),
+      sandboxSimulation: t("workspace.preflight.sandboxSimulation"),
+      durationHint: t("workspace.preflight.durationHint"),
+    });
+    if (!preflight.ok) {
+      toast.error(preflight.reason);
+      return;
+    }
+    if (preflight.warnings.length > 0) {
+      toast.info(preflight.warnings.join(" "));
+    }
+
     analysisInFlightRef.current = true;
     analysisAbortRef.current?.abort();
     const abortController = new AbortController();
