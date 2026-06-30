@@ -82,7 +82,7 @@ class MasterEvaluatorFacultyRuntimeGuardTests(unittest.IsolatedAsyncioTestCase):
         ]
         self.assertGreater(sum(non_security), 0)
 
-    def test_effective_alignment_boosts_relevant_submission(self):
+    def test_effective_alignment_respects_llm_task_factor(self):
         programmatic = {
             "brief_alignment_factor": 0.12,
             "programmatic_alignment_factor": 1.0,
@@ -92,7 +92,7 @@ class MasterEvaluatorFacultyRuntimeGuardTests(unittest.IsolatedAsyncioTestCase):
             "brief_alignment_reasons": ["llm_task_relevance_off_topic"],
         }
         effective = MasterEvaluatorAgent._effective_alignment_for_grading(programmatic)
-        self.assertGreaterEqual(effective, 0.82)
+        self.assertEqual(effective, 0.12)
 
     def test_faculty_mode_hard_off_topic_caps_below_thirty(self):
         llm_result = {

@@ -290,33 +290,6 @@ class SecurityAgent(BaseAgent):
         llm_score = self._safe_int(llm_result.get("score"), 50)
         rule_score = _score_from_threats(merged_th)
         final_score, capped = _final_security_score(llm_score, rule_score, merged_th)
-        task = input_data.get("task_alignment")
-        if isinstance(task, dict) and bool(task.get("llm_off_topic")):
-            real_threats = [
-                t for t in merged_th
-                if isinstance(t, dict) and not SecurityAgent._is_assignment_mismatch_threat(t)
-            ]
-            if not real_threats:
-                final_score = max(final_score, 95)
-                llm_result["risk_level"] = "safe"
-                llm_result["safe"] = True
-                llm_result["critical_count"] = 0
-                llm_result["high_count"] = 0
-                llm_result["threats"] = []
-            else:
-                destructive = any(
-                    isinstance(t, dict)
-                    and str(t.get("severity", "")).lower() in {"critical", "high"}
-                    and str(t.get("type", "")).lower()
-                    in {"command_inject", "code_injection", "deserialization", "sandbox_escape"}
-                    for t in real_threats
-                )
-                if not destructive:
-                    final_score = max(final_score, 85)
-                    llm_result["risk_level"] = "low"
-                    llm_result["safe"] = True
-                    llm_result["critical_count"] = 0
-                    llm_result["high_count"] = 0
         llm_result["score"] = final_score
         llm_result["score_model"] = max(0, min(100, llm_score))
         llm_result["score_rule"] = rule_score

@@ -134,8 +134,8 @@ def _programmatic_from_sandbox_tests(
         for item in test_failures
         if isinstance(item, dict)
     )
-    runtime_errors = _classify_errors("\n".join([stderr or "", error_text])) if failed or exit_code != 0 else []
-    runs_ok = failed == 0 and exit_code == 0
+    runtime_errors = _classify_errors("\n".join([stderr or "", error_text])) if failed or (exit_code != 0 and passed == 0) else []
+    runs_ok = failed == 0 and (exit_code == 0 or passed > 0)
     edge_case = "good" if passed >= 2 else "fair"
     perf_notes = _evaluate_performance(exec_time_ms, peak_memory_mb)
 
@@ -300,12 +300,35 @@ class TestAgent(BaseAgent):
 
         prog_s = programmatic["score"]
         llm_s = self._safe_int(llm_result.get("score"), prog_s)
+        defaulted_flags = [
+            str(flag)
+            for flag in (llm_result.get("guardrail_flags") or [])
+            if str(flag).strip()
+        ] if isinstance(llm_result.get("guardrail_flags"), list) else []
+        score_was_defaulted = "test_agent_score_defaulted" in defaulted_flags
+
         llm_result["score"] = max(0, min(100, llm_s))
         # Objective runtime facts override LLM score (not heuristic programmatic hints).
         if not programmatic["compilation_success"]:
             llm_result["score"] = 0
         elif not programmatic["runs_successfully"]:
             llm_result["score"] = min(int(llm_result["score"]), 35)
+        elif (
+            not score_was_defaulted
+            and int(programmatic.get("failed_tests", 0) or 0) == 0
+            and int(programmatic.get("passed_tests", 0) or 0) > 0
+            and int(llm_result["score"]) == 0
+        ):
+            # LLM score 0 contradicts recorded sandbox pass results — repair from facts.
+            llm_result["score"] = max(1, min(100, int(prog_s)))
+            flags = [
+                str(flag)
+                for flag in (llm_result.get("guardrail_flags") or [])
+                if str(flag).strip()
+            ] if isinstance(llm_result.get("guardrail_flags"), list) else []
+            if "test_agent_score_repaired_sandbox_pass" not in flags:
+                flags.append("test_agent_score_repaired_sandbox_pass")
+            llm_result["guardrail_flags"] = flags
 
         observed = llm_result.get("edge_cases_observed")
         if not isinstance(observed, list):

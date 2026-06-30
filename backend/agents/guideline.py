@@ -201,7 +201,7 @@ class GuidelineAgent(BaseAgent):
 
         merged = self._merge_llm_with_programmatic(llm_result, programmatic, language=language)
 
-        merged["score"] = self._safe_int(merged.get("score"), programmatic["score"])
+        merged["score"] = self._safe_int(merged.get("score"), 50)
         if "clean_code_score" in merged:
             merged["clean_code_score"] = self._safe_int(
                 merged["clean_code_score"], merged["score"]
@@ -240,7 +240,7 @@ class GuidelineAgent(BaseAgent):
             except (TypeError, ValueError):
                 pass
         if not score_ok:
-            out["score"] = prog["score"]
+            out["score"] = 50
         ccs = out.get("clean_code_score")
         ccs_ok = False
         if ccs is not None:
@@ -250,7 +250,7 @@ class GuidelineAgent(BaseAgent):
             except (TypeError, ValueError):
                 pass
         if not ccs_ok:
-            out["clean_code_score"] = prog.get("clean_code_score", prog["score"])
+            out["clean_code_score"] = out.get("score", 50)
         if not isinstance(out.get("style_guide_compliance"), str) or not str(out.get("style_guide_compliance")).strip():
             out["style_guide_compliance"] = prog.get("style_guide_compliance", "")
         for key in ("has_docstrings", "has_type_hints", "function_length_ok", "nesting_depth_ok"):
