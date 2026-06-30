@@ -46,6 +46,7 @@ coverage/
 htmlcov/
 test-results/
 playwright-report/
+output/
 
 # --- Misc ---
 *.tmp

@@ -15,7 +15,7 @@
  */
 
 import { execSync } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { request } from "node:http";
 
@@ -143,6 +143,51 @@ async function pingOllama() {
   });
 }
 
+async function checkOllamaModels() {
+  const cliVer = checkOllamaCmd();
+  if (!cliVer) return;
+  const up = await pingOllama();
+  if (!up) return;
+
+  const wanted = new Set();
+  const envPath = existsSync(".env") ? ".env" : existsSync(".env.example") ? ".env.example" : null;
+  if (envPath) {
+    const text = readFileSync(envPath, "utf8");
+    for (const key of ["OLLAMA_GENERAL_MODEL", "OLLAMA_CODER_MODEL"]) {
+      const m = text.match(new RegExp(`^\\s*${key}\\s*=\\s*(\\S+)`, "m"));
+      if (m) wanted.add(m[1].replace(/^["']|["']$/g, ""));
+    }
+  }
+  if (wanted.size === 0) return;
+
+  const tags = await new Promise((res) => {
+    const req = request(
+      { host: "localhost", port: 11434, path: "/api/tags", method: "GET", timeout: 3000 },
+      (r) => {
+        let body = "";
+        r.on("data", (c) => { body += c; });
+        r.on("end", () => {
+          try {
+            const parsed = JSON.parse(body);
+            res((parsed.models || []).map((m) => m.name));
+          } catch {
+            res([]);
+          }
+        });
+      },
+    );
+    req.on("timeout", () => { req.destroy(); res([]); });
+    req.on("error", () => res([]));
+    req.end();
+  });
+
+  for (const model of wanted) {
+    const found = tags.some((name) => name === model || name.startsWith(`${model}:`));
+    if (found) record("Ollama model", "ok", `${model} yuklu`);
+    else record("Ollama model", "warn", `${model} bulunamadi. ollama pull ${model}`);
+  }
+}
+
 async function checkOllama() {
   const cliVer = checkOllamaCmd();
   if (!cliVer) return;
@@ -186,6 +231,7 @@ async function main() {
   checkDocker();
   checkDockerCompose();
   await checkOllama();
+  await checkOllamaModels();
 
   console.log("\n" + C.magenta("--------------------------------------------"));
   const errs  = results.filter((r) => r.status === "err");

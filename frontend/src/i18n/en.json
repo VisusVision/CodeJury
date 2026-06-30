@@ -49,6 +49,12 @@
     "registerLink": "Register",
     "studentNotFound": "Student not found. Please check your credentials.",
     "networkError": "Could not connect to the server",
+    "demoModeTitle": "Demo accounts",
+    "demoModeHint": "Demo mode is active. You can sign in with the accounts below.",
+    "demoTeacher": "Teacher",
+    "demoStudent": "Student",
+    "demoFillStudent": "Fill demo student credentials",
+    "demoFillTeacher": "Fill demo teacher credentials",
     "welcomeTitle": "Upload Your Code, Let AI Evaluate",
     "welcomeDesc": "Instantly analyze your code with an AI-powered multi-agent system and get detailed feedback.",
     "features": {
@@ -107,6 +113,12 @@
     "supportedFormats": "Supported formats",
     "maxSize": "Maximum file size",
     "analysisComplete": "Analysis complete!",
+    "preflight": {
+      "healthUnavailable": "Cannot reach the API. Start the stack with npm run dev:full.",
+      "llmDisabled": "LLM is disabled or Ollama is not running. Check ollama serve and model pulls.",
+      "sandboxSimulation": "Sandbox is in simulation mode; code execution may be limited without a Docker pool.",
+      "durationHint": "The first analysis may take 3–8 minutes; this is normal."
+    },
     "analysisError": "An error occurred during analysis",
     "backToWorkspace": "Back to Workspace",
     "backToAssignments": "Back to Assignments",

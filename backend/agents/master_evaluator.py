@@ -307,6 +307,7 @@ class MasterEvaluatorAgent(BaseAgent):
             input_data.get("security", {}),
             faculty_mode=False,
         )
+        self._apply_default_consensus_rescue(llm_result, programmatic, input_data)
         self._sync_rubric_to_final_score(llm_result, faculty_mode=False)
         return llm_result
 
@@ -635,12 +636,22 @@ class MasterEvaluatorAgent(BaseAgent):
         return any(token in label for token in ("security", "güven", "guven"))
 
     @staticmethod
-    def _sandbox_runs_ok(sandbox_result: dict[str, Any] | None) -> bool:
+    def _sandbox_runs_ok(
+        sandbox_result: dict[str, Any] | None,
+        *,
+        source_code: str = "",
+        language: str = "python",
+    ) -> bool:
         if not isinstance(sandbox_result, dict) or not sandbox_result:
             return False
         if not sandbox_result.get("compilation_success", True):
             return False
-        if sandbox_result.get("timed_out") or sandbox_result.get("timeout"):
+        timed_out = bool(sandbox_result.get("timed_out") or sandbox_result.get("timeout"))
+        if timed_out:
+            from backend.agents.test_agent import _looks_like_service_program
+
+            if _looks_like_service_program(source_code, language):
+                return True
             return False
         try:
             return int(sandbox_result.get("exit_code", 0) or 0) == 0
@@ -815,7 +826,14 @@ class MasterEvaluatorAgent(BaseAgent):
             return
 
         sandbox = input_data.get("sandbox_result")
-        runs_ok = cls._sandbox_runs_ok(sandbox if isinstance(sandbox, dict) else None)
+        runs_ok = cls._sandbox_runs_ok(
+            sandbox if isinstance(sandbox, dict) else None,
+            source_code=str(input_data.get("source_code") or ""),
+            language=str(input_data.get("language") or "python"),
+        )
+        testing = input_data.get("testing")
+        if isinstance(testing, dict) and testing.get("runs_successfully"):
+            runs_ok = True
         if not runs_ok or core < 55:
             return
 
@@ -904,6 +922,75 @@ class MasterEvaluatorAgent(BaseAgent):
         if note not in recs:
             recs.append(note)
         llm_result["recommendations"] = recs
+
+    @classmethod
+    def _apply_default_consensus_rescue(
+        cls,
+        llm_result: dict[str, Any],
+        programmatic: dict[str, Any],
+        input_data: dict[str, Any],
+    ) -> None:
+        """Recover from default-rubric collapse when agents agree the submission runs and fits."""
+        raw_bd = llm_result.get("rubric_breakdown")
+        if not isinstance(raw_bd, list) or not raw_bd:
+            return
+        try:
+            current = float(llm_result.get("final_score", 0) or 0)
+            core = float(programmatic.get("final_score", 0) or 0)
+        except (TypeError, ValueError):
+            return
+        if current >= 35 or core < 55:
+            return
+
+        sandbox = input_data.get("sandbox_result")
+        runs_ok = cls._sandbox_runs_ok(
+            sandbox if isinstance(sandbox, dict) else None,
+            source_code=str(input_data.get("source_code") or ""),
+            language=str(input_data.get("language") or "python"),
+        )
+        testing = input_data.get("testing")
+        if isinstance(testing, dict) and testing.get("runs_successfully"):
+            runs_ok = True
+        if not runs_ok:
+            return
+        if cls._effective_alignment_for_grading(programmatic) < 0.55:
+            return
+
+        if any(
+            float(row.get("score", 0) or 0) > 5
+            for row in raw_bd
+            if isinstance(row, dict)
+        ):
+            return
+
+        target_pct = min(max(core, 55.0), 85.0)
+        target_row = int(round(min(100.0, target_pct)))
+        note = (
+            "Agent konsensusu duzeltmesi: kod calisiyor ve gorev sinyalleri guclu oldugu halde "
+            "rubrik satirlari asiri dusuk kalmisti; alt ajan ozetine gore taban uygulandi."
+        )
+        for row in raw_bd:
+            if not isinstance(row, dict):
+                continue
+            try:
+                weight = float(row.get("weight", 0) or 0)
+            except (TypeError, ValueError):
+                continue
+            if weight <= 0:
+                continue
+            row["score"] = target_row
+            row["weighted_score"] = round(target_row * weight / 100.0, 2)
+            just = str(row.get("justification", "") or "").strip()
+            if note not in just:
+                row["justification"] = f"{just} {note}".strip() if just else note
+
+        cls._recompute_default_final_score(llm_result)
+        flags = llm_result.get("guardrail_flags")
+        if not isinstance(flags, list):
+            flags = []
+        if "default_rubric_consensus_rescue" not in flags:
+            flags.append("default_rubric_consensus_rescue")
+        llm_result["guardrail_flags"] = flags
 
     @classmethod
     def _apply_faculty_security_floor(
