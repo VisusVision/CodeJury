@@ -1,5 +1,11 @@
 import { afterEach, describe, expect, test, vi } from "vitest";
-import { analyzeCode, getAssignmentTestCases, replaceAssignmentTestCases, suggestAssignmentTestCases } from "./api";
+import {
+  analyzeCode,
+  fetchHealth,
+  getAssignmentTestCases,
+  replaceAssignmentTestCases,
+  suggestAssignmentTestCases,
+} from "./api";
 
 describe("analyzeCode", () => {
   afterEach(() => {
@@ -193,5 +199,44 @@ describe("assignment test cases", () => {
 
     expect(rows[0].source).toBe("ai");
     expect(fetchMock).toHaveBeenCalledWith("/api/assignments/assignment-1/test-cases/suggest", { method: "POST" });
+  });
+});
+
+describe("fetchHealth", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  test("returns llm and sandbox snapshots from /api/health", async () => {
+    const payload = {
+      status: "ok",
+      llm: { enabled: true, general_model: "llama3", coder_model: "qwen2.5-coder" },
+      sandbox: { mode: "pool", pool_ready: true, container_count: 3, available_count: 2 },
+    };
+    const fetchMock = vi.fn().mockResolvedValueOnce({
+      ok: true,
+      json: async () => payload,
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const health = await fetchHealth();
+
+    expect(fetchMock).toHaveBeenCalledWith("/api/health");
+    expect(health?.llm?.general_model).toBe("llama3");
+    expect(health?.sandbox?.mode).toBe("pool");
+    expect(health?.sandbox?.available_count).toBe(2);
+  });
+
+  test("returns null when health endpoint is unavailable", async () => {
+    const fetchMock = vi.fn().mockResolvedValueOnce({ ok: false });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(fetchHealth()).resolves.toBeNull();
+  });
+
+  test("returns null when fetch throws", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockRejectedValueOnce(new Error("network down")));
+
+    await expect(fetchHealth()).resolves.toBeNull();
   });
 });

@@ -92,6 +92,37 @@ export interface ApiTaskAlignment {
   capability_match?: number;
 }
 
+export interface ApiAgentDiagnosticRow {
+  id: string;
+  score?: number | null;
+  llm_status: string;
+  confidence?: number | null;
+  guardrail_flags: string[];
+}
+
+export interface ApiAgentDiagnostics {
+  agents: ApiAgentDiagnosticRow[];
+  taskAlignment?: Record<string, unknown>;
+  runtime?: {
+    llm?: {
+      enabled?: boolean;
+      provider?: string;
+      general_model?: string;
+      coder_model?: string;
+      base_url?: string;
+    };
+    sandbox?: {
+      mode?: string;
+      pool_ready?: boolean;
+      execution_backend?: string;
+      container_count?: number;
+      available_count?: number;
+    };
+    pipeline_ms?: number;
+  };
+  lastLlmCall?: Record<string, unknown>;
+}
+
 export interface ApiAnalysisResult {
   totalScore: number;
   maxScore: number;
@@ -114,6 +145,7 @@ export interface ApiAnalysisResult {
   relevanceScoreWarning?: string | null;
   taskAlignment?: ApiTaskAlignment;
   reportStatus?: "preparing" | "ready";
+  agentDiagnostics?: ApiAgentDiagnostics;
 }
 
 interface AnalysisJobAccepted {
@@ -434,12 +466,42 @@ export async function analyzeCode(
   return payload as ApiAnalysisResult;
 }
 
+export interface ApiHealthResponse {
+  status: string;
+  version?: string;
+  analysis_engine?: string;
+  demo_mode?: boolean;
+  llm?: {
+    enabled?: boolean;
+    general_model?: string;
+    coder_model?: string;
+    provider?: string;
+    base_url?: string;
+  };
+  sandbox?: {
+    mode?: string;
+    pool_ready?: boolean;
+    container_count?: number;
+    available_count?: number;
+  };
+}
+
 export async function checkHealth(): Promise<boolean> {
   try {
     const response = await fetch(`${API_BASE_URL}/api/health`);
     return response.ok;
   } catch {
     return false;
+  }
+}
+
+export async function fetchHealth(): Promise<ApiHealthResponse | null> {
+  try {
+    const response = await fetch(`${API_BASE_URL}/api/health`);
+    if (!response.ok) return null;
+    return (await response.json()) as ApiHealthResponse;
+  } catch {
+    return null;
   }
 }
 

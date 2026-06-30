@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import os
 import re
 import sys
 import time
@@ -58,6 +59,7 @@ class SoakSummary:
     passed_runs: int
     failed_runs: int
     error_runs: int
+    sandbox_mode: str = "simulation"
     failures: list[dict[str, Any]] = field(default_factory=list)
 
 
@@ -299,7 +301,7 @@ async def _run_case(case: CaseSpec) -> RunResult:
         )
 
 
-async def run_soak(duration_min: int) -> SoakSummary:
+async def run_soak(duration_min: int, *, sandbox_mode: str = "simulation") -> SoakSummary:
     QA_DIR.mkdir(parents=True, exist_ok=True)
     cases = _build_cases()
     started = datetime.now(timezone.utc)
@@ -307,7 +309,10 @@ async def run_soak(duration_min: int) -> SoakSummary:
     results: list[RunResult] = []
     cycle = 0
 
-    print(f"[soak] {len(cases)} cases/cycle, target {duration_min} min", flush=True)
+    print(
+        f"[soak] {len(cases)} cases/cycle, target {duration_min} min, sandbox={sandbox_mode}",
+        flush=True,
+    )
 
     while time.time() < deadline:
         cycle += 1
@@ -362,6 +367,7 @@ async def run_soak(duration_min: int) -> SoakSummary:
         passed_runs=passed,
         failed_runs=failed,
         error_runs=errors,
+        sandbox_mode=sandbox_mode,
         failures=failures,
     )
     summary_path = QA_DIR / "soak_summary.json"
@@ -369,17 +375,64 @@ async def run_soak(duration_min: int) -> SoakSummary:
     return summary
 
 
+def _init_sandbox_pool(*, pool_size: int, base_port: int, timeout_s: float) -> str:
+    """Start Docker sandbox pool; return mode label for summary."""
+    from backend.ops.runtime_diagnostics import try_initialize_sandbox_pool
+
+    mode = try_initialize_sandbox_pool(
+        pool_size=pool_size,
+        base_port=base_port,
+        timeout_s=timeout_s,
+    )
+    if mode == "pool":
+        from backend.sandbox.pool_manager import get_pool
+
+        pool = get_pool()
+        if pool is not None:
+            print(
+                f"[soak] sandbox pool ready ({pool.available_count}/{len(pool._slots)} free)",
+                flush=True,
+            )
+        return "pool"
+    print("[soak] sandbox pool unavailable — falling back to simulation", flush=True)
+    return "simulation"
+
+
 async def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--minutes", type=int, default=20)
+    parser.add_argument(
+        "--pool",
+        action="store_true",
+        help="Docker sandbox pool ile calistir (initialize_pool gerekir).",
+    )
+    parser.add_argument("--pool-size", type=int, default=int(os.getenv("SANDBOX_POOL_SIZE", "3")))
+    parser.add_argument("--pool-base-port", type=int, default=int(os.getenv("SANDBOX_POOL_BASE_PORT", "8181")))
+    parser.add_argument("--pool-timeout", type=float, default=float(os.getenv("SANDBOX_POOL_TIMEOUT", "30")))
     args = parser.parse_args()
+
+    shutdown_pool = None
+    sandbox_mode = "simulation"
+    if args.pool:
+        sandbox_mode = _init_sandbox_pool(
+            pool_size=args.pool_size,
+            base_port=args.pool_base_port,
+            timeout_s=args.pool_timeout,
+        )
+        from backend.sandbox.pool_manager import shutdown_pool as _shutdown_pool
+
+        shutdown_pool = _shutdown_pool
+
     try:
-        summary = await run_soak(args.minutes)
+        summary = await run_soak(args.minutes, sandbox_mode=sandbox_mode)
         print(json.dumps(summary.__dict__, ensure_ascii=False, indent=2), flush=True)
         return 0 if summary.failed_runs == 0 and summary.error_runs == 0 else 1
     except Exception:
         traceback.print_exc()
         return 2
+    finally:
+        if shutdown_pool is not None:
+            shutdown_pool()
 
 
 if __name__ == "__main__":

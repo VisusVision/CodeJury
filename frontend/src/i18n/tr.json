@@ -84,6 +84,10 @@
     "noTasks": "Bu ödev için görev atanmamış.",
     "loadError": "Veri yüklenirken hata oluştu"
   },
+  "runtimeHealth": {
+    "title": "Sistem durumu",
+    "loading": "yükleniyor…"
+  },
   "workspace": {
     "title": "Agent Studio",
     "subtitle": "Çoklu Ajan Kod İnceleme Sistemi",
@@ -436,6 +440,10 @@
     "agentSummaries": "Ajan Özetleri",
     "rubricScores": "Rubrik Puanlari",
     "items": "madde",
-    "total": "toplam"
+    "total": "toplam",
+    "runtimeTitle": "Çalışma zamanı",
+    "llmModels": "LLM modelleri",
+    "sandbox": "Sandbox",
+    "pipelineMs": "Pipeline süresi"
   }
 }

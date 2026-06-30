@@ -547,11 +547,17 @@ class AgentDiagnosticsContractTests(unittest.TestCase):
                 "llm_off_topic": False,
                 "reasons": [],
             },
+            pipeline_ms=4500,
+            sandbox_backend="pool",
         )
 
         self.assertIn("agents", diagnostics)
         self.assertIn("taskAlignment", diagnostics)
+        self.assertIn("runtime", diagnostics)
         self.assertIn("lastLlmCall", diagnostics)
+        self.assertIn("general_model", diagnostics["runtime"]["llm"])
+        self.assertEqual(diagnostics["runtime"]["pipeline_ms"], 4500)
+        self.assertEqual(diagnostics["runtime"]["sandbox"]["execution_backend"], "pool")
         self.assertNotIn("prompt", str(diagnostics).lower())
         self.assertEqual(diagnostics["agents"][0]["llm_status"], "repaired")
 
