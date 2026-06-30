@@ -987,18 +987,24 @@ def merge_task_alignment(
     programmatic_reasons: list[str],
     llm_payload: dict[str, Any] | None,
 ) -> dict[str, Any]:
-    """LLM görev uyumu ile birleştirir; alakasız teslimde çarpanı doğrudan düşürür."""
+    """Merge programmatic hints with LLM task-relevance judgment.
+
+    Programmatic alignment is diagnostic; when LLM ran successfully, ``factor`` follows
+    ``llm_factor``. Only hard cross-domain mismatch (programmatic) may cap the LLM factor.
+    """
     reasons = list(programmatic_reasons)
+    prog_factor = max(0.05, min(1.0, float(programmatic_factor)))
     out: dict[str, Any] = {
-        "factor": max(0.05, min(1.0, float(programmatic_factor))),
+        "factor": prog_factor,
         "reasons": reasons,
-        "programmatic_factor": max(0.05, min(1.0, float(programmatic_factor))),
+        "programmatic_factor": prog_factor,
         "llm_factor": None,
         "llm_explanation": None,
         "llm_off_topic": False,
         "llm_skipped": True,
         "submission_domain_guess": None,
         "task_domain_guess": None,
+        "capability_match": 0.0,
     }
 
     if not llm_payload or llm_payload.get("skipped"):
@@ -1013,9 +1019,9 @@ def merge_task_alignment(
     off = bool(llm_payload.get("off_topic"))
     fulfils = bool(llm_payload.get("student_fulfills_assignment", True))
     try:
-        capability_signal = float(llm_payload.get("capability_match", 0.0))
+        capability_hint = float(llm_payload.get("capability_match", 0.0))
     except (TypeError, ValueError):
-        capability_signal = 0.0
+        capability_hint = 0.0
 
     llm_f = llm_raw
     if off:
@@ -1026,95 +1032,23 @@ def merge_task_alignment(
         llm_f = min(llm_f, 0.35)
     llm_f = max(0.05, min(1.0, llm_f))
 
+    if "cross_domain_mismatch" in reasons:
+        llm_f = min(llm_f, prog_factor, 0.25)
+        off = True
+        fulfils = False
+
     out["llm_skipped"] = False
     out["llm_factor"] = llm_f
+    out["factor"] = llm_f
     out["submission_domain_guess"] = llm_payload.get("submission_domain_guess") or None
     out["task_domain_guess"] = llm_payload.get("task_domain_guess") or None
+    out["capability_match"] = max(0.0, min(1.0, capability_hint))
 
     expl = str(llm_payload.get("explanation", "") or "").strip()
     if expl:
         out["llm_explanation"] = expl
 
-    llm_confidence = llm_payload.get("confidence")
-    try:
-        conf = float(llm_confidence) if llm_confidence is not None else None
-    except (TypeError, ValueError):
-        conf = None
-    overlap = _guess_token_overlap(
-        out.get("task_domain_guess"),
-        out.get("submission_domain_guess"),
-    )
-
-    # If LLM marks off-topic but capability markers strongly match, convert it to
-    # "in-topic but weak implementation" instead of full mismatch.
-    softened_false_off_topic = False
-    if off and capability_signal >= 0.55:
-        off = False
-        fulfils = False
-        llm_f = max(llm_f, 0.62 if capability_signal >= 0.72 else 0.55)
-        softened_false_off_topic = True
-    elif off and capability_signal >= 0.40 and overlap:
-        off = False
-        fulfils = False
-        llm_f = max(llm_f, 0.58)
-        softened_false_off_topic = True
-
-    # A strongly matching code shape (CLI/API/OOP/BST etc.) means the submission is
-    # aimed at the assignment even if the LLM thinks one deliverable is incomplete.
-    # Completeness should be graded by the rubric, not converted into an off-topic cap.
-    if (
-        not off
-        and not fulfils
-        and out["programmatic_factor"] >= 0.95
-        and capability_signal >= 0.80
-        and "cross_domain_mismatch" not in reasons
-    ):
-        fulfils = True
-        llm_f = max(llm_f, 0.75)
-
-    # Opposite direction: if capability markers are clearly missing, do not allow
-    # a high-fit verdict from LLM noise.
-    if not off and capability_signal <= 0.24 and llm_f >= 0.50:
-        off = True
-        fulfils = False
-        llm_f = min(llm_f, 0.22)
-
-    # If LLM says low fit (without explicit off_topic) but confidence is low,
-    # domain guesses overlap, or capability signal is strong, avoid over-collapse.
-    if out["programmatic_factor"] >= 0.95 and llm_f < 0.45 and not off:
-        if (conf is not None and conf < 0.62) or overlap or capability_signal >= 0.55:
-            llm_f = max(llm_f, 0.68 if capability_signal >= 0.55 else 0.72)
-
-    # High-capability and clearly fulfilling submissions should not drift too low
-    # due model variance.
-    if (
-        out["programmatic_factor"] >= 0.95
-        and not off
-        and capability_signal >= 0.55
-        and llm_f < 0.72
-    ):
-        llm_f = max(llm_f, 0.72)
-
-    if (
-        out["programmatic_factor"] >= 0.95
-        and not off
-        and fulfils
-        and capability_signal >= 0.80
-        and llm_f < 0.75
-    ):
-        llm_f = 0.75
-
-    out["llm_factor"] = llm_f
-    out["factor"] = min(out["factor"], llm_f)
     out["llm_off_topic"] = off
-    if softened_false_off_topic:
-        task_guess = str(out.get("task_domain_guess") or "odev").strip()
-        submission_guess = str(out.get("submission_domain_guess") or "teslim").strip()
-        out["llm_explanation"] = (
-            f"Teslim {task_guess} beklentisiyle kismi olarak iliskili gorunuyor; "
-            f"{submission_guess} sinyalleri var, ancak eksik gereksinimler rubrikte puan kaybettirebilir."
-        )
-
     if off:
         if "llm_task_relevance_off_topic" not in reasons:
             reasons.append("llm_task_relevance_off_topic")
@@ -1126,11 +1060,4 @@ def merge_task_alignment(
             reasons.append("llm_low_task_fit")
 
     out["reasons"] = reasons
-    try:
-        out["capability_match"] = max(
-            float(out.get("capability_match", 0) or 0),
-            float(capability_signal),
-        )
-    except (TypeError, ValueError):
-        out["capability_match"] = capability_signal if capability_signal else 0.0
     return out
