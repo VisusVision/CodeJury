@@ -1,9 +1,11 @@
 """
-Base agent interface -- tam LLM tabanli ajanlar.
+Base agent interface -- LLM-primary agents with programmatic hints.
 
-Programatik analiz (AST, regex, sandbox sayimlari) yalnizca LLM prompt'una ipucu olarak verilir;
-nihai skor, bulgular ve metinler yalnizca LLM yanitindan gelir. Ollama kapali veya cagri basarisizsa
-ajan `LLMInferenceError` firlatirir; programatik fallback yoktur.
+Programmatic analysis (AST, regex, sandbox counts) is passed to the LLM as factual hints
+only; scores and narrative come from the LLM response. Objective facts (compile failure,
+sandbox exit code, validated test pass/fail) may be enforced on the merged output.
+When Ollama is disabled or the LLM call fails, agents fall back to programmatic output
+or raise LLMInferenceError depending on the agent.
 """
 
 import logging

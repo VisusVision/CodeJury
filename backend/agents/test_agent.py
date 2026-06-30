@@ -300,51 +300,8 @@ class TestAgent(BaseAgent):
 
         prog_s = programmatic["score"]
         llm_s = self._safe_int(llm_result.get("score"), prog_s)
-        af = float(programmatic.get("brief_code_alignment_factor", 1.0))
-        cli_usage_exit = (
-            _looks_like_cli_program(source_code, language)
-            and sandbox.get("exit_code", 0) != 0
-            and _looks_like_cli_usage_error(str(sandbox.get("stderr") or ""))
-        )
-        if af < 0.999:
-            blended = int(round(prog_s + (llm_s - prog_s) * af))
-            all_formal_pass = (
-                programmatic["runs_successfully"]
-                and programmatic.get("failed_tests", 0) == 0
-                and int(programmatic.get("total_tests", 0) or 0) > 0
-            )
-            if all_formal_pass:
-                # Passing every formal test: follow alignment blend, not raw LLM pessimism.
-                llm_result["score"] = max(0, min(100, max(blended, min(prog_s, llm_s))))
-            else:
-                llm_result["score"] = max(0, min(100, min(llm_s, max(prog_s, blended))))
-        else:
-            llm_result["score"] = llm_s
-        if (
-            programmatic["runs_successfully"]
-            and programmatic.get("failed_tests", 0) == 0
-            and not programmatic.get("runtime_errors")
-            and af >= 0.55
-        ):
-            # LLM may pessimistically over-penalize smoke-only student submissions for
-            # missing advanced edge-case scaffolding. Factual successful execution and
-            # task alignment should keep the runtime score in a reasonable band.
-            if int(programmatic.get("total_tests", 0) or 0) > 0:
-                llm_result["score"] = max(int(llm_result["score"]), int(prog_s))
-            else:
-                llm_result["score"] = max(int(llm_result["score"]), min(int(prog_s), 80))
-        if (
-            programmatic["runs_successfully"]
-            and programmatic.get("failed_tests", 0) == 0
-            and (
-                (
-                    sandbox.get("timed_out", sandbox.get("timeout", False))
-                    and _looks_like_service_program(source_code, language)
-                )
-                or cli_usage_exit
-            )
-        ):
-            llm_result["score"] = max(int(llm_result["score"]), int(prog_s))
+        llm_result["score"] = max(0, min(100, llm_s))
+        # Objective runtime facts override LLM score (not heuristic programmatic hints).
         if not programmatic["compilation_success"]:
             llm_result["score"] = 0
         elif not programmatic["runs_successfully"]:

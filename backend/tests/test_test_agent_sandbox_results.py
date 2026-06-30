@@ -174,7 +174,7 @@ class TestAgentSandboxResultsTests(unittest.TestCase):
         self.assertEqual(result["runtime_errors"], [])
         self.assertEqual(result["test_failures"], [])
         self.assertTrue(result["runs_successfully"])
-        self.assertGreaterEqual(result["score"], 90)
+        self.assertEqual(result["score"], 50)
 
     def test_analyze_falls_back_when_llm_response_missing_score(self):
         sandbox = {
@@ -282,7 +282,7 @@ class TestAgentSandboxResultsTests(unittest.TestCase):
         self.assertEqual(call_count, 1)
         self.assertTrue(result["runs_successfully"])
         self.assertEqual(result["passed_tests"], 1)
-        self.assertGreaterEqual(result["score"], 85)
+        self.assertEqual(result["score"], 0)
 
     def test_failed_sandbox_case_preserves_input_expected_actual_evidence(self):
         built = _programmatic_from_sandbox_tests(

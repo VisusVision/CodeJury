@@ -256,7 +256,7 @@ int max_value(const std::vector<int>& values) { return *std::max_element(values.
 
         self.assertGreaterEqual(_capability_match_signal(brief, None, code), 0.75)
 
-    def test_merge_downgrades_high_llm_score_when_capability_missing(self):
+    def test_merge_respects_llm_when_capability_hint_is_low(self):
         merged = merge_task_alignment(
             1.0,
             [],
@@ -265,15 +265,14 @@ int max_value(const std::vector<int>& values) { return *std::max_element(values.
                 "off_topic": False,
                 "student_fulfills_assignment": True,
                 "capability_match": 0.0,
-                "explanation": "Model yanlis iyimser.",
+                "explanation": "Model iyimser.",
             },
         )
 
-        self.assertLessEqual(merged["factor"], 0.22)
-        self.assertTrue(merged["llm_off_topic"])
-        self.assertIn("llm_task_relevance_off_topic", merged["reasons"])
+        self.assertEqual(merged["factor"], 0.9)
+        self.assertFalse(merged["llm_off_topic"])
 
-    def test_merge_softens_false_off_topic_when_capability_matches(self):
+    def test_merge_keeps_llm_off_topic_even_when_capability_hint_high(self):
         merged = merge_task_alignment(
             1.0,
             [],
@@ -282,15 +281,15 @@ int max_value(const std::vector<int>& values) { return *std::max_element(values.
                 "off_topic": True,
                 "student_fulfills_assignment": False,
                 "capability_match": 0.86,
-                "explanation": "Model yanlis alakasiz dedi.",
+                "explanation": "Model alakasiz dedi.",
             },
         )
 
-        self.assertFalse(merged["llm_off_topic"])
-        self.assertGreaterEqual(merged["factor"], 0.75)
-        self.assertNotIn("llm_task_relevance_off_topic", merged["reasons"])
+        self.assertTrue(merged["llm_off_topic"])
+        self.assertLessEqual(merged["factor"], 0.2)
+        self.assertIn("llm_task_relevance_off_topic", merged["reasons"])
 
-    def test_merge_rewrites_contradictory_explanation_after_softening_off_topic(self):
+    def test_merge_preserves_llm_explanation(self):
         merged = merge_task_alignment(
             1.0,
             [],
@@ -305,27 +304,24 @@ int max_value(const std::vector<int>& values) { return *std::max_element(values.
             },
         )
 
-        self.assertFalse(merged["llm_off_topic"])
-        self.assertNotIn("baglantisi yok", merged["llm_explanation"].lower())
-        self.assertIn("kismi", merged["llm_explanation"].lower())
+        self.assertTrue(merged["llm_off_topic"])
+        self.assertIn("baglantisi yok", merged["llm_explanation"].lower())
 
-    def test_merge_softens_off_topic_when_capability_and_domain_overlap(self):
+    def test_merge_cross_domain_mismatch_caps_llm_factor(self):
         merged = merge_task_alignment(
             0.55,
-            ["deterministic_low_capability_match"],
+            ["cross_domain_mismatch"],
             {
-                "relevance_factor": 0.12,
-                "off_topic": True,
-                "student_fulfills_assignment": False,
-                "capability_match": 0.44,
-                "explanation": "Model yanlis alakasiz dedi.",
-                "submission_domain_guess": "csv rapor export",
-                "task_domain_guess": "csv not raporu cli",
+                "relevance_factor": 0.85,
+                "off_topic": False,
+                "student_fulfills_assignment": True,
+                "capability_match": 0.12,
+                "explanation": "Model uyumlu sandi.",
             },
         )
 
-        self.assertFalse(merged["llm_off_topic"])
-        self.assertGreaterEqual(merged["factor"], 0.55)
+        self.assertTrue(merged["llm_off_topic"])
+        self.assertLessEqual(merged["factor"], 0.25)
 
     def test_merge_flags_deterministic_fallback_mismatch_without_llm(self):
         merged = merge_task_alignment(
@@ -1450,7 +1446,7 @@ class TestAgentContractTests(unittest.TestCase):
 
 
 class TestAgentLLMContractTests(unittest.IsolatedAsyncioTestCase):
-    async def test_passing_aligned_smoke_run_keeps_programmatic_score_floor_when_llm_is_pessimistic(self):
+    async def test_passing_aligned_smoke_run_uses_llm_score_when_llm_is_pessimistic(self):
         code = "def add(a, b):\n    return a + b\n\nprint(add(2, 3))\n"
         agent = TestAgent()
 
@@ -1488,9 +1484,9 @@ class TestAgentLLMContractTests(unittest.IsolatedAsyncioTestCase):
                 "task_alignment": {"factor": 1.0, "reasons": []},
             })
 
-        self.assertGreaterEqual(result["score"], 80)
+        self.assertEqual(result["score"], 40)
 
-    async def test_all_formal_tests_pass_use_blend_not_raw_llm_when_alignment_is_partial(self):
+    async def test_all_formal_tests_pass_use_llm_score_when_alignment_is_partial(self):
         agent = TestAgent()
         test_cases = [
             {"name": "case_a", "visibility": "public", "stdin": "([])\n", "expected_stdout": "EVET\n"},
@@ -1534,7 +1530,7 @@ class TestAgentLLMContractTests(unittest.IsolatedAsyncioTestCase):
                 "task_alignment": {"factor": 0.5, "reasons": []},
             })
 
-        self.assertGreaterEqual(result["score"], 60)
+        self.assertEqual(result["score"], 30)
 
     async def test_service_timeout_keeps_programmatic_success_when_llm_is_pessimistic(self):
         code = "from http.server import HTTPServer, BaseHTTPRequestHandler\nHTTPServer(('127.0.0.1', 8000), BaseHTTPRequestHandler).serve_forever()\n"
@@ -1575,7 +1571,7 @@ class TestAgentLLMContractTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertTrue(result["runs_successfully"])
         self.assertEqual(result["failed_tests"], 0)
-        self.assertGreaterEqual(result["score"], 60)
+        self.assertEqual(result["score"], 25)
 
 
 class MasterEvaluatorContractTests(unittest.TestCase):
