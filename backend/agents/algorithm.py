@@ -356,9 +356,11 @@ def _merge_algorithm_results(programmatic: dict[str, Any], llm_result: dict[str,
             },
         )
 
-    score = int(programmatic.get("score") or 0)
-    if gap == "worse_than_expected":
-        score = min(score, 55)
+    try:
+        llm_score = int(float(llm_result.get("score")))
+    except (TypeError, ValueError):
+        llm_score = 50
+    llm_score = max(0, min(100, llm_score))
 
     merged = dict(llm_result)
     merged.update(
@@ -384,57 +386,27 @@ def _merge_algorithm_results(programmatic: dict[str, Any], llm_result: dict[str,
                 llm_result.get("data_structure_analysis") or programmatic.get("data_structure_analysis") or ""
             ).strip(),
             "issues": _dedupe_algorithm_issues(programmatic_issues + issues)[:10],
-            "score": score,
+            "score": llm_score,
         }
     )
     return merged
 
 
-def _apply_task_relevance_cap(result: dict[str, Any], input_data: dict[str, Any]) -> dict[str, Any]:
-    """Topic mismatch is graded by task relevance, not algorithm complexity alone."""
+def _task_alignment_prompt_hint(input_data: dict[str, Any]) -> str:
     task = input_data.get("task_alignment")
     if not isinstance(task, dict):
-        return result
-
-    off_topic = bool(task.get("llm_off_topic"))
-    reasons = task.get("reasons") if isinstance(task.get("reasons"), list) else []
-    try:
-        capability = float(task.get("capability_match", 1.0) or 1.0)
-    except (TypeError, ValueError):
-        capability = 1.0
-    try:
-        factor = float(task.get("factor", 1.0) or 1.0)
-    except (TypeError, ValueError):
-        factor = 1.0
-
-    hard_off = (
-        off_topic
-        or "deterministic_capability_mismatch" in reasons
-        or "cross_domain_mismatch" in reasons
-        or capability <= 0.24
+        return ""
+    compact = {
+        "factor": task.get("factor"),
+        "llm_off_topic": task.get("llm_off_topic"),
+        "capability_match": task.get("capability_match"),
+        "reasons": (task.get("reasons") or [])[:4],
+        "llm_explanation": str(task.get("llm_explanation") or "")[:240],
+    }
+    return (
+        "Task relevance hints (non-binding; adjust score/issues if submission is off-topic):\n"
+        f"{json.dumps(compact, ensure_ascii=False, separators=(',', ':'))}\n"
     )
-    capped = dict(result)
-    score = int(capped.get("score") or 0)
-    if hard_off:
-        capped["score"] = min(score, 12)
-        capped["complexity_gap"] = "unknown"
-        issues = _normalize_algorithm_issues(capped.get("issues"))
-        if not any(str(item.get("type")) == "task_mismatch" for item in issues):
-            issues.insert(
-                0,
-                {
-                    "type": "task_mismatch",
-                    "description": "Kod odevin istedigi algoritma/gorev ile uyusmuyor; karmasiklik analizi ikincil.",
-                    "severity": "high",
-                    "suggested_fix": "Odev aciklamasindaki temel problemi dogrudan uygulayin.",
-                },
-            )
-        capped["issues"] = issues[:10]
-        return capped
-
-    if factor < 0.45 or capability < 0.45:
-        capped["score"] = min(score, 40)
-    return capped
 
 
 class AlgorithmAgent(BaseAgent):
@@ -465,8 +437,9 @@ class AlgorithmAgent(BaseAgent):
         user_prompt = (
             "Analyze this submission's algorithmic behavior.\n"
             f"{format_assignment_context_for_prompt(brief)}\n"
+            f"{_task_alignment_prompt_hint(input_data)}"
             f"Language: {language}\n"
-            f"Programmatic baseline (canonical guardrails): {json.dumps(programmatic, ensure_ascii=False)}\n"
+            f"Non-binding heuristic hints (AST/metrics): {json.dumps(programmatic, ensure_ascii=False)}\n"
             "Source code:\n"
             f"{source[:12000]}\n\n"
             "Return JSON with detected_algorithms, data_structures, time_complexity, space_complexity, "
@@ -483,9 +456,9 @@ class AlgorithmAgent(BaseAgent):
             )
         except LLMInferenceError as exc:
             return self._with_contract_metadata(
-                _apply_task_relevance_cap({**programmatic, "llm_error": str(exc)[:300]}, input_data),
+                {**programmatic, "llm_error": str(exc)[:300]},
                 llm_status="fallback",
                 guardrail_flags=["llm_inference_fallback"],
             )
 
-        return _apply_task_relevance_cap(_merge_algorithm_results(programmatic, llm_result), input_data)
+        return _merge_algorithm_results(programmatic, llm_result)

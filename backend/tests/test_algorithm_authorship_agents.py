@@ -2,7 +2,7 @@ import unittest
 from unittest.mock import AsyncMock, patch
 
 from backend.agents.ai_authorship import AIAuthorshipAgent
-from backend.agents.algorithm import AlgorithmAgent, _apply_task_relevance_cap
+from backend.agents.algorithm import AlgorithmAgent
 from backend.agents.base import LLMInferenceError
 from backend.core.config import settings
 
@@ -13,7 +13,7 @@ class AlgorithmAgentTests(unittest.IsolatedAsyncioTestCase):
         self._ollama_patch.start()
         self.addCleanup(self._ollama_patch.stop)
 
-    async def test_uses_llm_algorithm_names_but_keeps_programmatic_complexity_guard(self):
+    async def test_uses_llm_algorithm_names_and_score_with_programmatic_complexity_facts(self):
         code = """
 def two_sum(values, target):
     for i in range(len(values)):
@@ -69,7 +69,7 @@ def two_sum(values, target):
         issue_types = [issue["type"] for issue in result["issues"]]
         self.assertEqual(issue_types.count("complexity_gap"), 1)
         self.assertEqual(issue_types.count("nested_loop"), 1)
-        self.assertLessEqual(result["score"], 55)
+        self.assertEqual(result["score"], 95)
         self.assertEqual(result["llm_status"], "ok")
 
     async def test_falls_back_to_programmatic_analysis_when_llm_fails(self):
@@ -295,25 +295,14 @@ def first(values):
 
         self.assertNotIn("tuple", result["data_structures"])
 
-    def test_task_relevance_cap_limits_off_topic_algorithm_score(self):
-        payload = {
-            "score": 90,
-            "complexity_gap": "matches_expected",
-            "issues": [],
-        }
-        capped = _apply_task_relevance_cap(
-            payload,
-            {
-                "task_alignment": {
-                    "llm_off_topic": True,
-                    "capability_match": 0.0,
-                    "factor": 0.1,
-                    "reasons": ["llm_task_relevance_off_topic"],
-                }
-            },
+    def test_merge_algorithm_results_uses_llm_score(self):
+        from backend.agents.algorithm import _merge_algorithm_results
+
+        merged = _merge_algorithm_results(
+            {"score": 40, "time_complexity": "O(n)", "expected_complexity": "O(n)", "issues": []},
+            {"score": 88, "algorithm_analysis": "LLM analizi", "issues": []},
         )
-        self.assertLessEqual(capped["score"], 12)
-        self.assertEqual(capped["complexity_gap"], "unknown")
+        self.assertEqual(merged["score"], 88)
 
     def test_empty_complexity_gap_normalizes_to_unknown_before_schema(self):
         agent = AlgorithmAgent()

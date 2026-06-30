@@ -176,6 +176,71 @@ class TestAgentSandboxResultsTests(unittest.TestCase):
         self.assertTrue(result["runs_successfully"])
         self.assertEqual(result["score"], 50)
 
+    def test_analyze_repairs_zero_llm_score_when_sandbox_tests_pass(self):
+        sandbox = {
+            "compilation_success": True,
+            "exit_code": 2,
+            "stdout": "",
+            "stderr": (
+                "usage: submission.py [-h] log_file\n"
+                "submission.py: error: the following arguments are required: log_file\n"
+            ),
+            "execution_time_ms": 8,
+            "peak_memory_mb": 0.5,
+            "test_results": [
+                {
+                    "name": "cli_usage",
+                    "stdin": "",
+                    "passed": True,
+                    "actual_stdout": "",
+                    "actual_stderr": (
+                        "usage: submission.py [-h] log_file\n"
+                        "submission.py: error: the following arguments are required: log_file\n"
+                    ),
+                    "expected_stdout": "CLI argumani istendiginde kullanim mesaji uretilmesi",
+                    "actual_exit_code": 2,
+                },
+            ],
+        }
+        agent = TestAgent()
+
+        async def run_case():
+            with patch.object(
+                agent,
+                "_call_llm",
+                new=AsyncMock(
+                    return_value={
+                        "compilation_success": True,
+                        "runs_successfully": True,
+                        "passed_tests": 1,
+                        "failed_tests": 0,
+                        "test_failures": [],
+                        "runtime_errors": [],
+                        "edge_case_handling": "fair",
+                        "edge_cases_observed": [],
+                        "performance_notes": "Calisti.",
+                        "score": 0,
+                    }
+                ),
+            ):
+                return await agent.analyze(
+                    {
+                        "sandbox_result": sandbox,
+                        "expected_output": [],
+                        "source_code": "import argparse\nparser=argparse.ArgumentParser()\nparser.add_argument('log_file')\n",
+                        "language": "python",
+                        "assignment_description": "Log dosyasini okuyup ERROR, WARNING ve INFO sayilarini raporlayan CLI yazin.",
+                        "task_alignment": {"factor": 1.0, "reasons": []},
+                    }
+                )
+
+        result = asyncio.run(run_case())
+
+        self.assertTrue(result["runs_successfully"])
+        self.assertEqual(result["passed_tests"], 1)
+        self.assertGreaterEqual(result["score"], 50)
+        self.assertIn("test_agent_score_repaired_sandbox_pass", result.get("guardrail_flags", []))
+
     def test_analyze_falls_back_when_llm_response_missing_score(self):
         sandbox = {
             "compilation_success": True,
