@@ -6,7 +6,12 @@ import re
 from typing import Any
 
 from backend.agents.base import BaseAgent, LLMInferenceError, build_llm_user_suffix, format_assignment_context_for_prompt
-from backend.agents.code_utils import FunctionInfo, get_code_metrics
+from backend.agents.code_utils import (
+    FunctionInfo,
+    enrich_issue_with_line,
+    get_code_metrics,
+    nested_loop_focus_line,
+)
 from backend.agents.json_output_schema import ALGORITHM_OUTPUT_SCHEMA, normalize_agent_severity
 
 _ALGORITHM_SYSTEM_PROMPT = """
@@ -245,6 +250,9 @@ def _normalize_algorithm_issues(issues: Any) -> list[dict[str, Any]]:
         line = raw.get("line")
         if isinstance(line, int) and line > 0:
             issue["line"] = line
+        line_hint = raw.get("line_hint")
+        if "line" not in issue and isinstance(line_hint, int) and line_hint > 0:
+            issue["line"] = line_hint
         normalized.append(issue)
         if len(normalized) >= 8:
             break
@@ -286,25 +294,30 @@ def _build_programmatic_algorithm_result(source: str, language: str, brief: str)
     expected = _expected_complexity_from_text(brief)
     gap = _complexity_gap(time_complexity, expected)
     issues: list[dict[str, Any]] = []
+    nested_line = nested_loop_focus_line(metrics) if metrics.max_nesting_depth >= 2 else None
     if gap == "worse_than_expected":
-        issues.append(
-            {
-                "type": "complexity_gap",
-                "description": f"Cozum {time_complexity}; odev beklentisi {expected} gorunuyor.",
-                "severity": "high",
-                "suggested_fix": "Tekrarlayan taramalari dict/set tabanli tek gecis yaklasimina indirin.",
-            }
-        )
+        gap_issue: dict[str, Any] = {
+            "type": "complexity_gap",
+            "description": f"Cozum {time_complexity}; odev beklentisi {expected} gorunuyor.",
+            "severity": "high",
+            "suggested_fix": "Tekrarlayan taramalari dict/set tabanli tek gecis yaklasimina indirin.",
+        }
+        if nested_line:
+            gap_issue["line"] = nested_line
+        elif metrics.functions:
+            gap_issue["line"] = metrics.functions[0].line
+        issues.append(gap_issue)
 
     if metrics.max_nesting_depth >= 2:
-        issues.append(
-            {
-                "type": "nested_loop",
-                "description": "Ic ice dongu karmasikligi artiriyor.",
-                "severity": "medium",
-                "suggested_fix": "Lookup veya indeksleme icin uygun veri yapisi kullanin.",
-            }
-        )
+        nested_issue: dict[str, Any] = {
+            "type": "nested_loop",
+            "description": "Ic ice dongu karmasikligi artiriyor.",
+            "severity": "medium",
+            "suggested_fix": "Lookup veya indeksleme icin uygun veri yapisi kullanin.",
+        }
+        if nested_line:
+            nested_issue["line"] = nested_line
+        issues.append(nested_issue)
 
     score = 90
     if gap == "worse_than_expected":
@@ -335,7 +348,12 @@ def _build_programmatic_algorithm_result(source: str, language: str, brief: str)
     }
 
 
-def _merge_algorithm_results(programmatic: dict[str, Any], llm_result: dict[str, Any]) -> dict[str, Any]:
+def _merge_algorithm_results(
+    programmatic: dict[str, Any],
+    llm_result: dict[str, Any],
+    *,
+    source: str = "",
+) -> dict[str, Any]:
     actual = str(programmatic.get("time_complexity") or "O(1)")
     expected = str(programmatic.get("expected_complexity") or "")
     llm_expected = str(llm_result.get("expected_complexity") or "").strip()
@@ -389,6 +407,13 @@ def _merge_algorithm_results(programmatic: dict[str, Any], llm_result: dict[str,
             "score": llm_score,
         }
     )
+    source_lines = source.splitlines()
+    if source_lines:
+        merged["issues"] = [
+            enrich_issue_with_line(dict(issue), source_lines)
+            for issue in merged.get("issues", [])
+            if isinstance(issue, dict)
+        ]
     return merged
 
 
@@ -455,10 +480,18 @@ class AlgorithmAgent(BaseAgent):
                 output_json_schema=ALGORITHM_OUTPUT_SCHEMA,
             )
         except LLMInferenceError as exc:
+            fallback = {**programmatic, "llm_error": str(exc)[:300]}
+            source_lines = source.splitlines()
+            if source_lines:
+                fallback["issues"] = [
+                    enrich_issue_with_line(dict(issue), source_lines)
+                    for issue in fallback.get("issues", [])
+                    if isinstance(issue, dict)
+                ]
             return self._with_contract_metadata(
-                {**programmatic, "llm_error": str(exc)[:300]},
+                fallback,
                 llm_status="fallback",
                 guardrail_flags=["llm_inference_fallback"],
             )
 
-        return _merge_algorithm_results(programmatic, llm_result)
+        return _merge_algorithm_results(programmatic, llm_result, source=source)

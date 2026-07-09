@@ -986,6 +986,8 @@ def merge_task_alignment(
     programmatic_factor: float,
     programmatic_reasons: list[str],
     llm_payload: dict[str, Any] | None,
+    *,
+    deterministic_capability: float | None = None,
 ) -> dict[str, Any]:
     """Merge programmatic hints with LLM task-relevance judgment.
 
@@ -1036,6 +1038,22 @@ def merge_task_alignment(
         llm_f = min(llm_f, prog_factor, 0.25)
         off = True
         fulfils = False
+    elif (
+        prog_factor >= 0.85
+        and deterministic_capability is not None
+        and float(deterministic_capability) >= 0.55
+        and "deterministic_capability_mismatch" not in reasons
+    ):
+        if off:
+            off = False
+            fulfils = True
+            if "programmatic_overrode_llm_off_topic" not in reasons:
+                reasons.append("programmatic_overrode_llm_off_topic")
+        elif llm_f < 0.55:
+            if "programmatic_overrode_llm_low_fit" not in reasons:
+                reasons.append("programmatic_overrode_llm_low_fit")
+        if off or llm_f < 0.55:
+            llm_f = max(llm_f, min(prog_factor, float(deterministic_capability), 0.85))
 
     out["llm_skipped"] = False
     out["llm_factor"] = llm_f

@@ -242,7 +242,7 @@ class MasterEvaluatorGuardTests(unittest.TestCase):
             {"risk_level": "critical", "critical_count": 1, "high_count": 0, "score": 45},
             faculty_mode=False,
         )
-        self.assertLessEqual(result["final_score"], 55)
+        self.assertLessEqual(result["final_score"], 35)
 
     def test_recompute_default_final_score_from_breakdown(self):
         result = {

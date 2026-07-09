@@ -10,7 +10,7 @@ Cikti:  SeniorityOutput dict
 import json
 
 from backend.agents.base import BaseAgent, LLMInferenceError, build_llm_user_suffix, format_assignment_context_for_prompt
-from backend.agents.code_utils import get_code_metrics, strip_comments
+from backend.agents.code_utils import enrich_seniority_indicators, get_code_metrics, strip_comments
 from backend.agents.json_output_schema import SENIORITY_OUTPUT_SCHEMA
 
 _SENIORITY_SYSTEM_PROMPT = """\
@@ -110,7 +110,7 @@ class SeniorityAgent(BaseAgent):
             )
         except LLMInferenceError as exc:
             return self._with_contract_metadata(
-                {**programmatic, "llm_error": str(exc)[:300]},
+                enrich_seniority_indicators({**programmatic, "llm_error": str(exc)[:300]}, source_code),
                 llm_status="fallback",
                 guardrail_flags=["llm_inference_fallback"],
             )
@@ -121,7 +121,7 @@ class SeniorityAgent(BaseAgent):
                 llm_result["idiomatic_usage_score"], llm_result["score"]
             )
 
-        return llm_result
+        return enrich_seniority_indicators(llm_result, source_code)
 
     def _programmatic_analysis(self, source_code: str, language: str) -> dict:
         clean_code = strip_comments(source_code, language)

@@ -609,6 +609,160 @@ def get_code_metrics(source_code: str, language: str) -> CodeMetrics:
     return analyze_generic(source_code, lang)
 
 
+_LINE_HINT_STOPWORDS = frozenset({
+    "bir", "var", "yok", "ile", "icin", "gibi", "daha", "cok", "kisa", "uzun",
+    "iyi", "kotu", "satir", "line", "kod", "code", "fonksiyon", "function",
+    "degisken", "sinif", "class", "metot", "method", "dosya", "file",
+    "kullanilmis", "kullanilmamis", "tespit", "edildi", "olmali", "olmasi",
+    "gerekir", "eksik", "mevcut", "ogrenci", "odev", "analiz", "sonuc", "puan",
+})
+
+
+def find_relevant_lines(text: str, lines: list[str], *, limit: int = 8) -> list[int]:
+    """Metindeki anahtar kelimeleri kaynak satirlariyla eslestirir."""
+    keywords: list[str] = []
+
+    keywords.extend(re.findall(r"(\w+)\(\)", text or ""))
+    keywords.extend(re.findall(r"`([^`]+)`", text or ""))
+
+    for ident in re.findall(r"\b([a-z_]\w{2,})\b", (text or "").lower()):
+        if ident not in _LINE_HINT_STOPWORDS:
+            keywords.append(ident)
+
+    py_keywords = [
+        "for ", "while ", "def ", "class ", "import ", "range(", "len(",
+        "append(", "set(", "dict(", "enumerate(", "sorted(", "try:", "except",
+        "__init__", "__name__", "self.", "return ", "if ", "elif ", "else:",
+    ]
+    lowered = (text or "").lower()
+    for pk in py_keywords:
+        if pk.strip("( :") in lowered:
+            keywords.append(pk.rstrip("(: "))
+
+    found: list[int] = []
+    seen: set[int] = set()
+    for kw in keywords:
+        for i, line in enumerate(lines):
+            line_no = i + 1
+            if kw in line and line_no not in seen:
+                found.append(line_no)
+                seen.add(line_no)
+            if len(found) >= limit:
+                return found
+    return found
+
+
+def nested_loop_focus_line(metrics: CodeMetrics) -> int | None:
+    """Ic ice dongu iddialari icin en guclu satir ipucunu dondurur."""
+    nested = [lp for lp in metrics.loop_patterns if lp.get("nesting_level", 0) >= 1]
+    if not nested:
+        return None
+    best = max(nested, key=lambda lp: (lp.get("nesting_level", 0), lp.get("line", 0)))
+    line = best.get("line")
+    return int(line) if isinstance(line, int) and line > 0 else None
+
+
+def enrich_issue_with_line(issue: dict, source_lines: list[str]) -> dict:
+    """Issue kaydina satir ipucu ekler (yoksa)."""
+    out = dict(issue)
+    line = out.get("line")
+    if isinstance(line, int) and line > 0:
+        return out
+    hint = out.get("line_hint")
+    if isinstance(hint, int) and hint > 0:
+        out["line"] = hint
+        return out
+    if isinstance(hint, list) and hint:
+        coerced = [int(x) for x in hint if isinstance(x, (int, float, str)) and str(x).isdigit()]
+        if coerced:
+            out["line"] = coerced[0]
+            return out
+
+    description = str(out.get("description") or out.get("message") or "")
+    found = find_relevant_lines(description, source_lines, limit=4)
+    if found:
+        out["line"] = found[0]
+        out["line_hint"] = found[0]
+    return out
+
+
+def enrich_text_indicator(indicator: str, source_lines: list[str]) -> str:
+    """Metin gostergesine satir numarasi ekler (henuz yoksa)."""
+    text = str(indicator or "").strip()
+    if not text:
+        return text
+    if re.search(r"satir\s*\d+|line\s*\d+", text, re.IGNORECASE):
+        return text
+    found = find_relevant_lines(text, source_lines, limit=1)
+    if found:
+        return f"{text} (satir {found[0]})"
+    return text
+
+
+def enrich_seniority_indicators(result: dict, source_code: str) -> dict:
+    """Kidem gostergelerine satir ipucu ekler."""
+    lines = source_code.splitlines()
+    out = dict(result)
+    for key in ("maturity_indicators", "immaturity_indicators"):
+        enriched: list = []
+        for item in out.get(key) or []:
+            if isinstance(item, str):
+                enriched.append(enrich_text_indicator(item, lines))
+            elif isinstance(item, dict):
+                row = enrich_issue_with_line(
+                    {
+                        **item,
+                        "description": str(item.get("description") or item.get("text") or ""),
+                    },
+                    lines,
+                )
+                enriched.append(row)
+            else:
+                enriched.append(item)
+        out[key] = enriched
+    return out
+
+
+def build_focused_code_excerpt(
+    source_code: str,
+    focus_lines: list[int] | None = None,
+    *,
+    max_lines: int = 280,
+    head_lines: int = 40,
+    tail_lines: int = 40,
+    window: int = 12,
+) -> str:
+    """Buyuk dosyalar icin bas + son + iddia satirlari etrafinda pencere excerpt."""
+    lines = source_code.splitlines()
+    total = len(lines)
+    if total <= max_lines:
+        return source_code
+
+    keep: set[int] = set(range(1, min(head_lines, total) + 1))
+    keep.update(range(max(1, total - tail_lines + 1), total + 1))
+    for ln in focus_lines or []:
+        try:
+            n = int(ln)
+        except (TypeError, ValueError):
+            continue
+        if 1 <= n <= total:
+            keep.update(range(max(1, n - window), min(total, n + window) + 1))
+
+    if len(keep) >= max_lines:
+        sorted_keep = sorted(keep)
+        keep = set(sorted_keep[: max_lines // 2] + sorted_keep[-(max_lines // 2) :])
+
+    out: list[str] = []
+    prev = 0
+    for ln in sorted(keep):
+        if prev and ln > prev + 1:
+            skipped = ln - prev - 1
+            out.append(f"... ({skipped} satir atlandi: {prev + 1}-{ln - 1}) ...")
+        out.append(lines[ln - 1])
+        prev = ln
+    return "\n".join(out)
+
+
 def format_metrics_summary(metrics: CodeMetrics) -> str:
     """Metrikleri okunabilir ozet formata cevirir."""
     parts = [

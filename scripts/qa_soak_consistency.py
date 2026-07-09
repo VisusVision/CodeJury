@@ -47,6 +47,7 @@ class RunResult:
     agent_statuses: dict[str, str]
     consistency_issues: list[str]
     passed: bool
+    agent_scores: dict[str, float] = field(default_factory=dict)
     error: str | None = None
 
 
@@ -133,6 +134,34 @@ def _build_cases() -> list[CaseSpec]:
       ("text_alakasiz", "alakasiz", "samples/faktoriyel_odev.py"),
   ]:
       cases.append(CaseSpec("text_freq", label, kind, text_brief, fname))
+
+  data_brief = (
+      "SQLite tablosu olusturan, POST /clean ve PUT /beautify endpointleri sunan mini API gelistirin."
+  )
+  for label, kind, fname in [
+      ("data_api_uygun", "uygun", "samples/veri_guzellestirme_temizleme_uygun.py"),
+      ("data_api_alakasiz", "alakasiz", "samples/veri_guzellestirme_temizleme_alakasiz.py"),
+  ]:
+      cases.append(CaseSpec("data_clean_api", label, kind, data_brief, fname))
+
+  api_brief = "Harici API'den yapilandirma ceken ve sonucu yazdiran istemci yazin."
+  for label, kind, fname in [
+      ("api_uygun", "uygun", "samples/api_config_client_uygun.py"),
+      ("api_alakasiz", "alakasiz", "samples/api_config_client_alakasiz.py"),
+  ]:
+      cases.append(CaseSpec("api_client", label, kind, api_brief, fname))
+
+  book_brief = "Kitap envanteri ve yayinci bilgisi tutan basit sinif tasarimi yazin."
+  for label, kind, fname in [
+      ("book_uygun", "uygun", "samples/kitap_kutuphanesi_alakali.py"),
+      ("book_alakasiz", "alakasiz", "samples/kitap_kutuphanesi_alakasiz.py"),
+  ]:
+      cases.append(CaseSpec("book_inventory", label, kind, book_brief, fname))
+
+  for label, kind, fname in [
+      ("log_guvensiz", "guvensiz", "samples/log_ozetleme_guvensiz.py"),
+  ]:
+      cases.append(CaseSpec("log_cli", label, kind, log_brief, fname))
 
   return cases
 
@@ -267,6 +296,7 @@ async def _run_case(case: CaseSpec) -> RunResult:
         elapsed = time.time() - t0
         align = float((report.get("taskAlignment") or {}).get("factor", 0) or 0)
         issues = _validate(case.kind, report)
+        agents = _agent_map(report)
         return RunResult(
             scenario_id=case.scenario_id,
             label=case.label,
@@ -277,8 +307,9 @@ async def _run_case(case: CaseSpec) -> RunResult:
             alignment=round(align, 3),
             off_topic=bool((report.get("taskAlignment") or {}).get("llm_off_topic")),
             warning=bool(report.get("relevanceScoreWarning")),
-            security_score=_agent_map(report).get("security", 0.0),
+            security_score=agents.get("security", 0.0),
             agent_statuses=_agent_llm_status(report),
+            agent_scores=agents,
             consistency_issues=issues,
             passed=len(issues) == 0,
         )
@@ -335,7 +366,7 @@ async def run_soak(duration_min: int, *, sandbox_mode: str = "simulation") -> So
 
             row_path = QA_DIR / f"{started.strftime('%Y%m%d_%H%M%S')}_cycle{cycle}_{case.label}.json"
             row_path.write_text(
-                json.dumps(result.__dict__, ensure_ascii=False, indent=2),
+                json.dumps({**result.__dict__, "agents": result.agent_scores}, ensure_ascii=False, indent=2),
                 encoding="utf-8",
             )
 
