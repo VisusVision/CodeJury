@@ -174,7 +174,8 @@ class TestAgentSandboxResultsTests(unittest.TestCase):
         self.assertEqual(result["runtime_errors"], [])
         self.assertEqual(result["test_failures"], [])
         self.assertTrue(result["runs_successfully"])
-        self.assertEqual(result["score"], 50)
+        self.assertGreaterEqual(result["score"], 85)
+        self.assertIn("test_agent_score_repaired_programmatic_floor", result.get("guardrail_flags", []))
 
     def test_analyze_repairs_zero_llm_score_when_sandbox_tests_pass(self):
         sandbox = {
@@ -296,6 +297,131 @@ class TestAgentSandboxResultsTests(unittest.TestCase):
         self.assertGreaterEqual(result["score"], 50)
         self.assertIn("test_agent_score_repaired_service_runtime", result.get("guardrail_flags", []))
 
+    def test_service_sandbox_tests_failure_accepted_as_runtime(self):
+        code = (
+            "from http.server import BaseHTTPRequestHandler, HTTPServer\n"
+            "class H(BaseHTTPRequestHandler):\n"
+            "    pass\n"
+            "HTTPServer(('127.0.0.1', 8080), H).serve_forever()\n"
+        )
+        sandbox = {
+            "compilation_success": True,
+            "exit_code": 1,
+            "stdout": "",
+            "stderr": "Connection refused",
+            "timed_out": False,
+            "execution_time_ms": 1200,
+            "peak_memory_mb": 12,
+            "test_results": [
+                {
+                    "name": "post_clean",
+                    "passed": False,
+                    "error": "Connection refused",
+                    "actual_stderr": "Connection refused",
+                }
+            ],
+        }
+        agent = TestAgent()
+
+        async def run_case():
+            with patch.object(
+                agent,
+                "_call_llm",
+                new=AsyncMock(
+                    return_value={
+                        "compilation_success": True,
+                        "runs_successfully": False,
+                        "passed_tests": 0,
+                        "failed_tests": 1,
+                        "test_failures": [],
+                        "runtime_errors": ["Connection refused"],
+                        "edge_case_handling": "poor",
+                        "edge_cases_observed": [],
+                        "performance_notes": "Ag testi basarisiz.",
+                        "score": 15,
+                    }
+                ),
+            ):
+                return await agent.analyze(
+                    {
+                        "sandbox_result": sandbox,
+                        "expected_output": [],
+                        "source_code": code,
+                        "language": "python",
+                        "assignment_description": "POST /clean ve PUT /beautify endpointleri sunan mini API gelistirin.",
+                        "task_alignment": {"factor": 1.0, "reasons": []},
+                    }
+                )
+
+        result = asyncio.run(run_case())
+
+        self.assertTrue(result["runs_successfully"])
+        self.assertTrue(result.get("service_runtime_accepted"))
+        self.assertGreaterEqual(result["score"], 50)
+
+    def test_http_client_smoke_exit_zero_accepted(self):
+        code = (
+            "import os\n"
+            "import urllib.request\n\n"
+            "def fetch_status():\n"
+            "    with urllib.request.urlopen('https://example.com/health', timeout=5) as r:\n"
+            "        return int(r.status)\n\n"
+            "if __name__ == '__main__':\n"
+            "    print(os.environ.get('API_URL', 'https://example.com'))\n"
+        )
+        sandbox = {
+            "compilation_success": True,
+            "exit_code": 0,
+            "stdout": "https://example.com\n",
+            "stderr": "",
+            "execution_time_ms": 40,
+            "peak_memory_mb": 8,
+            "test_results": [
+                {
+                    "name": "fetch_status",
+                    "passed": False,
+                    "error": "urlopen error [Errno 11001] getaddrinfo failed",
+                }
+            ],
+        }
+        agent = TestAgent()
+
+        async def run_case():
+            with patch.object(
+                agent,
+                "_call_llm",
+                new=AsyncMock(
+                    return_value={
+                        "compilation_success": True,
+                        "runs_successfully": False,
+                        "passed_tests": 0,
+                        "failed_tests": 1,
+                        "test_failures": [],
+                        "runtime_errors": [],
+                        "edge_case_handling": "fair",
+                        "edge_cases_observed": [],
+                        "performance_notes": "",
+                        "score": 0,
+                    }
+                ),
+            ):
+                return await agent.analyze(
+                    {
+                        "sandbox_result": sandbox,
+                        "expected_output": [],
+                        "source_code": code,
+                        "language": "python",
+                        "assignment_description": "Harici API'den yapilandirma ceken ve sonucu yazdiran istemci yazin.",
+                        "task_alignment": {"factor": 1.0, "reasons": []},
+                    }
+                )
+
+        result = asyncio.run(run_case())
+
+        self.assertTrue(result["runs_successfully"])
+        self.assertTrue(result.get("service_runtime_accepted"))
+        self.assertGreaterEqual(result["score"], 58)
+
     def test_analyze_falls_back_when_llm_response_missing_score(self):
         sandbox = {
             "compilation_success": True,
@@ -402,7 +528,8 @@ class TestAgentSandboxResultsTests(unittest.TestCase):
         self.assertEqual(call_count, 1)
         self.assertTrue(result["runs_successfully"])
         self.assertEqual(result["passed_tests"], 1)
-        self.assertEqual(result["score"], 0)
+        self.assertGreaterEqual(result["score"], 80)
+        self.assertIn("test_agent_score_repaired_programmatic_floor", result.get("guardrail_flags", []))
 
     def test_failed_sandbox_case_preserves_input_expected_actual_evidence(self):
         built = _programmatic_from_sandbox_tests(
@@ -587,6 +714,110 @@ class TestAgentSandboxResultsTests(unittest.TestCase):
         self.assertIn("Girdi: 10 0", messages)
         self.assertIn("Beklenen: HATA", messages)
         self.assertIn("Gercek: ZeroDivisionError", messages)
+
+    def test_smoke_stack_solution_gets_static_coverage_and_higher_score(self):
+        from pathlib import Path
+
+        code = Path("scripts/demo/stack_uygun.py").read_text(encoding="utf-8")
+        sandbox = {
+            "compilation_success": True,
+            "exit_code": 0,
+            "stdout": "2\n2\n1\n",
+            "stderr": "",
+            "execution_time_ms": 8,
+            "peak_memory_mb": 0.5,
+            "test_results": [],
+        }
+        agent = TestAgent()
+
+        async def run_case():
+            with patch.object(
+                agent,
+                "_call_llm",
+                new=AsyncMock(
+                    return_value={
+                        "compilation_success": True,
+                        "runs_successfully": True,
+                        "passed_tests": 1,
+                        "failed_tests": 0,
+                        "test_failures": [],
+                        "runtime_errors": [],
+                        "edge_case_handling": "fair",
+                        "edge_cases_observed": [],
+                        "performance_notes": "Smoke only.",
+                        "score": 60,
+                    }
+                ),
+            ):
+                return await agent.analyze(
+                    {
+                        "sandbox_result": sandbox,
+                        "expected_output": [],
+                        "source_code": code,
+                        "language": "python",
+                        "assignment_description": Path("scripts/demo/stack_brief.txt").read_text(encoding="utf-8"),
+                        "task_alignment": {"factor": 1.0, "reasons": []},
+                    }
+                )
+
+        result = asyncio.run(run_case())
+
+        self.assertTrue(result["runs_successfully"])
+        self.assertGreaterEqual(result.get("static_checks_passed", 0), 3)
+        self.assertGreaterEqual(result["passed_tests"], 4)
+        self.assertIn("static:", result["test_results"][1]["test_name"])
+        self.assertGreaterEqual(result["score"], 82)
+        self.assertIn("test_agent_score_repaired_programmatic_floor", result.get("guardrail_flags", []))
+
+    def test_unsafe_stack_gets_low_test_score(self):
+        from pathlib import Path
+
+        code = Path("scripts/demo/stack_guvensiz.py").read_text(encoding="utf-8")
+        sandbox = {
+            "compilation_success": True,
+            "exit_code": 0,
+            "stdout": "pwned\n",
+            "stderr": "",
+            "execution_time_ms": 8,
+            "peak_memory_mb": 0.5,
+            "test_results": [],
+        }
+        result = TestAgent()._programmatic_analysis(
+            sandbox,
+            [],
+            code,
+            "python",
+            assignment_description=Path("scripts/demo/stack_brief.txt").read_text(encoding="utf-8"),
+            task_alignment={"factor": 0.2, "reasons": ["eval"], "llm_off_topic": True},
+        )
+        self.assertFalse(result["runs_successfully"])
+        self.assertLessEqual(result["score"], 40)
+        self.assertEqual(result["edge_case_handling"], "poor")
+        self.assertTrue(any(t.get("test_name") == "security:unsafe_runtime" for t in result["test_results"]))
+
+    def test_off_topic_stack_html_gets_capped_test_score(self):
+        from pathlib import Path
+
+        code = Path("scripts/demo/stack_alakasiz.py").read_text(encoding="utf-8")
+        sandbox = {
+            "compilation_success": True,
+            "exit_code": 0,
+            "stdout": "<!doctype html>",
+            "stderr": "",
+            "execution_time_ms": 8,
+            "peak_memory_mb": 0.5,
+            "test_results": [],
+        }
+        result = TestAgent()._programmatic_analysis(
+            sandbox,
+            [],
+            code,
+            "python",
+            assignment_description=Path("scripts/demo/stack_brief.txt").read_text(encoding="utf-8"),
+            task_alignment={"factor": 0.1, "reasons": ["off topic"], "llm_off_topic": True},
+        )
+        self.assertLessEqual(result["score"], 40)
+        self.assertEqual(result["edge_case_handling"], "poor")
 
 
 if __name__ == "__main__":

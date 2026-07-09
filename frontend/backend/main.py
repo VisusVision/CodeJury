@@ -661,40 +661,45 @@ class RubricSuggestionRequest(BaseModel):
 
 
 _RUBRIC_SUGGEST_SYSTEM = """\
-You reply with a single JSON object only. No markdown, no code fences, no commentary.
+You design grading rubric CRITERIA for an undergraduate programming assignment.
+You do NOT analyze student code; you only define how submitted code will be graded.
 
-You design grading rubric CRITERIA for an undergraduate programming assignment (Turkish UI).
+Reply with ONE JSON object only. No markdown, no code fences, no commentary outside JSON.
 
 JSON shape exactly:
 {
   "criteria": [
     {
       "name": "short criterion name in Turkish",
-      "description": "Plain Turkish, ONE short paragraph: what is graded, what earns full credit, and what loses points. No markdown.",
+      "description": "Plain Turkish, ONE short paragraph: measurable evidence for full vs partial vs zero credit. No markdown.",
       "max_score": 10
     }
   ]
 }
 
-Rules:
+HARD RULES:
 - Produce EXACTLY the requested number of criteria.
-- The requested criterion count will always be between 10 and 20 and is chosen by the system from assignment difficulty.
-- Each max_score MUST be an integer from 5 to 10 inclusive.
-- The sum of all max_score values MUST equal exactly 100.
-- Put more difficult, high-impact criteria earlier and give them higher points when possible.
-- You MUST include these criteria in every rubric: Gereksinimlere Uyum, Mantiksal Dogruluk, Kodlama Stili, Dokumantasyon, Guvenlik.
-- Tailor names and descriptions to the assignment title and description (e.g. OOP, data structures, APIs, file I/O, tests).
-- Use the provided "Proje terimleri" in most descriptions. A strong rubric for a library API should mention books, loans, endpoints, JSON errors, etc.; a CSV report rubric should mention file columns, reports, invalid rows, etc.
-- Avoid generic descriptions that could apply to any software project. Each criterion must name concrete project artifacts, inputs, outputs, flows, or edge cases when they are present in the assignment.
-- If the assignment mentions unit tests, pytest, unittest, or testing, include a dedicated testing criterion.
-- If the assignment does NOT mention tests, do not invent a dedicated test criterion;
-  you may mention testability inside correctness or maintainability instead.
-- Do NOT invent presentation, slide, poster, video, or visual-design criteria unless the assignment explicitly asks for those deliverables.
-- Every criterion should grade the submitted software/code artifact: correctness, requirements, tests, error handling, data model, algorithmic efficiency, style, documentation, security, or maintainability.
-- Names must be distinct; avoid duplicate or near-duplicate criteria.
-- Descriptions must be measurable: say what evidence earns full credit and what defects lose credit.
-- Do not include vague criteria such as "Genel", "Sunum", "Sekil", or "Kalite" unless the description ties them to concrete code evidence.
-- Do not use English filler words such as excellent, excellence, handled, user-friendly, input, output, or failure case; use natural Turkish equivalents.
+- Each max_score: integer 5–10 inclusive; sum of ALL max_score = 100 exactly.
+- REQUIRED criterion names (adapt descriptions to the assignment): Gereksinimlere Uyum,
+  Mantiksal Dogruluk, Kodlama Stili, Dokumantasyon, Guvenlik.
+- Higher-impact criteria first; assign more points to correctness/requirements than polish.
+
+ASSIGNMENT ALIGNMENT (mandatory):
+- Read the assignment title and description; every criterion description must mention
+  concrete artifacts from THAT assignment (file names, endpoints, classes, reports, CLI args, etc.).
+- Do NOT write generic rubrics that could grade any random program.
+- Mirror the instructor's domain words (CSV, log, API, SQLite, stack, kelime, …) in descriptions.
+
+TESTING:
+- Include a dedicated test criterion ONLY if the assignment explicitly mentions tests/pytest/unittest.
+- Otherwise mention testability inside Mantiksal Dogruluk or Kodlama Stili — do not invent a test deliverable.
+
+FORBIDDEN:
+- Presentation/slide/poster/video criteria unless the assignment asks for them.
+- Vague names alone: "Genel Kalite", "Sunum", "Sekil" without code evidence.
+- English filler: excellent, user-friendly, failure case — use Turkish equivalents.
+
+Names must be distinct; descriptions must state what earns full points and what loses points.
 """
 
 
@@ -2306,94 +2311,63 @@ def _direct_assignment_suggestion_from_hint(raw: str) -> dict[str, str] | None:
 
 
 _ASSIGNMENT_SUGGEST_SYSTEM = """\
-You reply with a single JSON object only. No markdown, no headings, no bullet markdown,
-no code fences, no bold markers. JSON string values must be plain Turkish text.
+You are a university programming-assignment designer. You do NOT analyze student code;
+you only turn the instructor's brief into clear homework specifications.
 
-You are an LLM-based assignment designer for university instructors. You are not a
-keyword router and you must not rely on a fixed domain whitelist. The instructor may
-write any topic, discipline, product idea, data source, workflow, constraint, grading
-expectation, or long free-form brief. Understand the intent semantically and turn it
-into undergraduate software/programming homework.
+Reply with ONE JSON object only. No markdown, no code fences, no text outside JSON.
+All string values: plain Turkish, UTF-8 where possible; if unsure use ASCII Turkish (ogrenci, girdi).
 
 JSON shape exactly:
 {
   "suggestions": [
     {
-      "title": "short homework title",
-      "summary": "one line under 160 characters",
-      "description": "Plain Turkish, ONE paragraph only: spaces between sentences, NEVER raw line breaks inside this string. Learning goals, what to implement, I/O or constraints, deliverables. Under 1200 characters. No solution code; no markdown."
+      "title": "short title (max ~90 chars)",
+      "summary": "one sentence, max 160 chars",
+      "description": "ONE paragraph, max 1200 chars, spaces between sentences, NO line breaks inside the string"
     }
   ]
 }
 
-ABSOLUTE RULE - INSTRUCTOR TEXT IS LAW:
-Every suggestion must be visibly grounded in the instructor's text. Preserve named
-domains, entities, course context, technologies, deliverables, constraints, data
-formats, edge cases, dates, and grading expectations when they appear. If the topic
-is outside classic computer science, design software that applies that domain:
-analysis, simulation, visualization, mini API, workflow automation, decision support,
-mobile/web app, data validation, reporting, or an interactive tool.
+Each description paragraph MUST cover, in natural prose (not bullet labels):
+(1) learning goal, (2) input/data source, (3) required behavior, (4) output/deliverable,
+(5) at least one edge case or validation rule, (6) what the student submits (e.g. single .py CLI).
+Do NOT include solution code or pseudocode.
 
-Use the instructor's concrete terms in Turkish when they wrote Turkish. Do not translate
-terms like titrasyon, randevu, sarki, tur, sinav, stok, muhasebe, lojistik, hukuk, spor,
-tarim, sanat, tarih, psikoloji, biyoloji, kimya, or fizik into English unless the
-instructor wrote them in English. Each title or the first sentence of the summary must
-include at least one concrete noun from the instructor's text.
-Write natural Turkish. Do not use English UI adjectives or labels such as user-friendly,
-mobile, dashboard, CRUD, unless the instructor explicitly used them; prefer kullanici
-dostu, mobil, panel, ekleme-guncelleme-silme-listeleme.
+CONSISTENCY (mandatory):
+- title, summary, and description MUST describe the SAME assignment domain.
+- The title MUST include at least one concrete noun/verb from the instructor text
+  (e.g. CSV, log, API, kelime frekansi, stack, SQLite) — never a generic course label alone.
+- FORBIDDEN titles by themselves: "python programlama", "web programlama", "nesne yonelimli
+  programlama", "API ile Veri Analizi" when the brief asks for a config client, etc.
+- Do NOT invent a different domain (security lecture, playlist app, bank OOP) unless the
+  instructor explicitly asked for it.
 
-If the instructor writes English or mixed-language domain terms, preserve their meaning
-exactly. You may use a correct Turkish equivalent only when it is unambiguous
-(for example baggage = bagaj, not hediye; airport = havalimani; lost item = kayip esya;
-QR code = QR kod). Never replace a concrete domain noun with a different object,
-industry, or metaphor.
+INSTRUCTOR TEXT IS LAW:
+- Preserve domains, file formats, APIs, constraints, actors, and deliverables from the input.
+- If the instructor gave a long complete brief, suggestion #1 is a faithful clean draft;
+  others vary scope, validation depth, reporting, modularity, or tests — SAME core task.
+- Write natural Turkish. Avoid English UI jargon unless the instructor used it.
 
-Do not add advanced techniques that the instructor did not ask for, such as neural
-networks, deep learning, blockchain, cryptography, distributed systems, computer vision,
-or complex optimization. Add them only when the instructor explicitly asks for them or
-the selected difficulty and course context clearly justify it. Prefer direct, teachable
-software requirements over fashionable technology labels.
+VARIETY:
+- When the instructor gave only a short hint, each suggestion may explore a different
+  technical angle WITHIN that hint — not unrelated CS demos (generic stack/queue/OOP) unless requested.
 
-Do not drift to generic linked-list, queue, stack, interface, or OOP demo homework
-unless the instructor actually asks for those concepts. If a word is ambiguous
-(for example "sinif/class"), decide from surrounding context whether it means a school
-class, grade level, classroom, or OOP class.
-
-If the instructor wrote a long complete assignment brief, do not reinterpret it as a
-vague topic. The first suggestion should be a clean assignment draft faithful to that
-brief. Other suggestions must stay within the same core assignment and may vary only
-scope, interface style, architecture, testing expectations, or reporting detail. Do not
-replace the requested system, dataset, actors, domain, or business object with another
-one.
-
-Generate varied suggestions under the instructor's intent, not copies of the same
-exercise. Each description should be detailed enough that an instructor can paste it
-into a course page as the assignment briefing.
-
-If the user message specifies a mandatory difficulty tier (easy / medium / hard),
-follow that tier strictly: easy homework must be genuinely beginner-sized; hard
-homework must noticeably exceed medium in scope, architecture, edge cases, tests, or
-reporting expectations.
+DIFFICULTY:
+- If the user message specifies easy/medium/hard, scale scope, edge cases, and architecture accordingly.
 """
 
 
 
 def _assignment_focus_extra(hint_raw: str) -> str:
-    """LLM'e ogretim uyesinin serbest metnini evrensel niyet olarak tasir."""
+    """LLM'e ogretim uyesinin serbest metnini yapilandirilmis niyet olarak tasir."""
     stripped_hint = _strip_course_context_from_hint(hint_raw)
     if not stripped_hint:
         return ""
     return (
-        "NIYET CIKARIMI (ZORUNLU): Asagidaki metni serbest dogal dil olarak oku; "
-        "alan, konu, hedef kitle, teslim turu, platform, veri kaynagi, kisit, edge case "
-        "ve degerlendirme beklentilerini semantik olarak cikar. Sabit kategori listesine "
-        "sikisma ve eksik bilgileri makul yazilim odevi varsayimlariyla tamamla. Konu "
-        "klasik bilgisayar bilimi disinda olsa bile onu uygulanabilir bir yazilim odevi "
-        "haline getir. Metindeki belirsiz kelimeleri baglama gore yorumla; ornegin "
-        "'sinif' okul sinifi, sinif seviyesi veya OOP class anlamina gelebilir. Ogretim "
-        "uyesinin ozgun niyetini koru.\n"
-        f"OGRETIM UYESI METNI: {stripped_hint[:1200]}"
+        "OGRETIM UYESI METNI (kaynak gercek; buna sadik kal):\n"
+        f"{stripped_hint[:1400]}\n"
+        "Yukaridaki metindeki somut kelimeleri (dosya turu, API, sinif adi, rapor, CLI, vb.) "
+        "baslik ve aciklamada mutlaka kullan; konu disina cikma.\n"
     )
 
 
@@ -2539,6 +2513,7 @@ def _assignment_hint_anchor_terms(raw: str, *, limit: int = 5) -> list[str]:
         "sqlite", "csv", "cli", "todo", "vector", "sort", "portfolio", "randevu",
         "fatura", "kdv", "titrasyon", "bagaj", "playlist", "ulasim", "ulaÅŸÄ±m",
         "sikayet", "ÅŸikayet", "phishing", "sunum",
+        "kitap", "kutuphane", "odunc", "uye", "stack", "lifo", "log", "frekans",
     )
     out: list[str] = []
     seen: set[str] = set()
@@ -2685,6 +2660,37 @@ def _is_near_duplicate_suggestion(text: str, seen_texts: list[str], *, threshold
     return False
 
 
+_GENERIC_ASSIGNMENT_TITLES = frozenset(
+    {
+        "python programlama",
+        "web programlama",
+        "nesne yonelimli programlama",
+        "nesne yönelimli programlama",
+        "veri yapilari",
+        "veri yapıları",
+        "programlama odevi",
+        "programlama ödevi",
+        "yeni programlama odevi",
+    }
+)
+
+
+def _is_generic_assignment_title(title: str) -> bool:
+    folded = _fold_for_match(title).strip()
+    if not folded:
+        return True
+    if folded in _GENERIC_ASSIGNMENT_TITLES:
+        return True
+    words = [w for w in re.findall(r"\w+", folded, flags=re.UNICODE) if len(w) >= 3]
+    return len(words) <= 3 and not any(
+        token in folded
+        for token in (
+            "csv", "api", "log", "stack", "sqlite", "kitap", "kutuphane",
+            "frekans", "client", "endpoint", "lifo", "sayi",
+        )
+    )
+
+
 def _clean_assignment_suggestion_items(
     raw_list: list[Any],
     n: int,
@@ -2703,6 +2709,8 @@ def _clean_assignment_suggestion_items(
         summary = str(item.get("summary", item.get("ozet", ""))).strip()
         desc = _strip_md_leaks(str(item.get("description", item.get("aciklama", "")))).strip()
         if not title:
+            continue
+        if _is_generic_assignment_title(title):
             continue
         if not desc:
             desc = summary
@@ -4148,7 +4156,12 @@ async def _run_analysis_pipeline_body(
         rubric_criteria=fac if fac else None,
         report_language=report_language,
     )
-    task_alignment = merge_task_alignment(prog_f, prog_rs, llm_rel)
+    task_alignment = merge_task_alignment(
+        prog_f,
+        prog_rs,
+        llm_rel,
+        deterministic_capability=capability_f,
+    )
     task_alignment["capability_match"] = max(
         float(task_alignment.get("capability_match", 0) or 0),
         float(capability_f),
@@ -4813,6 +4826,7 @@ def _build_line_evidence(cq, gl, sc, ev, source_code: str, *, task_alignment: di
         "code_quality": "Kod Kalitesi",
         "guideline": "Standartlar",
         "seniority": "Kıdem",
+        "algorithm": "Algoritma",
         "security": "Güvenlik",
         "test_agent": "Test",
     }
@@ -5832,22 +5846,23 @@ async def suggest_rubric(req: RubricSuggestionRequest):
     )
 
     user_prompt = (
-        f"Assignment title: {title}\n"
-        f"Assignment description (may be empty):\n{desc or '(none)'}\n\n"
+        f"Odev basligi: {title}\n"
+        f"Odev aciklamasi:\n{desc or '(bos)'}\n\n"
         f"{build_project_context(title, desc).prompt_block()}\n"
-        "Rubrik adlari ve aciklamalari bu proje terimlerini kullanmali; genel yazilim kalitesi cumleleriyle yetinme.\n"
-        f"Requested criterion count: {criterion_count}\n"
-        f"Generate rubric criteria JSON with exactly {criterion_count} criteria.\n"
-        f"Each max_score must be between {_RUBRIC_MIN_POINTS} and {_RUBRIC_MAX_POINTS}; "
-        f"sum of max_score must be {_RUBRIC_TOTAL_POINTS}."
+        "Rubrik yalnizca bu odev icin gecerli olmali. Her kriter aciklamasinda odevde gecen "
+        "somut terimleri (dosya, sinif, endpoint, rapor sutunu, CLI argumani, vb.) kullan.\n"
+        f"Istenen kriter sayisi: {criterion_count}\n"
+        f"Tam {criterion_count} kriter uret; max_score toplami tam 100 olmali.\n"
+        f"Her max_score {_RUBRIC_MIN_POINTS}–{_RUBRIC_MAX_POINTS} arasi tam sayi."
     )
 
     result = await chat_json(
         system_prompt=_RUBRIC_SUGGEST_SYSTEM,
         user_prompt=user_prompt,
-        temperature=0.42,
+        temperature=0.32,
         num_predict=_rubric_num_predict_for_count(criterion_count),
         model=_llm_cfg.ollama_general_model,
+        provider_override="ollama",
     )
     if not result:
         raise HTTPException(
@@ -5964,36 +5979,29 @@ async def assignment_assistant_suggestions(req: AssignmentAssistantSuggestionsRe
         }
 
     user_prompt = (
-        f"Uretilecek oneri sayisi: {n}.\n"
-        f"Tam olarak {n} adet oneri dondur; daha az dondurme.\n"
-        f"Secilen ZORLUK (internal): {tier}\n"
-        f"Egitimci baglami (bos olabilir): {hint or '(yok)'}\n"
+        f"Uretilecek oneri sayisi: {n} (tam olarak {n} adet JSON ogesi).\n"
+        f"Zorluk: {tier}\n"
         f"{_assignment_difficulty_prompt_block(tier)}\n"
     )
     if focus:
         user_prompt += focus + "\n"
     if direct_suggestion:
         user_prompt += (
-            "UZUN BRIEF MODU (ZORUNLU): Egitmen zaten ayrintili bir odev tanimi yazmis. "
-            "Yeni konu veya baska domain icat etme. Tum oneriler ayni ana odev etrafinda kalsin; "
-            "ANCAK her oneri belirgin sekilde FARKLI bir muhendislik odagi/teslimat acisi almali "
-            "(ornegin: temel islevsellik, girdi dogrulama ve hata yonetimi, raporlama ve ozet metrikler, "
-            "birim test kapsami, moduler/yeniden kullanilabilir tasarim, performans/buyuk veri). "
-            "Bicimsel '- Surum 1/2' veya '- Temel/Gelismis Surum' gibi sablon ekler KULLANMA; "
-            "basliklar dogal okunsun ve odagi yansitsin. Ayni cumleyi tekrar etme. "
-            f"Cekirdek baslik/niyet: {direct_suggestion['title']}.\n"
+            "MOD: UZUN BRIEF — Egitmen zaten tam odev tanimi vermis.\n"
+            "- Tum oneriler AYNI cekirdek gorevi tanimlar; konu degistirme.\n"
+            "- Her oneri farkli muhendislik vurgusu alsın: girdi dogrulama, hata mesajlari, "
+            "raporlama, modulerlik, kenar durumlari, performans (brief izin veriyorsa).\n"
+            "- Basliklar dogal Turkce olsun; '- Surum 1' gibi sablon ekleri kullanma.\n"
+            f"- Cekirdek baslik referansi: {direct_suggestion['title']}\n"
         )
-    user_prompt += (
-        "Her oneri farkli bir teknik konu olsun. Turkce yaz. "
-        "Egitimcinin yazdigi ipucuna uy: alakasiz genel konular onerme. "
-        "Egitimcinin somut konu kelimelerini baslik veya ozetin ilk cumlesinde koru. "
-        "Cumleleri dogal ve dilbilgisi duzgun Turkceyle yaz."
-    )
+    else:
+        user_prompt += (
+            "MOD: KISA IPUCU — Her oneri ogretmen metniyle uyumlu FARKLI bir yazilim odevi olsun; "
+            "alakasiz genel konu uretme. Baslikta ogretmenin somut terimlerinden en az birini kullan.\n"
+        )
     if req.prefer_fresh:
         user_prompt += (
-            "\nBu çağrı YENİDEN ÖNERİ isteğidir: daha önce görülen başlıklardan farklı ve birbirinden "
-            "ayırt edilebilir 5 tamamen yeni ödev konusu öner; tek bir konuyu küçük başlık değişiklikleriyle "
-            "tekrar etme.\n"
+            "YENIDEN ONERI: Daha onceki basliklardan belirgin sekilde farkli alternatifler uret.\n"
         )
 
     if not _llm_cfg.ollama_enabled:
@@ -6031,9 +6039,10 @@ async def assignment_assistant_suggestions(req: AssignmentAssistantSuggestionsRe
         result = await chat_json(
             system_prompt=_ASSIGNMENT_SUGGEST_SYSTEM,
             user_prompt=user_prompt,
-            temperature=0.35 if direct_suggestion else 0.55,
+            temperature=0.28 if direct_suggestion else 0.38,
             num_predict=4096,
             model=_llm_cfg.ollama_general_model,
+            provider_override="ollama",
             use_cache=not bool(req.prefer_fresh),
         )
     except Exception as exc:
@@ -6086,9 +6095,10 @@ async def assignment_assistant_suggestions(req: AssignmentAssistantSuggestionsRe
             retry_result = await chat_json(
                 system_prompt=_ASSIGNMENT_SUGGEST_SYSTEM,
                 user_prompt=retry_prompt,
-                temperature=0.45,
+                temperature=0.32,
                 num_predict=4096,
                 model=_llm_cfg.ollama_general_model,
+                provider_override="ollama",
                 use_cache=False,
             )
             retry_list = _suggestions_list_from_llm(retry_result) if isinstance(retry_result, dict) else None
@@ -6168,6 +6178,25 @@ async def assignment_assistant_suggestions(req: AssignmentAssistantSuggestionsRe
             status_code=502,
             detail="LLM gecerli odev onerisi uretmedi. Daha acik bir konu yazip tekrar deneyin.",
         )
+
+    if direct_suggestion and anchor_terms:
+        head = f"{merged[0].get('title', '')} {merged[0].get('summary', '')}"
+        if not _matches_long_brief_anchor(head, anchor_terms) or _is_generic_assignment_title(
+            str(merged[0].get("title", ""))
+        ):
+            faithful = dict(direct_suggestion)
+            merged = [faithful] + [
+                row
+                for row in merged
+                if row.get("title", "").strip().lower() != faithful["title"].strip().lower()
+            ]
+    elif seed_suggestion and merged and _is_generic_assignment_title(str(merged[0].get("title", ""))):
+        faithful = dict(seed_suggestion)
+        merged = [faithful] + [
+            row
+            for row in merged
+            if row.get("title", "").strip().lower() != faithful["title"].strip().lower()
+        ]
 
     return {
         "suggestions": [

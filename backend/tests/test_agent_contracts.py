@@ -289,6 +289,42 @@ int max_value(const std::vector<int>& values) { return *std::max_element(values.
         self.assertLessEqual(merged["factor"], 0.2)
         self.assertIn("llm_task_relevance_off_topic", merged["reasons"])
 
+    def test_merge_overrides_llm_off_topic_when_deterministic_capability_strong(self):
+        merged = merge_task_alignment(
+            1.0,
+            [],
+            {
+                "relevance_factor": 0.15,
+                "off_topic": True,
+                "student_fulfills_assignment": False,
+                "capability_match": 0.0,
+                "explanation": "Model alakasiz dedi.",
+            },
+            deterministic_capability=0.86,
+        )
+
+        self.assertFalse(merged["llm_off_topic"])
+        self.assertGreaterEqual(merged["factor"], 0.85)
+        self.assertIn("programmatic_overrode_llm_off_topic", merged["reasons"])
+
+    def test_merge_overrides_llm_low_fit_when_deterministic_capability_strong(self):
+        merged = merge_task_alignment(
+            1.0,
+            [],
+            {
+                "relevance_factor": 0.5,
+                "off_topic": False,
+                "student_fulfills_assignment": False,
+                "capability_match": 0.0,
+                "explanation": "Model dusuk uyum dedi.",
+            },
+            deterministic_capability=0.86,
+        )
+
+        self.assertFalse(merged["llm_off_topic"])
+        self.assertGreaterEqual(merged["factor"], 0.85)
+        self.assertIn("programmatic_overrode_llm_low_fit", merged["reasons"])
+
     def test_merge_preserves_llm_explanation(self):
         merged = merge_task_alignment(
             1.0,
@@ -1805,7 +1841,7 @@ class MasterEvaluatorGuardTests(unittest.TestCase):
             faculty_mode=False,
         )
 
-        self.assertLessEqual(result["final_score"], 55)
+        self.assertLessEqual(result["final_score"], 35)
         self.assertIn("Kritik guvenlik", result["weaknesses"][0])
 
     def test_faculty_security_floor_raises_clean_security_row(self):

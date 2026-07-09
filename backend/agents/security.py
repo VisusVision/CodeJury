@@ -290,6 +290,28 @@ class SecurityAgent(BaseAgent):
         llm_score = self._safe_int(llm_result.get("score"), 50)
         rule_score = _score_from_threats(merged_th)
         final_score, capped = _final_security_score(llm_score, rule_score, merged_th)
+        try:
+            from backend.agents.test_agent import _looks_like_http_client_program
+
+            if _looks_like_http_client_program(source_code, language):
+                disallowed = [
+                    t
+                    for t in merged_th
+                    if isinstance(t, dict)
+                    and str(t.get("severity", "")).lower() in {"critical", "high"}
+                    and str(t.get("type", "")).lower()
+                    in {
+                        "command_inject",
+                        "code_injection",
+                        "sandbox_escape",
+                        "sql_injection",
+                        "buffer_overflow",
+                    }
+                ]
+                if not disallowed:
+                    final_score = max(final_score, min(92, rule_score, llm_score if llm_score >= 55 else 92))
+        except Exception:
+            pass
         llm_result["score"] = final_score
         llm_result["score_model"] = max(0, min(100, llm_score))
         llm_result["score_rule"] = rule_score
@@ -333,12 +355,25 @@ class SecurityAgent(BaseAgent):
                 "client",
                 "api istemcisi",
                 "http istek",
+                "harici api",
+                "api'den",
+                "api den",
+                "yapilandirma",
+                "yapılandırma",
+                "config",
                 "url",
                 "durum kodu",
                 "status code",
                 "fetch",
             )
         )
+        try:
+            from backend.agents.test_agent import _looks_like_http_client_program
+
+            if _looks_like_http_client_program(source_code, "python"):
+                http_client_assignment = True
+        except Exception:
+            pass
         file_assignment = any(
             token in brief_l
             for token in (
@@ -431,9 +466,15 @@ class SecurityAgent(BaseAgent):
                     t["description"] = str(t.get("description", "")) + " (odev baglaminda beklenen ag kullanimi olabilir)"
 
             if http_client_assignment and t_type == "network_access":
-                if "requests" in detail or "urllib" in detail:
-                    t["severity"] = "low"
-                    t["description"] = str(t.get("description", "")) + " (odev baglaminda beklenen HTTP istemci kullanimi)"
+                if any(
+                    token in detail or token in desc
+                    for token in ("requests", "urllib", "urlopen", "http", "https")
+                ):
+                    continue
+
+            if http_client_assignment and t_type in {"system_access", "info_leak"}:
+                if "import os" in detail or "os.environ" in detail or "os mod" in desc:
+                    continue
 
             if file_assignment and not destructive_or_execution:
                 if file_output_assignment and t_type == "file_access" and "open(..., 'w')" in detail:
@@ -453,10 +494,13 @@ class SecurityAgent(BaseAgent):
                     t["description"] = str(t.get("description", "")) + " (odev baglaminda yol/dosya yardimcisi olabilir)"
 
             if config_assignment and not destructive_or_execution:
-                if t_type in {"system_access", "info_leak"} and ("import os" in detail or "os.environ" in detail):
-                    t["type"] = "configuration_access"
-                    t["severity"] = "low"
-                    t["description"] = str(t.get("description", "")) + " (odev baglaminda beklenen konfigurasyon/env okuma)"
+                if t_type in {"system_access", "info_leak"} and (
+                    "import os" in detail
+                    or "os.environ" in detail
+                    or "os mod" in desc
+                    or "os." in detail
+                ):
+                    continue
 
             # Regex control-char cleanup is not code obfuscation.
             if t_type == "obfuscation":

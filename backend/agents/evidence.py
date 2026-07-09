@@ -13,7 +13,7 @@ import re
 from typing import Optional
 
 from backend.agents.base import BaseAgent, LLMInferenceError, build_llm_user_suffix, format_assignment_context_for_prompt
-from backend.agents.code_utils import get_code_metrics
+from backend.agents.code_utils import build_focused_code_excerpt, find_relevant_lines, get_code_metrics
 from backend.agents.json_output_schema import EVIDENCE_OUTPUT_SCHEMA
 
 
@@ -710,6 +710,63 @@ def _merge_claim_lists(*claim_lists: list[dict], max_items: int | None = None) -
     return merged
 
 
+def _collect_evidence_focus_lines(agent_findings: dict, programmatic: dict) -> list[int]:
+    """LLM excerpt'u icin oncelikli satir numaralarini toplar."""
+    focus: list[int] = []
+    for claim in programmatic.get("validated_claims", []) or []:
+        if not isinstance(claim, dict):
+            continue
+        focus.extend(_coerce_lines(claim.get("lines", [])))
+        raw_range = claim.get("line_range")
+        if isinstance(raw_range, list) and raw_range:
+            focus.extend(_coerce_lines(raw_range[:2]))
+
+    for findings in agent_findings.values():
+        if not isinstance(findings, dict):
+            continue
+        for key in ("issues", "style_violations", "threats", "test_failures", "antipatterns"):
+            for item in findings.get(key) or []:
+                if not isinstance(item, dict):
+                    continue
+                if "lines" in item:
+                    focus.extend(_coerce_lines(item.get("lines")))
+                focus.extend(_coerce_lines(item.get("line", item.get("line_hint", []))))
+        for key in ("immaturity_indicators", "maturity_indicators"):
+            for entry in findings.get(key) or []:
+                if isinstance(entry, dict):
+                    focus.extend(_coerce_lines(entry.get("line", entry.get("line_hint", []))))
+                elif isinstance(entry, str):
+                    focus.extend(int(n) for n in re.findall(r"(?:satir|line)\s*(\d+)", entry, re.I))
+
+    deduped: list[int] = []
+    seen: set[int] = set()
+    for n in focus:
+        if n >= 1 and n not in seen:
+            seen.add(n)
+            deduped.append(n)
+    return deduped[:48]
+
+
+def _indicator_text(entry) -> str:
+    if isinstance(entry, dict):
+        return str(entry.get("description") or entry.get("text") or entry.get("message") or "").strip()
+    return str(entry or "").strip()
+
+
+def _indicator_line(entry) -> int | None:
+    if not isinstance(entry, dict):
+        return None
+    for key in ("line", "line_hint"):
+        value = entry.get(key)
+        if isinstance(value, int) and value > 0:
+            return value
+        if isinstance(value, list) and value:
+            lines = _coerce_lines(value)
+            if lines:
+                return lines[0]
+    return None
+
+
 class EvidenceAgent(BaseAgent):
     name = "evidence"
     description = "Kanit eslestirme ve dogrulama"
@@ -735,14 +792,15 @@ class EvidenceAgent(BaseAgent):
         ast_blocks = ast_map.get("blocks", []) or []
 
         n_lines = len(source_code.splitlines())
+        focus_lines = _collect_evidence_focus_lines(agent_findings, programmatic)
         if n_lines <= 260:
             numbered = build_numbered_code(source_code)
         else:
-            excerpt = self._truncate_code(source_code, max_lines=220)
+            excerpt = build_focused_code_excerpt(source_code, focus_lines, max_lines=280)
             numbered = build_numbered_code(excerpt)
             numbered += (
-                "\n\n[NOTE] Middle of file may be omitted. Agent line numbers refer to the "
-                "full original file; map them to this excerpt when visible."
+                "\n\n[NOTE] Excerpt shows file head/tail plus windows around referenced lines. "
+                "Agent line numbers refer to the full original file; map them when visible."
             )
 
         findings_for_llm = {}
@@ -759,9 +817,16 @@ class EvidenceAgent(BaseAgent):
                             "line": item.get("line", item.get("line_hint", "")),
                         })
             for key in ("immaturity_indicators", "maturity_indicators"):
-                for text in (findings.get(key) or [])[:4]:
-                    if isinstance(text, str):
-                        items.append({"severity": "info", "description": text[:120]})
+                for entry in (findings.get(key) or [])[:4]:
+                    text = _indicator_text(entry)
+                    if not text:
+                        continue
+                    line = _indicator_line(entry)
+                    items.append({
+                        "severity": "info" if key == "maturity_indicators" else "medium",
+                        "description": text[:120],
+                        "line": line or "",
+                    })
             if items:
                 findings_for_llm[agent_name] = items
 
@@ -996,39 +1061,41 @@ class EvidenceAgent(BaseAgent):
 
             for indicator in findings.get("immaturity_indicators", []):
                 total += 1
-                claim = self._validate_text_claim(indicator, lines, agent_name, "medium")
+                text = _indicator_text(indicator)
+                claim = self._validate_text_claim(text, lines, agent_name, "medium")
                 if claim:
                     validated.append(claim)
-                elif _is_supported_file_level_claim(indicator, agent_name, None):
+                elif _is_supported_file_level_claim(text, agent_name, None):
                     validated.append({
                         "lines": [],
                         "code_snippet": "",
-                        "feedback": indicator,
+                        "feedback": text,
                         "agent_source": agent_name,
                         "severity": "medium",
                         "node_type": "file",
                         "is_valid": True,
                     })
                 else:
-                    rejected.append(f"[{agent_name}] '{indicator[:80]}' -- somut kanit yok")
+                    rejected.append(f"[{agent_name}] '{text[:80]}' -- somut kanit yok")
 
             for indicator in findings.get("maturity_indicators", []):
                 total += 1
-                claim = self._validate_text_claim(indicator, lines, agent_name, "info")
+                text = _indicator_text(indicator)
+                claim = self._validate_text_claim(text, lines, agent_name, "info")
                 if claim:
                     validated.append(claim)
-                elif _is_supported_file_level_claim(indicator, agent_name, None):
+                elif _is_supported_file_level_claim(text, agent_name, None):
                     validated.append({
                         "lines": [],
                         "code_snippet": "",
-                        "feedback": indicator,
+                        "feedback": text,
                         "agent_source": agent_name,
                         "severity": "info",
                         "node_type": "file",
                         "is_valid": True,
                     })
                 else:
-                    rejected.append(f"[{agent_name}] '{indicator[:80]}' -- somut kanit yok")
+                    rejected.append(f"[{agent_name}] '{text[:80]}' -- somut kanit yok")
 
             for ap in findings.get("antipatterns", []):
                 total += 1
@@ -1200,38 +1267,4 @@ class EvidenceAgent(BaseAgent):
 
     def _find_relevant_lines(self, text: str, lines: list[str]) -> list[int]:
         """Metindeki anahtar kelimeleri kodda arar."""
-        keywords = []
-
-        func_names = re.findall(r'(\w+)\(\)', text)
-        keywords.extend(func_names)
-
-        code_refs = re.findall(r'`([^`]+)`', text)
-        keywords.extend(code_refs)
-
-        identifiers = re.findall(r'\b([a-z_]\w{2,})\b', text)
-        for ident in identifiers:
-            if ident not in ("bir", "var", "yok", "ile", "icin", "gibi", "daha",
-                             "cok", "kisa", "uzun", "iyi", "kotu", "satir", "line",
-                             "kod", "code", "fonksiyon", "function", "degisken",
-                             "sinif", "class", "metot", "method", "dosya", "file",
-                             "kullanilmis", "kullanilmamis", "tespit", "edildi",
-                             "olmali", "olmasi", "gerekir", "eksik", "mevcut",
-                             "ogrenci", "odev", "analiz", "sonuc", "puan"):
-                keywords.append(ident)
-
-        py_keywords = ["for ", "while ", "def ", "class ", "import ", "range(", "len(",
-                       "append(", "set(", "dict(", "enumerate(", "sorted(", "try:", "except",
-                       "__init__", "__name__", "self.", "return ", "if ", "elif ", "else:"]
-        for pk in py_keywords:
-            if pk.strip("( :") in text.lower():
-                keywords.append(pk.rstrip("(: "))
-
-        found = []
-        seen = set()
-        for kw in keywords:
-            for i, line in enumerate(lines):
-                if kw in line and (i + 1) not in seen:
-                    found.append(i + 1)
-                    seen.add(i + 1)
-
-        return found[:8]
+        return find_relevant_lines(text, lines, limit=8)

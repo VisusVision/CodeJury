@@ -416,10 +416,10 @@ function AgentSection({ agent }: { agent: AgentReport }) {
 function FileEvidencePanel({ items }: { items: LineEvidence[] }) {
   if (items.length === 0) return null;
   return (
-    <div className="rounded-xl bg-card shadow-card p-4 mb-4 space-y-2">
-      <h3 className="text-sm font-semibold text-foreground">Dosya Seviyesi Kanıtlar</h3>
+    <div className="border-b border-border/60 bg-muted/20 px-4 py-3 space-y-2">
+      <h3 className="text-xs font-semibold text-foreground uppercase tracking-wide">Dosya Seviyesi Kanıtlar</h3>
       {items.map((item, index) => (
-        <div key={`${item.agent}-${index}`} className="text-xs border border-border rounded-md p-2">
+        <div key={`${item.agent}-${index}`} className="text-xs border border-dashed border-border rounded-md p-2 bg-card/60">
           <span className={`font-medium ${severityColor[item.severity]}`}>[{item.agent}]</span>
           <span className="text-muted-foreground ml-2">{item.message}</span>
         </div>
@@ -446,7 +446,15 @@ function RejectedClaimsPanel({ items }: { items: RejectedClaimItem[] }) {
   );
 }
 
-function AnnotatedCode({ fileContent, evidence }: { fileContent: string; evidence: LineEvidence[] }) {
+function AnnotatedCode({
+  fileContent,
+  evidence,
+  fileEvidence = [],
+}: {
+  fileContent: string;
+  evidence: LineEvidence[];
+  fileEvidence?: LineEvidence[];
+}) {
   const lines = fileContent.split("\n");
   const evidenceMap = new Map<number, LineEvidence[]>();
   evidence.forEach((e) => {
@@ -459,9 +467,11 @@ function AnnotatedCode({ fileContent, evidence }: { fileContent: string; evidenc
     <div className="rounded-xl overflow-hidden shadow-card">
       <div className="flex items-center gap-2 px-4 py-2.5 bg-card border-b border-border">
         <FileCode className="h-4 w-4 text-primary" />
-        <span className="text-sm font-medium text-foreground">Satır Bazlı Kanıtlar</span>
+        <span className="text-sm font-medium text-foreground">Kod Kanıtları</span>
       </div>
-      <div className="terminal-bg p-4 max-h-[50vh] overflow-auto font-mono-code text-xs leading-relaxed">
+      <div className="terminal-bg max-h-[50vh] overflow-auto font-mono-code text-xs leading-relaxed">
+        <FileEvidencePanel items={fileEvidence} />
+        <div className="p-4">
         {lines.map((line, i) => {
           const lineNum = i + 1;
           const annotations = evidenceMap.get(lineNum);
@@ -490,6 +500,7 @@ function AnnotatedCode({ fileContent, evidence }: { fileContent: string; evidenc
             </div>
           );
         })}
+        </div>
       </div>
     </div>
   );
@@ -676,8 +687,7 @@ const AnalysisReport = ({ report, onClose }: AnalysisReportProps) => {
           </TabsContent>
 
           <TabsContent value="evidence" className="mt-4">
-            <FileEvidencePanel items={fileEvidence} />
-            <AnnotatedCode fileContent={report.fileContent} evidence={lineEvidence} />
+            <AnnotatedCode fileContent={report.fileContent} evidence={lineEvidence} fileEvidence={fileEvidence} />
             <RejectedClaimsPanel items={rejectedClaims} />
           </TabsContent>
         </Tabs>

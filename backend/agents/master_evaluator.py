@@ -247,6 +247,7 @@ class MasterEvaluatorAgent(BaseAgent):
                 language=str(input_data.get("language") or "python"),
                 faculty_mode=True,
                 task_alignment_factor=type(self)._task_alignment_factor(input_data, programmatic),
+                testing_result=self._testing_result_from_input(input_data) or None,
             )
             self._apply_security_guard(
                 llm_result,
@@ -301,6 +302,7 @@ class MasterEvaluatorAgent(BaseAgent):
             language=str(input_data.get("language") or "python"),
             faculty_mode=False,
             task_alignment_factor=self._task_alignment_factor(input_data, programmatic),
+            testing_result=input_data.get("testing") if isinstance(input_data.get("testing"), dict) else None,
         )
         self._apply_security_guard(
             llm_result,
@@ -608,6 +610,11 @@ class MasterEvaluatorAgent(BaseAgent):
                 cls._recompute_faculty_final_score(llm_result)
             else:
                 cls._recompute_default_final_score(llm_result)
+            try:
+                recomputed = float(llm_result.get("final_score", 0) or 0)
+            except (TypeError, ValueError):
+                recomputed = target
+            llm_result["final_score"] = round(max(0.0, min(100.0, min(recomputed, target))), 1)
             return
         note = "Nihai puan sinirlama sonrasi rubrik satirlari totalScore ile hizalandi."
         cls._trim_breakdown_to_target_percent(
@@ -621,9 +628,9 @@ class MasterEvaluatorAgent(BaseAgent):
     def _alignment_score_cap(alignment_factor: float) -> float:
         """Clear topic mismatch gets a hard final-score ceiling, independent of LLM optimism."""
         if alignment_factor < 0.18:
-            return 28.0
+            return 18.0
         if alignment_factor < 0.30:
-            return 35.0
+            return 28.0
         if alignment_factor < 0.45:
             return 42.0
         if alignment_factor < 0.70:
@@ -657,6 +664,50 @@ class MasterEvaluatorAgent(BaseAgent):
             return int(sandbox_result.get("exit_code", 0) or 0) == 0
         except (TypeError, ValueError):
             return False
+
+    @staticmethod
+    def _testing_result_from_input(input_data: dict[str, Any]) -> dict[str, Any]:
+        for key in ("test_agent", "testing"):
+            row = input_data.get(key)
+            if isinstance(row, dict):
+                return row
+        return {}
+
+    @classmethod
+    def _submission_runs_ok(cls, input_data: dict[str, Any]) -> bool:
+        sandbox = input_data.get("sandbox_result")
+        runs_ok = cls._sandbox_runs_ok(
+            sandbox if isinstance(sandbox, dict) else None,
+            source_code=str(input_data.get("source_code") or ""),
+            language=str(input_data.get("language") or "python"),
+        )
+        testing = cls._testing_result_from_input(input_data)
+        if testing.get("runs_successfully"):
+            runs_ok = True
+        if testing.get("service_runtime_accepted"):
+            runs_ok = True
+        return runs_ok
+
+    _HARD_OFF_TOPIC_REASONS = frozenset(
+        {
+            "llm_task_relevance_off_topic",
+            "cross_domain_mismatch",
+            "deterministic_capability_mismatch",
+        }
+    )
+
+    @classmethod
+    def _hard_off_topic(cls, programmatic: dict[str, Any]) -> bool:
+        reasons = programmatic.get("brief_alignment_reasons", [])
+        if not isinstance(reasons, list):
+            return False
+        return any(reason in cls._HARD_OFF_TOPIC_REASONS for reason in reasons)
+
+    @classmethod
+    def _blocks_consensus_rescue(cls, programmatic: dict[str, Any]) -> bool:
+        if cls._hard_off_topic(programmatic):
+            return True
+        return cls._effective_alignment_for_grading(programmatic) < 0.35
 
     @classmethod
     def _effective_alignment_for_grading(cls, programmatic: dict[str, Any]) -> float:
@@ -709,10 +760,7 @@ class MasterEvaluatorAgent(BaseAgent):
         if not isinstance(reasons, list):
             reasons = []
         cap = cls._alignment_score_cap(align_f)
-        hard_off_topic = any(
-            reason in {"llm_task_relevance_off_topic", "cross_domain_mismatch", "deterministic_capability_mismatch"}
-            for reason in reasons
-        )
+        hard_off_topic = cls._hard_off_topic(programmatic)
         if hard_off_topic:
             cap = min(cap, 28.0)
         if cap >= 100.0:
@@ -816,6 +864,8 @@ class MasterEvaluatorAgent(BaseAgent):
         input_data: dict[str, Any],
     ) -> None:
         """Recover from faculty rubric collapse (e.g. only security row scored)."""
+        if cls._blocks_consensus_rescue(programmatic):
+            return
         raw_bd = llm_result.get("rubric_breakdown")
         if not isinstance(raw_bd, list) or not raw_bd:
             return
@@ -826,14 +876,7 @@ class MasterEvaluatorAgent(BaseAgent):
             return
 
         sandbox = input_data.get("sandbox_result")
-        runs_ok = cls._sandbox_runs_ok(
-            sandbox if isinstance(sandbox, dict) else None,
-            source_code=str(input_data.get("source_code") or ""),
-            language=str(input_data.get("language") or "python"),
-        )
-        testing = input_data.get("testing")
-        if isinstance(testing, dict) and testing.get("runs_successfully"):
-            runs_ok = True
+        runs_ok = cls._submission_runs_ok(input_data)
         if not runs_ok or core < 55:
             return
 
@@ -872,12 +915,28 @@ class MasterEvaluatorAgent(BaseAgent):
             return
 
         collapsed = current < 35 and non_security_earned <= max(1, int(round(total_max * 0.12)))
-        if not collapsed:
+        testing = cls._testing_result_from_input(input_data)
+        try:
+            ta_score = int(round(float(testing.get("score", 0) or 0)))
+        except (TypeError, ValueError):
+            ta_score = 0
+        soft_stingy = (
+            not collapsed
+            and 45 <= current < 68
+            and core >= 70
+            and align_f >= 0.80
+            and ta_score >= 85
+            and non_security_earned < int(round(total_max * 0.68))
+        )
+        if not collapsed and not soft_stingy:
             return
 
-        target_pct = max(current, min(core - 8, 85.0))
-        if prog_align >= 0.95 and capability >= 0.55:
-            target_pct = max(target_pct, min(core - 6, 88.0))
+        if soft_stingy:
+            target_pct = max(current, min(core - 4, 82.0))
+        else:
+            target_pct = max(current, min(core - 8, 85.0))
+            if prog_align >= 0.95 and capability >= 0.55:
+                target_pct = max(target_pct, min(core - 6, 88.0))
         target_earned = int(round(total_max * target_pct / 100.0))
         missing = max(0, target_earned - total_earned)
         if missing <= 0:
@@ -941,22 +1000,24 @@ class MasterEvaluatorAgent(BaseAgent):
             return
         if current >= 35 or core < 55:
             return
+        if cls._blocks_consensus_rescue(programmatic):
+            return
 
-        sandbox = input_data.get("sandbox_result")
-        runs_ok = cls._sandbox_runs_ok(
-            sandbox if isinstance(sandbox, dict) else None,
-            source_code=str(input_data.get("source_code") or ""),
-            language=str(input_data.get("language") or "python"),
-        )
-        testing = input_data.get("testing")
-        if isinstance(testing, dict) and testing.get("runs_successfully"):
-            runs_ok = True
+        runs_ok = cls._submission_runs_ok(input_data)
+        testing = cls._testing_result_from_input(input_data)
+        service_accepted = bool(testing.get("service_runtime_accepted"))
         if not runs_ok:
             return
         if cls._effective_alignment_for_grading(programmatic) < 0.55:
             return
 
-        if any(
+        strong_consensus = (
+            current < 35
+            and core >= 55
+            and cls._effective_alignment_for_grading(programmatic) >= 0.85
+            and (service_accepted or current <= 5)
+        )
+        if not strong_consensus and any(
             float(row.get("score", 0) or 0) > 5
             for row in raw_bd
             if isinstance(row, dict)
@@ -1074,9 +1135,13 @@ class MasterEvaluatorAgent(BaseAgent):
         language: str = "python",
         faculty_mode: bool,
         task_alignment_factor: float = 1.0,
+        testing_result: dict[str, Any] | None = None,
     ) -> None:
         """Runtime facts are hard grading constraints, independent of LLM optimism."""
         if not isinstance(sandbox_result, dict) or not sandbox_result:
+            return
+
+        if isinstance(testing_result, dict) and testing_result.get("service_runtime_accepted"):
             return
 
         compilation_ok = bool(sandbox_result.get("compilation_success", True))
@@ -1223,10 +1288,13 @@ class MasterEvaluatorAgent(BaseAgent):
             sec_score = 100.0
 
         cap: float | None = None
-        if risk == "critical" or critical > 0 or sec_score <= 55:
-            cap = 55.0
+        if risk == "critical" or critical > 0 or sec_score <= 30:
+            cap = 35.0
             reason = "Kritik guvenlik riski tespit edildigi icin nihai not sinirlandi."
-        elif risk == "high" or high > 0 or sec_score <= 70:
+        elif sec_score <= 55 or risk == "high" or high > 0:
+            cap = 55.0
+            reason = "Guvenlik riski tespit edildigi icin nihai not sinirlandi."
+        elif sec_score <= 70:
             cap = 78.0
             reason = "Yuksek guvenlik riski tespit edildigi icin nihai not sinirlandi."
         else:

@@ -74,13 +74,13 @@ class MasterEvaluatorFacultyRuntimeGuardTests(unittest.IsolatedAsyncioTestCase):
         }
         MasterEvaluatorAgent._apply_brief_alignment_guard(llm_result, programmatic, faculty_mode=True)
         MasterEvaluatorAgent._apply_faculty_consensus_rescue(llm_result, programmatic, input_data)
-        self.assertGreaterEqual(float(llm_result["final_score"]), 65.0)
+        self.assertLessEqual(float(llm_result["final_score"]), 28.0)
         non_security = [
             int(row["score"])
             for row in llm_result["rubric_breakdown"]
             if "guven" not in str(row.get("label", "")).lower()
         ]
-        self.assertGreater(sum(non_security), 0)
+        self.assertEqual(sum(non_security), 0)
 
     def test_effective_alignment_respects_llm_task_factor(self):
         programmatic = {
@@ -117,6 +117,17 @@ class MasterEvaluatorFacultyRuntimeGuardTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertLessEqual(float(llm_result["final_score"]), 28.0)
         self.assertTrue(any("alakas" in item.lower() or "gorev" in item.lower() for item in llm_result["weaknesses"]))
+
+    def test_sync_rubric_does_not_exceed_alignment_cap(self):
+        llm_result = {
+            "final_score": 18.0,
+            "rubric_breakdown": [
+                {"label": "Guvenlik", "weight": 28, "score": 28, "weighted_score": 28.0, "justification": ""},
+                {"label": "Fonksiyonellik", "weight": 72, "score": 0, "weighted_score": 0.0, "justification": ""},
+            ],
+        }
+        MasterEvaluatorAgent._sync_rubric_to_final_score(llm_result, faculty_mode=True)
+        self.assertLessEqual(float(llm_result["final_score"]), 18.0)
 
 
 if __name__ == "__main__":
