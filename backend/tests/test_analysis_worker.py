@@ -4,6 +4,7 @@ from unittest.mock import AsyncMock, patch
 
 from backend.agents.base import LLMInferenceError
 from backend.queue.analysis_jobs import AnalysisJobStore, create_analysis_job, get_analysis_job
+from backend.sandbox.errors import SandboxUnavailableError
 from backend.tests.test_analysis_jobs import FakeRedis
 from backend.workers import analysis_worker
 from backend.workers.analysis_worker import process_analysis_job
@@ -12,6 +13,8 @@ from backend.workers.analysis_worker import process_analysis_job
 class AnalysisWorkerTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.redis = FakeRedis()
+        self.redis.xgroup_create = AsyncMock()
+        self.redis.xack = AsyncMock()
         self.store = AnalysisJobStore(
             self.redis,
             stream_name="stream:analysis_jobs",
@@ -136,29 +139,47 @@ class AnalysisWorkerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(job["status"], "failed")
         self.assertEqual(job["error"], analysis_worker.PIPELINE_TIMEOUT_ERROR)
 
-    async def test_worker_sandbox_pool_initializes_when_enabled(self):
-        with patch.dict("os.environ", {"ANALYSIS_WORKER_SANDBOX_POOL": "1"}, clear=False):
-            with patch("backend.sandbox.pool_manager.initialize_pool") as initialize_mock:
-                started = analysis_worker.initialize_worker_sandbox_pool()
+    async def test_process_job_returns_sandbox_message_for_infrastructure_failure(self):
+        await create_analysis_job(self.store, {"file_name": "main.py", "file_content": "print(1)"})
 
-        self.assertTrue(started)
-        initialize_mock.assert_called_once()
+        async def pipeline(**kwargs):
+            raise SandboxUnavailableError(
+                "pool_not_ready",
+                "Sandbox kullanılamıyor",
+                detail="docker down",
+                retryable=True,
+            )
 
-    async def test_worker_sandbox_pool_skips_when_disabled(self):
-        with patch.dict("os.environ", {"ANALYSIS_WORKER_SANDBOX_POOL": "0"}, clear=False):
-            with patch("backend.sandbox.pool_manager.initialize_pool") as initialize_mock:
-                started = analysis_worker.initialize_worker_sandbox_pool()
+        job = await process_analysis_job(self.store, "job-123", pipeline=pipeline)
+        self.assertEqual(job["status"], "failed")
+        self.assertEqual(job["error"], analysis_worker.SANDBOX_UNAVAILABLE_ERROR)
+        self.assertNotIn("docker down", job["error"])
 
-        self.assertFalse(started)
-        initialize_mock.assert_not_called()
+    async def test_consumer_does_not_read_stream_until_pool_is_ready(self):
+        with (
+            patch.object(analysis_worker, "worker_pool_ready", side_effect=[False, True]),
+            patch.object(
+                self.redis,
+                "xreadgroup",
+                new=AsyncMock(side_effect=asyncio.CancelledError),
+                create=True,
+            ) as read,
+            patch.object(analysis_worker.asyncio, "sleep", new=AsyncMock()),
+        ):
+            with self.assertRaises(asyncio.CancelledError):
+                await analysis_worker.consume_analysis_jobs(self.store, block_ms=1)
+        read.assert_awaited_once()
 
-    async def test_worker_sandbox_pool_returns_false_when_init_raises(self):
-        with patch.dict("os.environ", {"ANALYSIS_WORKER_SANDBOX_POOL": "1"}, clear=False):
-            with patch("backend.sandbox.pool_manager.initialize_pool", side_effect=RuntimeError("docker down")):
-                with patch.object(analysis_worker.logger, "exception"):
-                    started = analysis_worker.initialize_worker_sandbox_pool()
+    async def test_heartbeat_loop_publishes_local_pool_state(self):
+        stop = asyncio.Event()
 
-        self.assertFalse(started)
+        async def publish_once(*args, **kwargs):
+            stop.set()
+
+        with patch.object(analysis_worker, "publish_worker_heartbeat", new=AsyncMock(side_effect=publish_once)) as publish:
+            await analysis_worker.worker_heartbeat_loop(self.redis, "worker-a", stop)
+        heartbeat = publish.await_args.args[1]
+        self.assertEqual(heartbeat["worker_id"], "worker-a")
 
 
 if __name__ == "__main__":
