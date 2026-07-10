@@ -1,0 +1,360 @@
+"""Unit tests for student-safe analysis result projection (Phase 2A Task 7)."""
+
+from __future__ import annotations
+
+import copy
+import json
+import unittest
+from typing import Any
+
+from backend.reporting.student_projection import project_student_result
+
+# Distinct greppable sentinels for hidden-test private fields.
+SENTINEL_HIDDEN_NAME = "SENTINEL_HIDDEN_NAME_7f3a"
+SENTINEL_HIDDEN_INPUT = "SENTINEL_HIDDEN_INPUT_7f3a"
+SENTINEL_HIDDEN_EXPECTED = "SENTINEL_HIDDEN_EXPECTED_7f3a"
+SENTINEL_HIDDEN_ACTUAL = "SENTINEL_HIDDEN_ACTUAL_7f3a"
+SENTINEL_HIDDEN_DIFF = "SENTINEL_HIDDEN_DIFF_7f3a"
+SENTINEL_AGENT_DIAGNOSTICS = "SENTINEL_AGENT_DIAGNOSTICS_7f3a"
+SENTINEL_REJECTED_CLAIMS = "SENTINEL_REJECTED_CLAIMS_7f3a"
+SENTINEL_UNKNOWN_TOP = "SENTINEL_UNKNOWN_TOP_7f3a"
+
+PUBLIC_NAME = "PUBLIC_KEEP_NAME_7f3a"
+PUBLIC_INPUT = "PUBLIC_KEEP_INPUT_7f3a"
+PUBLIC_EXPECTED = "PUBLIC_KEEP_EXPECTED_7f3a"
+PUBLIC_ACTUAL = "PUBLIC_KEEP_ACTUAL_7f3a"
+PUBLIC_DIFF = "PUBLIC_KEEP_DIFF_7f3a"
+
+HIDDEN_SENTINELS = (
+    SENTINEL_HIDDEN_NAME,
+    SENTINEL_HIDDEN_INPUT,
+    SENTINEL_HIDDEN_EXPECTED,
+    SENTINEL_HIDDEN_ACTUAL,
+    SENTINEL_HIDDEN_DIFF,
+    SENTINEL_AGENT_DIAGNOSTICS,
+    SENTINEL_REJECTED_CLAIMS,
+)
+
+
+def private_result_with_hidden_sentinels() -> dict[str, Any]:
+    """Build a realistic private result with greppable hidden-test sentinels."""
+    leaky_message = (
+        f"Test {SENTINEL_HIDDEN_NAME} basarisiz | Gizli test | "
+        f"Girdi: {SENTINEL_HIDDEN_INPUT} | "
+        f"Beklenen: {SENTINEL_HIDDEN_EXPECTED} | "
+        f"Gercek: {SENTINEL_HIDDEN_ACTUAL}"
+    )
+    return {
+        "totalScore": 42,
+        "maxScore": 100,
+        "rubric": {"criteria": [{"name": "correctness", "score": 42}]},
+        "agents": [
+            {
+                "id": "testing",
+                "name": "Test Ajani",
+                "summary": "Derleme basarili, 1 test gecti, 1 basarisiz",
+                "score": 50,
+                "maxScore": 100,
+                "findings": [
+                    {
+                        "severity": "error",
+                        "message": leaky_message,
+                        "line": None,
+                        "agent": "Test Ajani",
+                        "code": None,
+                    },
+                    {
+                        "severity": "info",
+                        "message": f"Public test {PUBLIC_NAME} gecti",
+                        "line": None,
+                        "agent": "Test Ajani",
+                        "code": None,
+                    },
+                ],
+                "testResults": [
+                    {
+                        "name": PUBLIC_NAME,
+                        "input": PUBLIC_INPUT,
+                        "expected": PUBLIC_EXPECTED,
+                        "actual": PUBLIC_ACTUAL,
+                        "passed": True,
+                        "visibility": "public",
+                        "matchPct": 100.0,
+                        "diffDetail": PUBLIC_DIFF,
+                    },
+                    {
+                        "name": SENTINEL_HIDDEN_NAME,
+                        "input": SENTINEL_HIDDEN_INPUT,
+                        "expected": SENTINEL_HIDDEN_EXPECTED,
+                        "actual": SENTINEL_HIDDEN_ACTUAL,
+                        "passed": False,
+                        "visibility": "hidden",
+                        "matchPct": 0.0,
+                        "diffDetail": SENTINEL_HIDDEN_DIFF,
+                        "stderr": "secret stderr",
+                        "stdin": SENTINEL_HIDDEN_INPUT,
+                    },
+                ],
+                "llm_status": "ok",
+                "confidence": 0.9,
+            },
+            {
+                "id": "quality",
+                "name": "Kod Kalitesi Ajani",
+                "summary": "Skor: 70/100",
+                "score": 70,
+                "maxScore": 100,
+                "findings": [
+                    {
+                        "severity": "warning",
+                        "message": "Unused variable on line 5",
+                        "line": 5,
+                        "agent": "Kod Kalitesi Ajani",
+                        "code": "W001",
+                    },
+                ],
+            },
+        ],
+        "evidence": [{"line": 1, "message": "sample evidence"}],
+        "rejectedClaims": [{"claim": SENTINEL_REJECTED_CLAIMS}],
+        "fileName": "solution.py",
+        "executionTimeMs": 1200,
+        "memoryUsageMb": 12.5,
+        "peakMemoryMb": 18.0,
+        "analysisEngine": "agentgrade-v1",
+        "summary": "Orta duzey bir cozum.",
+        "strengths": ["Temiz kod"],
+        "weaknesses": ["Eksik edge case"],
+        "recommendations": ["Daha fazla test yazin"],
+        "resourceRecommendations": [],
+        "relevanceScoreWarning": None,
+        "taskAlignment": {"factor": 1.0},
+        "reportStatus": "ready",
+        "agentDiagnostics": {
+            "agents": [{"id": "testing", "score": 50}],
+            "nested": SENTINEL_AGENT_DIAGNOSTICS,
+        },
+        "privateDebugField": SENTINEL_UNKNOWN_TOP,
+    }
+
+
+def _testing_agent(projected: dict[str, Any]) -> dict[str, Any]:
+    for agent in projected.get("agents", []):
+        if agent.get("id") == "testing":
+            return agent
+    raise AssertionError("testing agent not found in projection")
+
+
+class StudentResultProjectionTests(unittest.TestCase):
+    def test_student_projection_contains_no_hidden_sentinel_anywhere(self) -> None:
+        private = private_result_with_hidden_sentinels()
+        projected = project_student_result(private)
+        serialized = json.dumps(projected, ensure_ascii=False)
+        for sentinel in HIDDEN_SENTINELS:
+            self.assertNotIn(
+                sentinel,
+                serialized,
+                msg=f"hidden sentinel leaked into projection: {sentinel}",
+            )
+
+    def test_hidden_case_is_minimal_and_anonymous(self) -> None:
+        private = private_result_with_hidden_sentinels()
+        projected = project_student_result(private)
+        testing = _testing_agent(projected)
+        hidden_cases = [
+            case for case in testing["testResults"] if case.get("visibility") == "hidden"
+        ]
+        self.assertEqual(len(hidden_cases), 1)
+        hidden = hidden_cases[0]
+        self.assertEqual(set(hidden.keys()), {"name", "visibility", "status", "passed"})
+        self.assertEqual(hidden["name"], "Hidden test #1")
+        self.assertEqual(hidden["visibility"], "hidden")
+        self.assertEqual(hidden["passed"], False)
+        self.assertIn(hidden["status"], {"failed", "error"})
+
+    def test_public_test_case_fields_are_preserved(self) -> None:
+        private = private_result_with_hidden_sentinels()
+        projected = project_student_result(private)
+        testing = _testing_agent(projected)
+        public_cases = [
+            case for case in testing["testResults"] if case.get("visibility") != "hidden"
+        ]
+        self.assertEqual(len(public_cases), 1)
+        public = public_cases[0]
+        self.assertEqual(public["name"], PUBLIC_NAME)
+        self.assertEqual(public["input"], PUBLIC_INPUT)
+        self.assertEqual(public["expected"], PUBLIC_EXPECTED)
+        self.assertEqual(public["actual"], PUBLIC_ACTUAL)
+        self.assertEqual(public["passed"], True)
+        self.assertEqual(public["visibility"], "public")
+        self.assertEqual(public["matchPct"], 100.0)
+        self.assertEqual(public["diffDetail"], PUBLIC_DIFF)
+
+    def test_projection_does_not_mutate_private_result(self) -> None:
+        private = private_result_with_hidden_sentinels()
+        before = copy.deepcopy(private)
+        project_student_result(private)
+        self.assertEqual(private, before)
+
+    def test_agent_diagnostics_and_rejected_claims_are_absent(self) -> None:
+        private = private_result_with_hidden_sentinels()
+        projected = project_student_result(private)
+        self.assertNotIn("agentDiagnostics", projected)
+        self.assertNotIn("rejectedClaims", projected)
+
+    def test_unknown_top_level_keys_are_dropped(self) -> None:
+        private = private_result_with_hidden_sentinels()
+        projected = project_student_result(private)
+        self.assertNotIn("privateDebugField", projected)
+        serialized = json.dumps(projected, ensure_ascii=False)
+        self.assertNotIn(SENTINEL_UNKNOWN_TOP, serialized)
+
+    def test_hidden_finding_message_is_replaced_with_generic_text(self) -> None:
+        private = private_result_with_hidden_sentinels()
+        projected = project_student_result(private)
+        testing = _testing_agent(projected)
+        for finding in testing.get("findings", []):
+            message = finding.get("message", "")
+            for sentinel in (
+                SENTINEL_HIDDEN_NAME,
+                SENTINEL_HIDDEN_INPUT,
+                SENTINEL_HIDDEN_EXPECTED,
+                SENTINEL_HIDDEN_ACTUAL,
+                SENTINEL_HIDDEN_DIFF,
+            ):
+                self.assertNotIn(sentinel, message)
+        generic_messages = [
+            f["message"]
+            for f in testing.get("findings", [])
+            if f.get("message") == "Hidden test basarisiz."
+        ]
+        self.assertGreaterEqual(len(generic_messages), 1)
+
+    def test_multiple_hidden_cases_get_sequential_anonymous_numbering(self) -> None:
+        private = private_result_with_hidden_sentinels()
+        testing_agent = private["agents"][0]
+        testing_agent["testResults"] = [
+            {
+                "name": PUBLIC_NAME,
+                "input": PUBLIC_INPUT,
+                "expected": PUBLIC_EXPECTED,
+                "actual": PUBLIC_ACTUAL,
+                "passed": True,
+                "visibility": "public",
+                "matchPct": 100.0,
+                "diffDetail": "",
+            },
+            {
+                "name": "hidden-a",
+                "input": "secret-a-in",
+                "expected": "secret-a-exp",
+                "actual": "secret-a-act",
+                "passed": False,
+                "visibility": "hidden",
+                "matchPct": 0.0,
+                "diffDetail": "mismatch",
+            },
+            {
+                "name": "hidden-b",
+                "input": "secret-b-in",
+                "expected": "secret-b-exp",
+                "actual": "secret-b-act",
+                "passed": True,
+                "visibility": "hidden",
+                "matchPct": 100.0,
+                "diffDetail": "",
+            },
+            {
+                "name": "hidden-c",
+                "input": "secret-c-in",
+                "expected": "secret-c-exp",
+                "actual": "secret-c-act",
+                "passed": False,
+                "visibility": "hidden",
+                "matchPct": 0.0,
+                "diffDetail": "Traceback (most recent call last): boom",
+            },
+        ]
+        projected = project_student_result(private)
+        testing = _testing_agent(projected)
+        hidden_cases = [
+            case for case in testing["testResults"] if case.get("visibility") == "hidden"
+        ]
+        self.assertEqual(len(hidden_cases), 3)
+        self.assertEqual(hidden_cases[0]["name"], "Hidden test #1")
+        self.assertEqual(hidden_cases[1]["name"], "Hidden test #2")
+        self.assertEqual(hidden_cases[2]["name"], "Hidden test #3")
+        self.assertEqual(hidden_cases[0]["passed"], False)
+        self.assertEqual(hidden_cases[1]["passed"], True)
+        self.assertEqual(hidden_cases[2]["passed"], False)
+        serialized = json.dumps(testing["testResults"], ensure_ascii=False)
+        for secret in (
+            "hidden-a",
+            "secret-a-in",
+            "hidden-b",
+            "secret-c-in",
+            "Traceback",
+        ):
+            self.assertNotIn(secret, serialized)
+
+    def test_progress_shaped_partial_result_also_redacts_hidden_data(self) -> None:
+        private = {
+            "totalScore": 10,
+            "maxScore": 100,
+            "rubric": {},
+            "agents": [
+                {
+                    "id": "testing",
+                    "name": "Test Ajani",
+                    "summary": "Hazirlaniyor",
+                    "score": 0,
+                    "maxScore": 100,
+                    "findings": [
+                        {
+                            "severity": "error",
+                            "message": f"Leak {SENTINEL_HIDDEN_INPUT}",
+                            "line": None,
+                            "agent": "Test Ajani",
+                            "code": None,
+                        },
+                    ],
+                    "testResults": [
+                        {
+                            "name": SENTINEL_HIDDEN_NAME,
+                            "input": SENTINEL_HIDDEN_INPUT,
+                            "expected": SENTINEL_HIDDEN_EXPECTED,
+                            "actual": SENTINEL_HIDDEN_ACTUAL,
+                            "passed": False,
+                            "visibility": "hidden",
+                            "matchPct": 0.0,
+                            "diffDetail": SENTINEL_HIDDEN_DIFF,
+                        },
+                    ],
+                },
+            ],
+            "evidence": [],
+            "fileName": "partial.py",
+            "executionTimeMs": 0,
+            "memoryUsageMb": 0.0,
+            "peakMemoryMb": 0.0,
+            "analysisEngine": "agentgrade-v1",
+            "summary": "",
+            "strengths": [],
+            "weaknesses": [],
+            "recommendations": [],
+            "relevanceScoreWarning": None,
+            "taskAlignment": {},
+            "reportStatus": "preparing",
+            "agentDiagnostics": {"sentinel": SENTINEL_AGENT_DIAGNOSTICS},
+            "rejectedClaims": [SENTINEL_REJECTED_CLAIMS],
+        }
+        projected = project_student_result(private)
+        serialized = json.dumps(projected, ensure_ascii=False)
+        for sentinel in HIDDEN_SENTINELS:
+            self.assertNotIn(sentinel, serialized)
+        self.assertNotIn("resourceRecommendations", projected)
+        self.assertEqual(projected["reportStatus"], "preparing")
+
+
+if __name__ == "__main__":
+    unittest.main()
