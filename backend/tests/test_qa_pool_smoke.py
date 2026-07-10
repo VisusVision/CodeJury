@@ -70,6 +70,23 @@ class QaPoolSmokeTests(unittest.TestCase):
 
         self.assertEqual(code, 1)
 
+    def test_main_reads_pool_size_and_port_from_env_vars(self):
+        smoke = _load_pool_smoke_module()
+        run_mock = MagicMock(return_value=0)
+
+        with (
+            patch.dict("os.environ", {
+                "SANDBOX_POOL_SIZE": "5",
+                "SANDBOX_POOL_BASE_PORT": "8381",
+                "SANDBOX_POOL_TIMEOUT": "45.0",
+            }, clear=False),
+            patch.object(smoke, "run_pool_smoke", run_mock),
+        ):
+            code = smoke.main()
+
+        self.assertEqual(code, 0)
+        run_mock.assert_called_once_with(pool_size=5, base_port=8381, timeout_s=45.0)
+
 
 if __name__ == "__main__":
     unittest.main()
