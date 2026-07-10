@@ -671,6 +671,66 @@ class TeacherAuthorizationTests(unittest.TestCase):
         self.assertEqual(me_a.status_code, 401)
         self.assertEqual(me_second.status_code, 401)
 
+    def test_password_change_revokes_sessions_before_persisting_new_password(self):
+        csrf_a = self._login_teacher(self.client_a)
+        client_pre_change = TestClient(main.app)
+        self._login_teacher(client_pre_change)
+
+        new_password = "yeniparola1"
+        resp = self.client_a.patch(
+            f"/api/teacher/{_DEMO_TEACHER_ID}/password",
+            json={"current_password": _DEMO_TEACHER_PASSWORD, "new_password": new_password},
+            headers=self._csrf_headers(csrf_a),
+        )
+        self.assertEqual(resp.status_code, 200)
+
+        old_login = TestClient(main.app)
+        old_login_resp = old_login.post(
+            "/api/teacher/login",
+            json={"email": _DEMO_TEACHER_EMAIL, "password": _DEMO_TEACHER_PASSWORD},
+        )
+        self.assertEqual(old_login_resp.status_code, 401)
+
+        new_login = TestClient(main.app)
+        new_login_resp = new_login.post(
+            "/api/teacher/login",
+            json={"email": _DEMO_TEACHER_EMAIL, "password": new_password},
+        )
+        self.assertEqual(new_login_resp.status_code, 200)
+
+        me_pre_change = client_pre_change.get("/api/auth/me")
+        self.assertEqual(me_pre_change.status_code, 401)
+
+    def test_password_change_returns_503_and_leaves_password_unchanged_when_revoke_fails(self):
+        csrf_a = self._login_teacher(self.client_a)
+        new_password = "yeniparola1"
+
+        with patch.object(
+            type(self)._session_store,
+            "revoke_user_sessions",
+            new=AsyncMock(side_effect=ConnectionError("redis down")),
+        ):
+            resp = self.client_a.patch(
+                f"/api/teacher/{_DEMO_TEACHER_ID}/password",
+                json={"current_password": _DEMO_TEACHER_PASSWORD, "new_password": new_password},
+                headers=self._csrf_headers(csrf_a),
+            )
+        self.assertEqual(resp.status_code, 503)
+
+        old_login = TestClient(main.app)
+        old_login_resp = old_login.post(
+            "/api/teacher/login",
+            json={"email": _DEMO_TEACHER_EMAIL, "password": _DEMO_TEACHER_PASSWORD},
+        )
+        self.assertEqual(old_login_resp.status_code, 200)
+
+        new_login = TestClient(main.app)
+        new_login_resp = new_login.post(
+            "/api/teacher/login",
+            json={"email": _DEMO_TEACHER_EMAIL, "password": new_password},
+        )
+        self.assertEqual(new_login_resp.status_code, 401)
+
     def test_teacher_lists_students_only_in_owned_or_legacy_departments(self):
         csrf_a = self._login_teacher(self.client_a)
         teacher_b_id, csrf_b = self._register_teacher_b()

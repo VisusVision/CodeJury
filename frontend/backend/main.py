@@ -6894,9 +6894,12 @@ async def update_teacher_password(
             raise HTTPException(status_code=404, detail="Ogretmen bulunamadi")
         if not _verify_password(current_password, teacher["password_hash"]):
             raise HTTPException(status_code=401, detail="Mevcut şifre hatalı")
-        teacher["password_hash"] = _hash_password(new_password)
         store = await get_auth_session_store(request)
-        await store.revoke_user_sessions(principal.user_id, "teacher")
+        try:
+            await store.revoke_user_sessions(principal.user_id, "teacher")
+        except Exception as exc:
+            raise HTTPException(status_code=503, detail="Oturum servisine ulaşılamıyor") from exc
+        teacher["password_hash"] = _hash_password(new_password)
         clear_auth_cookies(response)
         return {"status": "ok"}
 
@@ -6916,6 +6919,12 @@ async def update_teacher_password(
     if not _verify_password(current_password, row["password_hash"]):
         raise HTTPException(status_code=401, detail="Mevcut şifre hatalı")
 
+    store = await get_auth_session_store(request)
+    try:
+        await store.revoke_user_sessions(principal.user_id, "teacher")
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail="Oturum servisine ulaşılamıyor") from exc
+
     await pool.execute(
         """
         UPDATE public.teachers
@@ -6925,8 +6934,6 @@ async def update_teacher_password(
         _hash_password(new_password),
         teacher_id,
     )
-    store = await get_auth_session_store(request)
-    await store.revoke_user_sessions(principal.user_id, "teacher")
     clear_auth_cookies(response)
     return {"status": "ok"}
 
