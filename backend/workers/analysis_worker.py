@@ -152,15 +152,18 @@ async def worker_heartbeat_loop(
     stop_event: asyncio.Event,
 ) -> None:
     while not stop_event.is_set():
-        heartbeat = build_local_heartbeat(
-            current_worker_id,
-            analysis_engine=os.getenv("ANALYSIS_ENGINE_VERSION", "2.1.0-rubrik"),
-        )
-        await publish_worker_heartbeat(
-            redis,
-            heartbeat,
-            ttl_s=settings.analysis_worker_heartbeat_ttl_seconds,
-        )
+        try:
+            heartbeat = build_local_heartbeat(
+                current_worker_id,
+                analysis_engine=os.getenv("ANALYSIS_ENGINE_VERSION", "2.1.0-rubrik"),
+            )
+            await publish_worker_heartbeat(
+                redis,
+                heartbeat,
+                ttl_s=settings.analysis_worker_heartbeat_ttl_seconds,
+            )
+        except Exception:
+            logger.exception("analysis worker heartbeat publish failed")
         try:
             await asyncio.wait_for(
                 stop_event.wait(),
