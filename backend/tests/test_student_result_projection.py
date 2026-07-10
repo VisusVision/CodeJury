@@ -21,6 +21,7 @@ SENTINEL_HIDDEN_DIFF = "SENTINEL_HIDDEN_DIFF_7f3a"
 SENTINEL_AGENT_DIAGNOSTICS = "SENTINEL_AGENT_DIAGNOSTICS_7f3a"
 SENTINEL_REJECTED_CLAIMS = "SENTINEL_REJECTED_CLAIMS_7f3a"
 SENTINEL_UNKNOWN_TOP = "SENTINEL_UNKNOWN_TOP_7f3a"
+SENTINEL_NESTED = "NESTED_SENTINEL_7f3a"
 
 PUBLIC_NAME = "PUBLIC_KEEP_NAME_7f3a"
 PUBLIC_INPUT = "PUBLIC_KEEP_INPUT_7f3a"
@@ -441,6 +442,144 @@ class StudentResultProjectionTests(unittest.TestCase):
         self.assertEqual(testing["summary"], "Derleme basarili, 1 test gecti, 1 basarisiz")
         quality = next(a for a in projected["agents"] if a["id"] == "quality")
         self.assertEqual(quality["summary"], "Skor: 70/100")
+
+    def test_evidence_entry_with_leaking_non_message_field_is_dropped(self) -> None:
+        private = self._private_with_hidden_fragments()
+        clean_evidence = {"message": "clean", "line": 1}
+        leaking_evidence = {
+            "message": "clean",
+            "details": f"leak: {SENTINEL_HIDDEN_INPUT}",
+        }
+        private["evidence"] = [leaking_evidence, clean_evidence]
+        projected = project_student_result(private)
+        self.assertEqual(projected["evidence"], [clean_evidence])
+        serialized = json.dumps(projected, ensure_ascii=False)
+        self.assertNotIn(SENTINEL_HIDDEN_INPUT, serialized)
+
+    def test_resource_recommendations_with_leaking_field_are_sanitized(self) -> None:
+        private = self._private_with_hidden_fragments()
+        clean_rec = {"title": "clean", "url": "https://example.com"}
+        leaking_rec = {
+            "title": "clean",
+            "private_note": f"leak: {SENTINEL_HIDDEN_INPUT}",
+        }
+        private["resourceRecommendations"] = [leaking_rec, clean_rec]
+        projected = project_student_result(private)
+        self.assertEqual(projected["resourceRecommendations"], [clean_rec])
+        serialized = json.dumps(projected, ensure_ascii=False)
+        self.assertNotIn(SENTINEL_HIDDEN_INPUT, serialized)
+
+    def test_rubric_nested_leaking_field_is_redacted(self) -> None:
+        private = self._private_with_hidden_fragments()
+        criteria = [{"name": "correctness", "score": 42}]
+        private["rubric"] = {
+            "criteria": criteria,
+            "debug": f"leak: {SENTINEL_HIDDEN_INPUT}",
+        }
+        projected = project_student_result(private)
+        self.assertEqual(projected["rubric"]["criteria"], criteria)
+        self.assertEqual(projected["rubric"]["debug"], GENERIC_REDACTED_TEXT)
+        serialized = json.dumps(projected, ensure_ascii=False)
+        self.assertNotIn(SENTINEL_HIDDEN_INPUT, serialized)
+
+    def test_task_alignment_nested_leaking_field_is_redacted(self) -> None:
+        private = self._private_with_hidden_fragments()
+        private["taskAlignment"] = {
+            "factor": 1.0,
+            "reason": f"leak: {SENTINEL_HIDDEN_INPUT}",
+        }
+        projected = project_student_result(private)
+        self.assertEqual(projected["taskAlignment"]["factor"], 1.0)
+        self.assertEqual(projected["taskAlignment"]["reason"], GENERIC_REDACTED_TEXT)
+        serialized = json.dumps(projected, ensure_ascii=False)
+        self.assertNotIn(SENTINEL_HIDDEN_INPUT, serialized)
+
+    def test_non_testing_finding_leaking_code_field_is_dropped(self) -> None:
+        private = self._private_with_hidden_fragments()
+        quality = next(a for a in private["agents"] if a["id"] == "quality")
+        quality["findings"] = [
+            {
+                "severity": "error",
+                "message": "clean",
+                "line": 1,
+                "agent": "Kod Kalitesi Ajani",
+                "code": f"leak: {SENTINEL_HIDDEN_INPUT}",
+            },
+            {
+                "severity": "warning",
+                "message": "Unused variable on line 5",
+                "line": 5,
+                "agent": "Kod Kalitesi Ajani",
+                "code": "W001",
+            },
+        ]
+        projected = project_student_result(private)
+        quality_projected = next(a for a in projected["agents"] if a["id"] == "quality")
+        self.assertEqual(len(quality_projected["findings"]), 1)
+        self.assertEqual(quality_projected["findings"][0]["code"], "W001")
+        serialized = json.dumps(projected, ensure_ascii=False)
+        self.assertNotIn(SENTINEL_HIDDEN_INPUT, serialized)
+
+    def test_testing_finding_leaking_non_message_field_is_dropped(self) -> None:
+        private = self._private_with_hidden_fragments()
+        testing = private["agents"][0]
+        testing["findings"] = [
+            {
+                "severity": "error",
+                "message": "clean",
+                "line": None,
+                "agent": "Test Ajani",
+                "code": f"leak: {SENTINEL_HIDDEN_INPUT}",
+            },
+            {
+                "severity": "info",
+                "message": f"Public test {PUBLIC_NAME} gecti",
+                "line": None,
+                "agent": "Test Ajani",
+                "code": None,
+            },
+        ]
+        projected = project_student_result(private)
+        testing_projected = _testing_agent(projected)
+        messages = [f["message"] for f in testing_projected["findings"]]
+        self.assertIn(f"Public test {PUBLIC_NAME} gecti", messages)
+        for finding in testing_projected["findings"]:
+            code = finding.get("code")
+            if code is not None:
+                self.assertNotIn(SENTINEL_HIDDEN_INPUT, str(code))
+        serialized = json.dumps(projected, ensure_ascii=False)
+        self.assertNotIn(SENTINEL_HIDDEN_INPUT, serialized)
+
+    def test_adversarial_nested_leak_reproduction_is_blocked(self) -> None:
+        """End-to-end regression for nested sub-field leak vectors."""
+        secret = SENTINEL_NESTED
+        private = self._private_with_hidden_fragments()
+        private["evidence"] = [
+            {"message": "clean", "details": f"leak: {secret}"},
+        ]
+        private["resourceRecommendations"] = [
+            {"title": "clean", "private_note": f"leak: {secret}"},
+        ]
+        private["rubric"] = {
+            "criteria": [{"name": "correctness", "score": 42}],
+            "debug": f"leak: {secret}",
+        }
+        private["taskAlignment"] = {
+            "factor": 1.0,
+            "reason": f"leak: {secret}",
+        }
+        quality = next(a for a in private["agents"] if a["id"] == "quality")
+        quality["findings"] = [
+            {
+                "severity": "error",
+                "message": "clean",
+                "code": f"leak: {secret}",
+            },
+        ]
+        private["agents"][0]["testResults"][1]["input"] = secret
+        out = project_student_result(private)
+        serialized = json.dumps(out, ensure_ascii=False)
+        self.assertNotIn(secret, serialized)
 
     def test_adversarial_hidden_fragment_leak_reproduction_is_blocked(self) -> None:
         """End-to-end regression for the reported vulnerability."""
