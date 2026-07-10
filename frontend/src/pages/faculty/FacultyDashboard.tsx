@@ -16,6 +16,7 @@ import { buildAssignmentExample, descriptionWithExample, exampleBody } from "@/c
 import SettingsPanel from "@/components/faculty/SettingsPanel";
 import StudentsPanel from "@/components/faculty/StudentsPanel";
 import RuntimeHealthBadge from "@/components/dashboard/RuntimeHealthBadge";
+import { useAuth } from "../../auth/AuthContext";
 import { toast } from "sonner";
 import {
   createAssignment,
@@ -74,6 +75,7 @@ const getErrorMessage = (error: unknown, fallback: string) =>
 
 const FacultyDashboard = () => {
   const { t, language } = useTranslation();
+  const { status, role, user, logout } = useAuth();
   const dateLocale = language === "tr" ? trLocale : enLocale;
   const navigate = useNavigate();
   const [teacher, setTeacher] = useState<Teacher | null>(null);
@@ -104,19 +106,25 @@ const FacultyDashboard = () => {
   const [dueTime, setDueTime] = useState("23:59");
 
   useEffect(() => {
-    const checkAuth = async () => {
-      const teacherRaw = sessionStorage.getItem("teacher");
-      if (!teacherRaw) {
-        navigate("/login");
-        return;
-      }
-      const teacherData = JSON.parse(teacherRaw) as Teacher;
-      setTeacher(teacherData);
+    if (status === "loading") return;
+    if (status === "anonymous" || role !== "teacher") {
+      navigate("/login");
+      return;
+    }
+    if (!user) return;
+    setTeacher({
+      id: String(user.id ?? ""),
+      first_name: String(user.first_name ?? ""),
+      last_name: String(user.last_name ?? ""),
+      email: String(user.email ?? ""),
+    });
+
+    const load = async () => {
       await fetchAll();
       setLoading(false);
     };
-    checkAuth();
-  }, [navigate]);
+    void load();
+  }, [status, role, user, navigate]);
 
   useEffect(() => {
     const title = newAssignmentName.trim();
@@ -199,7 +207,7 @@ const FacultyDashboard = () => {
   };
 
   const handleLogout = async () => {
-    sessionStorage.removeItem("teacher");
+    await logout();
     navigate("/login");
   };
 
@@ -209,7 +217,6 @@ const FacultyDashboard = () => {
     try {
       await createDepartment({
         name: newDeptName.trim(),
-        created_by: teacher!.id,
       });
       toast.success(t("faculty.departments.added") || "Bölüm eklendi");
       setNewDeptName("");
@@ -739,7 +746,6 @@ const FacultyDashboard = () => {
             {rubricModal.assignment && (
               <RubricModal
                 assignment={rubricModal.assignment}
-                teacherId={teacher!.id}
                 open={rubricModal.open}
                 onClose={() => { setRubricModal({ open: false, assignment: null }); fetchAll(); }}
               />

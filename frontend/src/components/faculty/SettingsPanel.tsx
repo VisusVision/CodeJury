@@ -3,6 +3,7 @@ import { toast } from "sonner";
 import { Mail, Lock, Save } from "lucide-react";
 import { updateTeacherEmail, updateTeacherPassword } from "@/services/api";
 import { useTranslation } from "@/i18n/LanguageContext";
+import { useAuth } from "../../auth/AuthContext";
 
 interface Teacher {
   id: string;
@@ -21,6 +22,7 @@ const getErrorMessage = (error: unknown, fallback: string) =>
 
 const SettingsPanel = ({ teacher, onTeacherUpdate }: SettingsPanelProps) => {
   const { t } = useTranslation();
+  const { refreshSession } = useAuth();
   const [currentEmail, setCurrentEmail] = useState("");
   const [newEmail, setNewEmail] = useState("");
   const [currentPassword, setCurrentPassword] = useState("");
@@ -39,7 +41,7 @@ const SettingsPanel = ({ teacher, onTeacherUpdate }: SettingsPanelProps) => {
       setSavingEmail(true);
       const updated = await updateTeacherEmail(teacher.id, newEmail.trim());
       onTeacherUpdate(updated);
-      sessionStorage.setItem("teacher", JSON.stringify(updated));
+      void refreshSession();
       setCurrentEmail(updated.email);
       toast.success(t("faculty.settings.emailUpdateSuccess"));
       setNewEmail("");

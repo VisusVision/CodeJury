@@ -38,7 +38,6 @@ interface Rubric {
 
 interface RubricModalProps {
   assignment: Assignment;
-  teacherId: string;
   open: boolean;
   onClose: () => void;
 }
@@ -75,7 +74,7 @@ const getRubricValidationMessage = (criteria: RubricCriterion[], t: Translate = 
   return null;
 };
 
-const RubricModal = ({ assignment, teacherId, open, onClose }: RubricModalProps) => {
+const RubricModal = ({ assignment, open, onClose }: RubricModalProps) => {
   const { t, language } = useTranslation();
   const [activeTab, setActiveTab] = useState<TabType>("rubric");
   
@@ -199,7 +198,6 @@ const RubricModal = ({ assignment, teacherId, open, onClose }: RubricModalProps)
         assignment_id: assignment.id,
         criteria,
         status,
-        created_by: teacherId,
       });
       setRubric(saved);
       toast.success(status === "approved" ? t("faculty.rubricModal.saveApproveSuccess") : t("faculty.rubricModal.saveDraftSuccess"));

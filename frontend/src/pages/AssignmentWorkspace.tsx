@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import WorkspacePage from "@/components/dashboard/WorkspacePage";
 import { getAssignment, getCourse } from "@/services/api";
+import { useAuth } from "../auth/AuthContext";
 
 interface Student {
   id: string;
@@ -12,6 +13,7 @@ interface Student {
 
 const AssignmentWorkspace = () => {
   const { courseId, assignmentId } = useParams<{ courseId: string; assignmentId: string }>();
+  const { status, role, user } = useAuth();
   const [student, setStudent] = useState<Student | null>(null);
   const [courseName, setCourseName] = useState("");
   const [assignmentName, setAssignmentName] = useState("");
@@ -22,12 +24,22 @@ const AssignmentWorkspace = () => {
   const navigate = useNavigate();
 
   useEffect(() => {
-    const stored = sessionStorage.getItem("student");
-    if (!stored) {
+    if (status === "loading") return;
+    if (status === "anonymous" || role !== "student") {
       navigate("/login");
       return;
     }
-    setStudent(JSON.parse(stored));
+    if (!user) return;
+    setStudent({
+      id: String(user.id ?? ""),
+      first_name: String(user.first_name ?? ""),
+      last_name: String(user.last_name ?? ""),
+      student_no: String(user.student_no ?? ""),
+    });
+  }, [status, role, user, navigate]);
+
+  useEffect(() => {
+    if (status !== "authenticated" || role !== "student") return;
 
     const fetchData = async () => {
       if (!courseId || !assignmentId) {
@@ -57,9 +69,9 @@ const AssignmentWorkspace = () => {
       }
     };
     fetchData();
-  }, [courseId, assignmentId, navigate]);
+  }, [courseId, assignmentId, navigate, status, role]);
 
-  if (!student || loading) return null;
+  if (status === "loading" || !student || loading) return null;
 
   if (errorMessage) {
     return (

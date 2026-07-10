@@ -42,7 +42,6 @@ describe("RubricModal assignment tests tab", () => {
     render(
       <RubricModal
         assignment={{ id: "assignment-1", name: "Kare", description: "Sayinin karesini yazdir." }}
-        teacherId="teacher-1"
         open
         onClose={() => undefined}
       />,

@@ -8,6 +8,7 @@ import { enUS as enLocale } from "date-fns/locale";
 import { cn } from "@/lib/utils";
 import { useTranslation } from "@/i18n/LanguageContext";
 import { splitAssignmentDescription } from "@/lib/assignmentDescription";
+import { useAuth } from "../auth/AuthContext";
 
 interface Student {
   id: string;
@@ -34,6 +35,7 @@ interface Assignment {
 
 const Assignments = () => {
   const { t, language } = useTranslation();
+  const { status, role, user, logout } = useAuth();
   const dateLocale = language === "tr" ? trLocale : enLocale;
   const { courseId } = useParams<{ courseId: string }>();
   const [student, setStudent] = useState<Student | null>(null);
@@ -49,13 +51,24 @@ const Assignments = () => {
   const navigate = useNavigate();
 
   useEffect(() => {
-    const stored = sessionStorage.getItem("student");
-    if (!stored) {
+    if (status === "loading") return;
+    if (status === "anonymous" || role !== "student") {
       navigate("/login");
       return;
     }
-    const s = JSON.parse(stored) as Student;
-    setStudent(s);
+    if (!user) return;
+    setStudent({
+      id: String(user.id ?? ""),
+      first_name: String(user.first_name ?? ""),
+      last_name: String(user.last_name ?? ""),
+      student_no: String(user.student_no ?? ""),
+      department_name: user.department_name != null ? String(user.department_name) : null,
+      class_year: user.class_year != null ? Number(user.class_year) : null,
+    });
+  }, [status, role, user, navigate]);
+
+  useEffect(() => {
+    if (status !== "authenticated" || role !== "student" || !user) return;
 
     const fetchData = async () => {
       if (!courseId) {
@@ -65,7 +78,7 @@ const Assignments = () => {
       try {
         const [courseData, coursesData, assignmentsData] = await Promise.all([
           getCourse(courseId),
-          getStudentCourses(s.id),
+          getStudentCourses(String(user.id)),
           getCourseAssignments(courseId),
         ]);
         if (!coursesData.some((c) => c.id === courseId)) {
@@ -89,10 +102,10 @@ const Assignments = () => {
       }
     };
     fetchData();
-  }, [courseId, language, navigate]);
+  }, [courseId, language, navigate, status, role, user]);
 
-  const handleLogout = () => {
-    sessionStorage.removeItem("student");
+  const handleLogout = async () => {
+    await logout();
     navigate("/login");
   };
 
@@ -127,7 +140,13 @@ const Assignments = () => {
     }, 150) as unknown as number;
   };
 
-  if (!student) return null;
+  if (status === "loading" || !student) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-background">
+        <p className="text-sm text-muted-foreground">{t("common.loading")}</p>
+      </div>
+    );
+  }
 
   return (
     <div className="grid grid-cols-[260px_1fr] h-screen overflow-hidden bg-background">

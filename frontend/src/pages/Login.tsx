@@ -1,6 +1,7 @@
 import { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
-import { fetchHealth, loginStudent, loginTeacher, registerTeacher } from "@/services/api";
+import { fetchHealth, registerTeacher } from "@/services/api";
+import { useAuth } from "../auth/AuthContext";
 import { GraduationCap, User, BookOpen } from "lucide-react";
 import { useTranslation, LanguageToggle } from "@/i18n/LanguageContext";
 
@@ -28,6 +29,7 @@ const Login = () => {
   const [loading, setLoading] = useState(false);
   const [demoMode, setDemoMode] = useState(false);
   const navigate = useNavigate();
+  const { loginStudent, loginTeacher } = useAuth();
 
   useEffect(() => {
     void fetchHealth().then((health) => {
@@ -44,17 +46,11 @@ const Login = () => {
     }
     setLoading(true);
     try {
-      const student = await loginStudent(studentNo.trim(), studentPassword.trim());
-      if (!student) {
-        setError(t("login.studentNotFound"));
-        setLoading(false);
-        return;
-      }
-      sessionStorage.setItem("student", JSON.stringify(student));
+      await loginStudent(studentNo.trim(), studentPassword.trim());
       navigate("/courses");
     } catch (err) {
       console.error(err);
-      setError(t("login.networkError"));
+      setError(getErrorMessage(err, t("login.studentNotFound")));
     } finally {
       setLoading(false);
     }
@@ -84,8 +80,7 @@ const Login = () => {
         setError(t("common.success") + "! " + t("login.loginLink"));
         setIsSignUp(false);
       } else {
-        const teacher = await loginTeacher(email.trim(), password.trim());
-        sessionStorage.setItem("teacher", JSON.stringify(teacher));
+        await loginTeacher(email.trim(), password.trim());
         navigate("/faculty/dashboard");
       }
     } catch (err: unknown) {
