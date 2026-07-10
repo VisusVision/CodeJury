@@ -6627,7 +6627,13 @@ async def update_assignment_questions(req: dict[str, Any], principal: AuthPrinci
 
 
 @app.patch("/api/teacher/{teacher_id}/email")
-async def update_teacher_email(teacher_id: str, req: TeacherEmailUpdateRequest):
+async def update_teacher_email(
+    teacher_id: str,
+    req: TeacherEmailUpdateRequest,
+    principal: AuthPrincipal = Depends(require_teacher),
+):
+    if teacher_id != principal.user_id:
+        raise HTTPException(status_code=404, detail="Ogretmen bulunamadi")
     email = req.email.strip().lower()
     if not email:
         raise HTTPException(status_code=400, detail="E-posta zorunludur")
@@ -6661,7 +6667,15 @@ async def update_teacher_email(teacher_id: str, req: TeacherEmailUpdateRequest):
 
 
 @app.patch("/api/teacher/{teacher_id}/password")
-async def update_teacher_password(teacher_id: str, req: TeacherPasswordUpdateRequest):
+async def update_teacher_password(
+    teacher_id: str,
+    req: TeacherPasswordUpdateRequest,
+    request: Request,
+    response: Response,
+    principal: AuthPrincipal = Depends(require_teacher),
+):
+    if teacher_id != principal.user_id:
+        raise HTTPException(status_code=404, detail="Ogretmen bulunamadi")
     current_password = req.current_password.strip()
     new_password = req.new_password.strip()
     if not current_password:
@@ -6676,6 +6690,9 @@ async def update_teacher_password(teacher_id: str, req: TeacherPasswordUpdateReq
         if not _verify_password(current_password, teacher["password_hash"]):
             raise HTTPException(status_code=401, detail="Mevcut şifre hatalı")
         teacher["password_hash"] = _hash_password(new_password)
+        store = await get_auth_session_store(request)
+        await store.revoke_user_sessions(principal.user_id, "teacher")
+        clear_auth_cookies(response)
         return {"status": "ok"}
 
     pool = await _get_db_pool()
@@ -6703,13 +6720,26 @@ async def update_teacher_password(teacher_id: str, req: TeacherPasswordUpdateReq
         _hash_password(new_password),
         teacher_id,
     )
+    store = await get_auth_session_store(request)
+    await store.revoke_user_sessions(principal.user_id, "teacher")
+    clear_auth_cookies(response)
     return {"status": "ok"}
 
 
 @app.get("/api/students")
-async def list_students():
+async def list_students(principal: AuthPrincipal = Depends(require_teacher)):
     if _DEMO_MODE:
-        students = [_demo_student_record(student) for student in _DEMO_STORE["students"]]
+        dept_owner_by_id = {d["id"]: d.get("created_by") for d in _DEMO_STORE["departments"]}
+        visible_students = []
+        for student in _DEMO_STORE["students"]:
+            dept_id = student.get("department_id")
+            if not dept_id or dept_id not in dept_owner_by_id:
+                continue
+            owner = dept_owner_by_id[dept_id]
+            if owner and str(owner) != principal.user_id:
+                continue
+            visible_students.append(student)
+        students = [_demo_student_record(student) for student in visible_students]
         return sorted(students, key=lambda student: (student["first_name"], student["last_name"], student["student_no"]))
 
     pool = await _get_db_pool()
@@ -6718,15 +6748,17 @@ async def list_students():
         SELECT s.id, s.student_no, s.tc_no, s.first_name, s.last_name, s.class_year, s.department_id,
                d.name AS department_name, s.created_at
         FROM public.students s
-        LEFT JOIN public.departments d ON d.id = s.department_id
+        JOIN public.departments d ON d.id = s.department_id
+        WHERE d.created_by = $1::uuid OR d.created_by IS NULL
         ORDER BY s.first_name, s.last_name, s.student_no
-        """
+        """,
+        principal.user_id,
     )
     return [_normalize_student_record_department(dict(row)) for row in rows]
 
 
 @app.post("/api/students")
-async def create_student(req: StudentCreateRequest):
+async def create_student(req: StudentCreateRequest, principal: AuthPrincipal = Depends(require_teacher)):
     student_no = _normalize_whitespace(req.student_no)
     tc_no = _normalize_whitespace(req.tc_no)
     first_name = _normalize_student_first_name(req.first_name)
@@ -6747,6 +6779,8 @@ async def create_student(req: StudentCreateRequest):
             raise HTTPException(status_code=409, detail=_student_duplicate_message(student_no, tc_no, first_name, last_name, conflict_field))
         if not any(d["id"] == department_id for d in _DEMO_STORE["departments"]):
             raise HTTPException(status_code=400, detail="Gecersiz bolum secimi")
+        dept = next((d for d in _DEMO_STORE["departments"] if d["id"] == department_id), None)
+        enforce_teacher_owner(principal, dept.get("created_by") if dept else None, mutation=True)
         student = {
             "id": _demo_uuid(),
             "student_no": student_no,
@@ -6765,6 +6799,14 @@ async def create_student(req: StudentCreateRequest):
     conflict_field = await _student_conflict_field(pool, student_no, tc_no)
     if conflict_field:
         raise HTTPException(status_code=409, detail=_student_duplicate_message(student_no, tc_no, first_name, last_name, conflict_field))
+
+    dept_row = await pool.fetchrow(
+        "SELECT created_by FROM public.departments WHERE id = $1",
+        department_id,
+    )
+    if dept_row is None:
+        raise HTTPException(status_code=400, detail="Gecersiz bolum secimi")
+    enforce_teacher_owner(principal, dept_row["created_by"], mutation=True)
 
     try:
         row = await pool.fetchrow(
@@ -6791,7 +6833,11 @@ async def create_student(req: StudentCreateRequest):
 
 
 @app.patch("/api/students/{student_id}")
-async def update_student(student_id: str, req: StudentUpdateRequest):
+async def update_student(
+    student_id: str,
+    req: StudentUpdateRequest,
+    principal: AuthPrincipal = Depends(require_teacher),
+):
     student_no = _normalize_whitespace(req.student_no)
     tc_no = _normalize_whitespace(req.tc_no)
     first_name = _normalize_student_first_name(req.first_name)
@@ -6815,6 +6861,8 @@ async def update_student(student_id: str, req: StudentUpdateRequest):
             raise HTTPException(status_code=409, detail=_student_duplicate_message(student_no, tc_no, first_name, last_name, conflict_field))
         if not any(d["id"] == department_id for d in _DEMO_STORE["departments"]):
             raise HTTPException(status_code=400, detail="Gecersiz bolum secimi")
+        dept = next((d for d in _DEMO_STORE["departments"] if d["id"] == department_id), None)
+        enforce_teacher_owner(principal, dept.get("created_by") if dept else None, mutation=True)
         student.update({
             "student_no": student_no,
             "tc_no": tc_no,
@@ -6841,6 +6889,14 @@ async def update_student(student_id: str, req: StudentUpdateRequest):
     conflict_field = await _student_conflict_field(pool, student_no, tc_no, exclude_id=student_id)
     if conflict_field:
         raise HTTPException(status_code=409, detail=_student_duplicate_message(student_no, tc_no, first_name, last_name, conflict_field))
+
+    dept_row = await pool.fetchrow(
+        "SELECT created_by FROM public.departments WHERE id = $1",
+        department_id,
+    )
+    if dept_row is None:
+        raise HTTPException(status_code=400, detail="Gecersiz bolum secimi")
+    enforce_teacher_owner(principal, dept_row["created_by"], mutation=True)
 
     try:
         await pool.execute(
@@ -6870,15 +6926,34 @@ async def update_student(student_id: str, req: StudentUpdateRequest):
 
 
 @app.delete("/api/students/{student_id}")
-async def delete_student(student_id: str):
+async def delete_student(student_id: str, principal: AuthPrincipal = Depends(require_teacher)):
     if _DEMO_MODE:
-        before = len(_DEMO_STORE["students"])
-        _DEMO_STORE["students"] = [student for student in _DEMO_STORE["students"] if student["id"] != student_id]
-        if len(_DEMO_STORE["students"]) == before:
+        student = next((s for s in _DEMO_STORE["students"] if s["id"] == student_id), None)
+        if student is None:
             raise HTTPException(status_code=404, detail="Ogrenci bulunamadi")
+        dept_id = student.get("department_id")
+        dept = next((d for d in _DEMO_STORE["departments"] if d["id"] == dept_id), None) if dept_id else None
+        dept_created_by = dept.get("created_by") if dept else None
+        enforce_teacher_owner(principal, dept_created_by, mutation=True)
+        _DEMO_STORE["students"] = [s for s in _DEMO_STORE["students"] if s["id"] != student_id]
         return {"status": "ok"}
 
     pool = await _get_db_pool()
+    student_row = await pool.fetchrow(
+        "SELECT department_id FROM public.students WHERE id = $1",
+        student_id,
+    )
+    if student_row is None:
+        raise HTTPException(status_code=404, detail="Ogrenci bulunamadi")
+    dept_id = student_row["department_id"]
+    dept_row = None
+    if dept_id is not None:
+        dept_row = await pool.fetchrow(
+            "SELECT created_by FROM public.departments WHERE id = $1",
+            dept_id,
+        )
+    dept_created_by = dept_row["created_by"] if dept_row is not None else None
+    enforce_teacher_owner(principal, dept_created_by, mutation=True)
     result = await pool.execute(
         """
         DELETE FROM public.students
@@ -6892,7 +6967,10 @@ async def delete_student(student_id: str):
 
 
 @app.post("/api/students/import-csv")
-async def import_students_csv(file: UploadFile = File(...)):
+async def import_students_csv(
+    file: UploadFile = File(...),
+    principal: AuthPrincipal = Depends(require_teacher),
+):
     raw_bytes = await file.read()
     try:
         csv_text = raw_bytes.decode("utf-8-sig")
@@ -6935,7 +7013,11 @@ async def import_students_csv(file: UploadFile = File(...)):
             return None
 
     if _DEMO_MODE:
-        department_map = { _norm_key(dep["name"]): dep["id"] for dep in _DEMO_STORE["departments"] }
+        department_map = {
+            _norm_key(dep["name"]): dep["id"]
+            for dep in _DEMO_STORE["departments"]
+            if dep.get("created_by") == principal.user_id
+        }
         created: list[dict[str, Any]] = []
         skipped: list[dict[str, Any]] = []
         for row in reader:
@@ -7021,7 +7103,10 @@ async def import_students_csv(file: UploadFile = File(...)):
         return {"created": created, "skipped": skipped}
 
     pool = await _get_db_pool()
-    departments = await pool.fetch("SELECT id, name FROM public.departments ORDER BY name")
+    departments = await pool.fetch(
+        "SELECT id, name FROM public.departments WHERE created_by = $1::uuid ORDER BY name",
+        principal.user_id,
+    )
     department_map = {_norm_key(str(dep["name"])): str(dep["id"]) for dep in departments}
     created: list[dict[str, Any]] = []
     skipped: list[dict[str, Any]] = []
@@ -7508,11 +7593,28 @@ async def get_current_evaluation(student_no: str, assignment_id: str | None = No
 
 
 @app.get("/api/evaluations")
-async def list_evaluations():
+async def list_evaluations(principal: AuthPrincipal = Depends(require_teacher)):
     if _DEMO_MODE:
-        return list(_DEMO_STORE["evaluations"])
+        assignment_owner_by_id = {
+            a["id"]: a.get("created_by") for a in _DEMO_STORE["assignments"]
+        }
+        return [
+            item
+            for item in _DEMO_STORE["evaluations"]
+            if assignment_owner_by_id.get(item.get("assignment_id")) == principal.user_id
+        ]
+    pool = await _get_db_pool()
+    owned_rows = await pool.fetch(
+        "SELECT id FROM public.assignments WHERE created_by = $1::uuid",
+        principal.user_id,
+    )
+    owned_assignment_ids = {str(row["id"]) for row in owned_rows}
     async with _TEMP_EVALUATIONS_LOCK:
-        return list(_TEMP_EVALUATIONS.values())
+        return [
+            item
+            for item in _TEMP_EVALUATIONS.values()
+            if str(item.get("assignment_id") or "") in owned_assignment_ids
+        ]
 
 
 @app.post("/api/evaluations")

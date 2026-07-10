@@ -189,12 +189,14 @@ class ApiEndpointTests(unittest.TestCase):
 
     # ── Students ────────────────────────────────────────────────────────────────
     def test_list_students_returns_seeded_student(self):
+        self._login_teacher()
         resp = self.client.get("/api/students")
         self.assertEqual(resp.status_code, 200)
         numbers = [s["student_no"] for s in resp.json()]
         self.assertIn(_DEMO_STUDENT_NO, numbers)
 
     def test_create_student_valid(self):
+        csrf = self._login_teacher()
         resp = self.client.post(
             "/api/students",
             json={
@@ -205,6 +207,7 @@ class ApiEndpointTests(unittest.TestCase):
                 "class_year": 1,
                 "department_id": _DEMO_DEPARTMENT_ID,
             },
+            headers=self._csrf_headers(csrf),
         )
         self.assertEqual(resp.status_code, 200)
         data = resp.json()
@@ -212,6 +215,7 @@ class ApiEndpointTests(unittest.TestCase):
         self.assertIn("id", data)
 
     def test_create_student_duplicate_returns_409(self):
+        csrf = self._login_teacher()
         resp = self.client.post(
             "/api/students",
             json={
@@ -222,10 +226,12 @@ class ApiEndpointTests(unittest.TestCase):
                 "class_year": 1,
                 "department_id": _DEMO_DEPARTMENT_ID,
             },
+            headers=self._csrf_headers(csrf),
         )
         self.assertEqual(resp.status_code, 409)
 
     def test_create_student_invalid_tc_returns_400(self):
+        csrf = self._login_teacher()
         resp = self.client.post(
             "/api/students",
             json={
@@ -236,11 +242,17 @@ class ApiEndpointTests(unittest.TestCase):
                 "class_year": 1,
                 "department_id": _DEMO_DEPARTMENT_ID,
             },
+            headers=self._csrf_headers(csrf),
         )
         self.assertEqual(resp.status_code, 400)
 
     def test_create_student_missing_field_returns_422(self):
-        resp = self.client.post("/api/students", json={"student_no": "1"})
+        csrf = self._login_teacher()
+        resp = self.client.post(
+            "/api/students",
+            json={"student_no": "1"},
+            headers=self._csrf_headers(csrf),
+        )
         self.assertEqual(resp.status_code, 422)
 
     # ── Student login ────────────────────────────────────────────────────────────
@@ -666,6 +678,7 @@ class ApiEndpointTests(unittest.TestCase):
         self.assertEqual(resp.status_code, 400)
 
     def test_list_evaluations(self):
+        self._login_teacher()
         resp = self.client.get("/api/evaluations")
         self.assertEqual(resp.status_code, 200)
         self.assertIsInstance(resp.json(), list)
