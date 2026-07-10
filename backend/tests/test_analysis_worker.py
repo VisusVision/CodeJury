@@ -193,7 +193,7 @@ class AnalysisWorkerTests(unittest.IsolatedAsyncioTestCase):
 
         with (
             patch.object(analysis_worker, "publish_worker_heartbeat", new=AsyncMock(side_effect=flaky_publish)),
-            patch.object(analysis_worker.asyncio, "wait_for", new=AsyncMock(side_effect=asyncio.TimeoutError)),
+            patch.object(analysis_worker.settings, "analysis_worker_heartbeat_interval_seconds", 0),
         ):
             await analysis_worker.worker_heartbeat_loop(self.redis, "worker-a", stop)
 
