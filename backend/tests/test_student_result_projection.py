@@ -32,6 +32,8 @@ SENTINEL_UNVALIDATED_VISIBILITY = "SENTINEL_UNVALIDATED_VISIBILITY_7f3a"
 SENTINEL_UNVALIDATED_PASSED = "SENTINEL_UNVALIDATED_PASSED_7f3a"
 SENTINEL_NESTED_DICT_KEY = "SENTINEL_NESTED_DICT_KEY_7f3a"
 SENTINEL_KITCHEN_SINK = "SENTINEL_KITCHEN_SINK_7f3a"
+NUMERIC_HIDDEN_FRAGMENT = 918273645
+NUMERIC_HIDDEN_FRAGMENT_STR = str(NUMERIC_HIDDEN_FRAGMENT)
 
 PUBLIC_NAME = "PUBLIC_KEEP_NAME_7f3a"
 PUBLIC_INPUT = "PUBLIC_KEEP_INPUT_7f3a"
@@ -1013,10 +1015,11 @@ class StudentResultProjectionTests(unittest.TestCase):
         status_sentinel = SENTINEL_UNVALIDATED_STATUS
         key_sentinel = SENTINEL_NESTED_DICT_KEY
         kitchen_sentinel = SENTINEL_KITCHEN_SINK
+        numeric_sentinel = NUMERIC_HIDDEN_FRAGMENT
         hidden_case = {
             "name": "hidden",
             "input": kitchen_sentinel,
-            "expected": "secret-expected",
+            "expected": numeric_sentinel,
             "actual": "secret-actual",
             "passed": False,
             "visibility": "hidden",
@@ -1029,12 +1032,14 @@ class StudentResultProjectionTests(unittest.TestCase):
         }
         private = self._minimal_private_with_hidden_case(hidden_case)
         private["summary"] = (
-            f"summary {status_sentinel} {key_sentinel} {kitchen_sentinel}"
+            f"summary {status_sentinel} {key_sentinel} {kitchen_sentinel} "
+            f"{NUMERIC_HIDDEN_FRAGMENT_STR}"
         )
         projected = project_student_result(private)
         serialized = json.dumps(projected, ensure_ascii=False)
         for sentinel in (status_sentinel, key_sentinel, kitchen_sentinel):
             self.assertNotIn(sentinel, serialized)
+        self.assertNotIn(NUMERIC_HIDDEN_FRAGMENT_STR, serialized)
         testing = _testing_agent(projected)
         hidden_cases = [
             case for case in testing["testResults"] if case.get("visibility") == "hidden"
@@ -1047,6 +1052,143 @@ class StudentResultProjectionTests(unittest.TestCase):
         self.assertNotEqual(hidden["visibility"], GENERIC_REDACTED_TEXT)
         self.assertNotEqual(hidden["status"], GENERIC_REDACTED_TEXT)
         self.assertNotEqual(hidden["name"], GENERIC_REDACTED_TEXT)
+
+    def _minimal_private_with_numeric_hidden_case(
+        self,
+        hidden_case: dict[str, Any],
+        *,
+        summary: str | None = None,
+        evidence: list[Any] | None = None,
+        rubric: dict[str, Any] | None = None,
+        findings: list[Any] | None = None,
+    ) -> dict[str, Any]:
+        """Minimal private result with a hidden test case for numeric-leak probes."""
+        private = self._minimal_private_with_hidden_case(hidden_case)
+        if summary is not None:
+            private["summary"] = summary
+        if evidence is not None:
+            private["evidence"] = evidence
+        if rubric is not None:
+            private["rubric"] = rubric
+        if findings is not None:
+            private["agents"][0]["findings"] = findings
+        return private
+
+    def test_numeric_hidden_expected_value_leaks_via_summary_and_evidence_is_redacted(
+        self,
+    ) -> None:
+        """Bare int in hidden case expected must be collected and redacted everywhere."""
+        hidden_case = {
+            "name": "numeric-hidden",
+            "input": "secret",
+            "expected": NUMERIC_HIDDEN_FRAGMENT,
+            "actual": "secret-actual",
+            "passed": False,
+            "visibility": "hidden",
+        }
+        private = self._minimal_private_with_numeric_hidden_case(
+            hidden_case,
+            summary=f"Model summary includes {NUMERIC_HIDDEN_FRAGMENT_STR}",
+            evidence=[{"message": f"evidence includes {NUMERIC_HIDDEN_FRAGMENT_STR}"}],
+        )
+        projected = project_student_result(private)
+        serialized = json.dumps(projected, ensure_ascii=False)
+        self.assertNotIn(NUMERIC_HIDDEN_FRAGMENT_STR, serialized)
+        self.assertEqual(projected["summary"], GENERIC_REDACTED_TEXT)
+        self.assertEqual(projected["evidence"], [])
+
+    def test_nested_numeric_value_within_hidden_case_is_collected_and_redacted(
+        self,
+    ) -> None:
+        """Numeric leaf nested at depth 2+ inside hidden case must be collected."""
+        hidden_case = {
+            "name": "nested-numeric",
+            "input": "secret",
+            "passed": False,
+            "visibility": "hidden",
+            "details": {"internal_ref": NUMERIC_HIDDEN_FRAGMENT},
+        }
+        private = self._minimal_private_with_numeric_hidden_case(
+            hidden_case,
+            summary=f"Finding references {NUMERIC_HIDDEN_FRAGMENT_STR}",
+        )
+        projected = project_student_result(private)
+        serialized = json.dumps(projected, ensure_ascii=False)
+        self.assertNotIn(NUMERIC_HIDDEN_FRAGMENT_STR, serialized)
+        self.assertEqual(projected["summary"], GENERIC_REDACTED_TEXT)
+
+    def test_numeric_dict_key_within_hidden_case_is_collected_and_redacted(
+        self,
+    ) -> None:
+        """Integer dict key inside hidden case must be collected as numeric fragment."""
+        hidden_case = {
+            "name": "numeric-key",
+            "input": "secret",
+            "passed": False,
+            "visibility": "hidden",
+            "scores": {NUMERIC_HIDDEN_FRAGMENT: "value"},
+        }
+        private = self._minimal_private_with_numeric_hidden_case(
+            hidden_case,
+            summary=f"Score key leaked as {NUMERIC_HIDDEN_FRAGMENT_STR}",
+        )
+        projected = project_student_result(private)
+        serialized = json.dumps(projected, ensure_ascii=False)
+        self.assertNotIn(NUMERIC_HIDDEN_FRAGMENT_STR, serialized)
+        self.assertEqual(projected["summary"], GENERIC_REDACTED_TEXT)
+
+    def test_numeric_fragment_matching_does_not_over_redact_larger_numbers(
+        self,
+    ) -> None:
+        """Boundary-aware match: '1' must not match inside '100', timestamps, etc."""
+        legitimate_summary = (
+            "Score: 100/100, completed at 2026-07-10T12:00:00Z, test 21 of 25 passed."
+        )
+        hidden_case = {
+            "name": "small-numeric",
+            "input": "secret",
+            "expected": 1,
+            "passed": False,
+            "visibility": "hidden",
+        }
+        private = self._minimal_private_with_numeric_hidden_case(
+            hidden_case,
+            summary=legitimate_summary,
+        )
+        projected = project_student_result(private)
+        self.assertEqual(projected["summary"], legitimate_summary)
+
+        leaking_summary = "Result was 1 out of many."
+        private_leak = self._minimal_private_with_numeric_hidden_case(
+            hidden_case,
+            summary=leaking_summary,
+        )
+        projected_leak = project_student_result(private_leak)
+        self.assertEqual(projected_leak["summary"], GENERIC_REDACTED_TEXT)
+        self.assertNotIn("Result was 1 out of many.", projected_leak["summary"])
+
+    def test_numeric_leak_via_finding_or_rubric_or_agent_metadata_is_redacted(
+        self,
+    ) -> None:
+        """Numeric leak via rubric proves fix is not scoped to summary/evidence only."""
+        hidden_case = {
+            "name": "numeric-rubric-leak",
+            "input": "secret",
+            "expected": NUMERIC_HIDDEN_FRAGMENT,
+            "passed": False,
+            "visibility": "hidden",
+        }
+        private = self._minimal_private_with_numeric_hidden_case(
+            hidden_case,
+            rubric={
+                "criteria": [{"name": "correctness", "score": 42}],
+                "debug": f"leak: {NUMERIC_HIDDEN_FRAGMENT_STR}",
+            },
+        )
+        projected = project_student_result(private)
+        serialized = json.dumps(projected, ensure_ascii=False)
+        self.assertNotIn(NUMERIC_HIDDEN_FRAGMENT_STR, serialized)
+        self.assertEqual(projected["rubric"]["debug"], GENERIC_REDACTED_TEXT)
 
     def test_comprehensive_invariant_no_sentinel_survives_in_serialized_output_regardless_of_location(
         self,
