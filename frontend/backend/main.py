@@ -56,6 +56,7 @@ from backend.auth.dependencies import (
     clear_auth_cookies,
     get_auth_session_store,
     require_authenticated,
+    require_student,
     require_teacher,
     set_auth_cookies,
 )
@@ -3446,6 +3447,95 @@ async def _fetch_student_row(pool: asyncpg.Pool, student_id: str):
     )
 
 
+async def _resolve_student_profile(principal: AuthPrincipal) -> dict[str, Any] | None:
+    if _DEMO_MODE:
+        student = next((s for s in _DEMO_STORE["students"] if s["id"] == principal.user_id), None)
+        if student is None:
+            return None
+        return _demo_student_record(student)
+
+    pool = await _get_db_pool()
+    row = await _fetch_student_row(pool, principal.user_id)
+    if row is None:
+        return None
+    return _normalize_student_record_department(dict(row))
+
+
+async def _student_can_access_course(principal: AuthPrincipal, course_id: str) -> bool:
+    """True if the student may see/enroll this course (department+class_year match)."""
+    student = await _resolve_student_profile(principal)
+    if student is None:
+        return False
+
+    if _DEMO_MODE:
+        course = next((c for c in _DEMO_STORE["courses"] if c["id"] == course_id), None)
+        if course is None:
+            return False
+        department_id = student.get("department_id")
+        class_year = student.get("class_year")
+        return (
+            (course.get("department_id") is None or course.get("department_id") == department_id)
+            and (course.get("class_year") is None or course.get("class_year") == class_year)
+        )
+
+    pool = await _get_db_pool()
+    row = await pool.fetchrow(
+        """
+        SELECT 1
+        FROM public.courses c
+        JOIN public.students s ON s.id = $1
+        WHERE c.id = $2
+            AND (c.department_id IS NULL OR c.department_id = s.department_id)
+            AND (c.class_year IS NULL OR c.class_year = s.class_year)
+        LIMIT 1
+        """,
+        principal.user_id,
+        course_id,
+    )
+    return row is not None
+
+
+async def _student_can_access_assignment(principal: AuthPrincipal, assignment_id: str) -> bool:
+    """True if the student may view this assignment (accessible course + approved rubric)."""
+    aid = assignment_id.strip()
+    if _DEMO_MODE:
+        assignment = next((a for a in _DEMO_STORE["assignments"] if str(a["id"]) == aid), None)
+        if assignment is None:
+            return False
+        if not await _student_can_access_course(principal, assignment["course_id"]):
+            return False
+        return any(
+            r for r in _DEMO_STORE["rubrics"]
+            if str(r["assignment_id"]) == aid and r["status"] == "approved"
+        )
+
+    uid = _parse_assignment_uuid_param(aid)
+    pool = await _get_db_pool()
+    row = await pool.fetchrow(
+        """
+        SELECT course_id
+        FROM public.assignments
+        WHERE id = $1::uuid
+        LIMIT 1
+        """,
+        uid,
+    )
+    if row is None:
+        return False
+    if not await _student_can_access_course(principal, str(row["course_id"])):
+        return False
+    approved = await pool.fetchrow(
+        """
+        SELECT 1
+        FROM public.rubrics
+        WHERE assignment_id = $1::uuid AND status = 'approved'
+        LIMIT 1
+        """,
+        uid,
+    )
+    return approved is not None
+
+
 async def _student_conflict_field(
     pool: asyncpg.Pool,
     student_no: str,
@@ -5905,16 +5995,41 @@ async def list_rubrics(principal: AuthPrincipal = Depends(require_teacher)):
 
 
 @app.get("/api/rubrics/by-assignment/{assignment_id}")
-async def get_rubric_by_assignment(assignment_id: str):
+async def get_rubric_by_assignment(
+    assignment_id: str,
+    principal: AuthPrincipal = Depends(require_authenticated),
+):
     aid = assignment_id.strip()
     if _DEMO_MODE:
-        return next(
+        assignment = next((a for a in _DEMO_STORE["assignments"] if str(a["id"]) == aid), None)
+        if assignment is not None:
+            if principal.role == "teacher":
+                enforce_teacher_owner(principal, assignment.get("created_by"), mutation=False)
+            elif principal.role == "student":
+                if not await _student_can_access_assignment(principal, aid):
+                    return None
+        rubric = next(
             (r for r in _DEMO_STORE["rubrics"] if str(r["assignment_id"]) == aid),
             None,
         )
+        if rubric is None:
+            return None
+        if principal.role == "student" and rubric.get("status") != "approved":
+            return None
+        return rubric
 
     uid = _parse_assignment_uuid_param(aid)
     pool = await _get_db_pool()
+    assignment_row = await pool.fetchrow(
+        "SELECT created_by FROM public.assignments WHERE id = $1::uuid LIMIT 1",
+        uid,
+    )
+    if assignment_row is not None:
+        if principal.role == "teacher":
+            enforce_teacher_owner(principal, assignment_row["created_by"], mutation=False)
+        elif principal.role == "student":
+            if not await _student_can_access_assignment(principal, aid):
+                return None
     row = await pool.fetchrow(
         """
         SELECT id, assignment_id, criteria, status, created_by, created_at, updated_at
@@ -5925,6 +6040,8 @@ async def get_rubric_by_assignment(assignment_id: str):
         uid,
     )
     if row is None:
+        return None
+    if principal.role == "student" and row["status"] != "approved":
         return None
     return dict(row)
 
@@ -6552,14 +6669,34 @@ async def delete_question(question_id: str, principal: AuthPrincipal = Depends(r
 
 
 @app.get("/api/assignments/{assignment_id}/questions")
-async def get_assignment_questions(assignment_id: str):
+async def get_assignment_questions(
+    assignment_id: str,
+    principal: AuthPrincipal = Depends(require_authenticated),
+):
     """Odev icin secili sorulari getir"""
     if _DEMO_MODE:
+        assignment = next((a for a in _DEMO_STORE["assignments"] if str(a["id"]) == assignment_id), None)
+        if assignment is not None:
+            if principal.role == "teacher":
+                enforce_teacher_owner(principal, assignment.get("created_by"), mutation=False)
+            elif principal.role == "student":
+                if not await _student_can_access_assignment(principal, assignment_id):
+                    return []
         assignment_questions = _DEMO_STORE.get("assignment_questions", {}).get(assignment_id, [])
         all_questions = _DEMO_STORE.get("questions", [])
         return [q for q in all_questions if q["id"] in assignment_questions]
-    
+
     pool = await _get_db_pool()
+    assignment_row = await pool.fetchrow(
+        "SELECT created_by FROM public.assignments WHERE id = $1 LIMIT 1",
+        assignment_id,
+    )
+    if assignment_row is not None:
+        if principal.role == "teacher":
+            enforce_teacher_owner(principal, assignment_row["created_by"], mutation=False)
+        elif principal.role == "student":
+            if not await _student_can_access_assignment(principal, assignment_id):
+                return []
     rows = await pool.fetch(
         """
         SELECT qb.id, qb.content, qb.color, qb.created_by, qb.created_at, qb.updated_at
@@ -7220,9 +7357,13 @@ async def import_students_csv(
 
 
 @app.get("/api/student/{student_id}/courses")
-async def student_courses(student_id: str):
+async def student_courses(
+    student_id: str,
+    principal: AuthPrincipal = Depends(require_student),
+):
+    resolved_id = principal.user_id
     if _DEMO_MODE:
-        student = next((s for s in _DEMO_STORE["students"] if s["id"] == student_id), None)
+        student = next((s for s in _DEMO_STORE["students"] if s["id"] == resolved_id), None)
         if student is None:
             return []
         department_id = student.get("department_id")
@@ -7235,7 +7376,7 @@ async def student_courses(student_id: str):
         ]
 
     pool = await _get_db_pool()
-    await _sync_student_to_all_courses(pool, student_id)
+    await _sync_student_to_all_courses(pool, resolved_id)
     rows = await pool.fetch(
         """
         SELECT c.id, c.name, c.code, c.class_year, c.created_at
@@ -7247,17 +7388,25 @@ async def student_courses(student_id: str):
                     AND (c.class_year IS NULL OR c.class_year = s.class_year)
         ORDER BY c.name
         """,
-        student_id,
+        resolved_id,
     )
     return [dict(r) for r in rows]
 
 
 @app.get("/api/courses/{course_id}")
-async def course_detail(course_id: str):
+async def course_detail(
+    course_id: str,
+    principal: AuthPrincipal = Depends(require_authenticated),
+):
     if _DEMO_MODE:
         row = next((c for c in _DEMO_STORE["courses"] if c["id"] == course_id), None)
         if row is None:
             raise HTTPException(status_code=404, detail="Ders bulunamadi")
+        if principal.role == "teacher":
+            enforce_teacher_owner(principal, row.get("created_by"), mutation=False)
+        elif principal.role == "student":
+            if not await _student_can_access_course(principal, course_id):
+                raise HTTPException(status_code=404, detail="Ders bulunamadi")
         return row
 
     pool = await _get_db_pool()
@@ -7272,12 +7421,27 @@ async def course_detail(course_id: str):
     )
     if row is None:
         raise HTTPException(status_code=404, detail="Ders bulunamadi")
+    if principal.role == "teacher":
+        enforce_teacher_owner(principal, row["created_by"], mutation=False)
+    elif principal.role == "student":
+        if not await _student_can_access_course(principal, course_id):
+            raise HTTPException(status_code=404, detail="Ders bulunamadi")
     return dict(row)
 
 
 @app.get("/api/courses/{course_id}/assignments")
-async def course_assignments(course_id: str):
+async def course_assignments(
+    course_id: str,
+    principal: AuthPrincipal = Depends(require_authenticated),
+):
     if _DEMO_MODE:
+        course = next((c for c in _DEMO_STORE["courses"] if c["id"] == course_id), None)
+        if course is not None:
+            if principal.role == "teacher":
+                enforce_teacher_owner(principal, course.get("created_by"), mutation=False)
+            elif principal.role == "student":
+                if not await _student_can_access_course(principal, course_id):
+                    return []
         approved_assignment_ids = {
             r["assignment_id"] for r in _DEMO_STORE["rubrics"] if r["status"] == "approved"
         }
@@ -7289,6 +7453,16 @@ async def course_assignments(course_id: str):
         return sorted(rows, key=lambda a: str(a.get("created_at") or ""), reverse=True)
 
     pool = await _get_db_pool()
+    course_row = await pool.fetchrow(
+        "SELECT created_by FROM public.courses WHERE id = $1 LIMIT 1",
+        course_id,
+    )
+    if course_row is not None:
+        if principal.role == "teacher":
+            enforce_teacher_owner(principal, course_row["created_by"], mutation=False)
+        elif principal.role == "student":
+            if not await _student_can_access_course(principal, course_id):
+                return []
     rows = await pool.fetch(
         """
                 SELECT a.id, a.course_id, a.name, a.description, a.due_date, a.created_by, a.created_at
@@ -7308,12 +7482,20 @@ async def course_assignments(course_id: str):
 
 
 @app.get("/api/assignments/{assignment_id}")
-async def assignment_detail(assignment_id: str):
+async def assignment_detail(
+    assignment_id: str,
+    principal: AuthPrincipal = Depends(require_authenticated),
+):
     aid = assignment_id.strip()
     if _DEMO_MODE:
         row = next((a for a in _DEMO_STORE["assignments"] if str(a["id"]) == aid), None)
         if row is None:
             raise HTTPException(status_code=404, detail="Odev bulunamadi")
+        if principal.role == "teacher":
+            enforce_teacher_owner(principal, row.get("created_by"), mutation=False)
+        elif principal.role == "student":
+            if not await _student_can_access_assignment(principal, aid):
+                raise HTTPException(status_code=404, detail="Odev bulunamadi")
         return row
 
     uid = _parse_assignment_uuid_param(aid)
@@ -7329,18 +7511,36 @@ async def assignment_detail(assignment_id: str):
     )
     if row is None:
         raise HTTPException(status_code=404, detail="Odev bulunamadi")
+    if principal.role == "teacher":
+        enforce_teacher_owner(principal, row["created_by"], mutation=False)
+    elif principal.role == "student":
+        if not await _student_can_access_assignment(principal, aid):
+            raise HTTPException(status_code=404, detail="Odev bulunamadi")
     return dict(row)
 
 
 @app.post("/api/upload-history")
-async def create_upload_history(req: UploadHistoryRequest):
+async def create_upload_history(
+    req: UploadHistoryRequest,
+    principal: AuthPrincipal = Depends(require_student),
+):
+    profile = await _resolve_student_profile(principal)
+    if profile is None:
+        raise HTTPException(status_code=404, detail="Ogrenci bulunamadi")
+    student_first_name = str(profile.get("first_name") or "").strip()
+    student_last_name = str(profile.get("last_name") or "").strip()
+    student_no = str(profile.get("student_no") or "").strip()
+    if req.assignment_id:
+        if not await _student_can_access_assignment(principal, req.assignment_id):
+            raise HTTPException(status_code=404, detail="Odev bulunamadi")
+
     if _DEMO_MODE:
         _DEMO_STORE["upload_history"].append(
             {
                 "id": _demo_uuid(),
-                "student_first_name": req.student_first_name.strip(),
-                "student_last_name": req.student_last_name.strip(),
-                "student_no": req.student_no.strip(),
+                "student_first_name": student_first_name,
+                "student_last_name": student_last_name,
+                "student_no": student_no,
                 "uploaded_file_name": req.uploaded_file_name.strip(),
                 "assignment_id": req.assignment_id,
                 "score": req.score,
@@ -7355,7 +7555,7 @@ async def create_upload_history(req: UploadHistoryRequest):
                 (
                     item
                     for item in _DEMO_STORE["evaluations"]
-                    if item.get("student_no") == req.student_no.strip()
+                    if item.get("student_no") == student_no
                     and str(item.get("assignment_id") or "") == aid
                 ),
                 None,
@@ -7363,9 +7563,9 @@ async def create_upload_history(req: UploadHistoryRequest):
             if record is None:
                 record = {
                     "id": _demo_uuid(),
-                    "student_first_name": req.student_first_name.strip(),
-                    "student_last_name": req.student_last_name.strip(),
-                    "student_no": req.student_no.strip(),
+                    "student_first_name": student_first_name,
+                    "student_last_name": student_last_name,
+                    "student_no": student_no,
                     "assignment_id": req.assignment_id,
                     "uploaded_file_name": req.uploaded_file_name.strip(),
                     "score": req.score,
@@ -7380,8 +7580,8 @@ async def create_upload_history(req: UploadHistoryRequest):
                 _DEMO_STORE["evaluations"].append(record)
             else:
                 record.update({
-                    "student_first_name": req.student_first_name.strip(),
-                    "student_last_name": req.student_last_name.strip(),
+                    "student_first_name": student_first_name,
+                    "student_last_name": student_last_name,
                     "assignment_id": req.assignment_id,
                     "uploaded_file_name": req.uploaded_file_name.strip(),
                     "score": req.score,
@@ -7398,9 +7598,9 @@ async def create_upload_history(req: UploadHistoryRequest):
           (student_first_name, student_last_name, student_no, uploaded_file_name, assignment_id, score, has_error)
         VALUES ($1, $2, $3, $4, $5, $6, $7)
         """,
-        req.student_first_name.strip(),
-        req.student_last_name.strip(),
-        req.student_no.strip(),
+        student_first_name,
+        student_last_name,
+        student_no,
         req.uploaded_file_name.strip(),
         req.assignment_id,
         req.score,
@@ -7408,15 +7608,15 @@ async def create_upload_history(req: UploadHistoryRequest):
     )
     if not req.has_error and req.score is not None:
         now = datetime.utcnow().isoformat()
-        eval_key = _evaluation_key(req.student_no.strip(), req.assignment_id)
+        eval_key = _evaluation_key(student_no, req.assignment_id)
         async with _TEMP_EVALUATIONS_LOCK:
             record = _TEMP_EVALUATIONS.get(eval_key)
             if record is None:
                 record = {
                     "id": _demo_uuid(),
-                    "student_first_name": req.student_first_name.strip(),
-                    "student_last_name": req.student_last_name.strip(),
-                    "student_no": req.student_no.strip(),
+                    "student_first_name": student_first_name,
+                    "student_last_name": student_last_name,
+                    "student_no": student_no,
                     "assignment_id": req.assignment_id,
                     "uploaded_file_name": req.uploaded_file_name.strip(),
                     "score": req.score,
@@ -7431,8 +7631,8 @@ async def create_upload_history(req: UploadHistoryRequest):
             else:
                 record = {
                     **record,
-                    "student_first_name": req.student_first_name.strip(),
-                    "student_last_name": req.student_last_name.strip(),
+                    "student_first_name": student_first_name,
+                    "student_last_name": student_last_name,
                     "assignment_id": req.assignment_id,
                     "uploaded_file_name": req.uploaded_file_name.strip(),
                     "score": req.score,
@@ -7554,11 +7754,18 @@ async def _bootstrap_pending_evaluation(student_no: str, assignment_id: str | No
 
 
 @app.get("/api/evaluations/current")
-async def get_current_evaluation(student_no: str, assignment_id: str | None = None):
-    key = student_no.strip()
-    aid = (assignment_id or "").strip() or None
+async def get_current_evaluation(
+    student_no: str = "",
+    assignment_id: str | None = None,
+    principal: AuthPrincipal = Depends(require_student),
+):
+    profile = await _resolve_student_profile(principal)
+    if profile is None:
+        raise HTTPException(status_code=400, detail="Ogrenci numarasi zorunludur")
+    key = str(profile.get("student_no") or "").strip()
     if not key:
         raise HTTPException(status_code=400, detail="Ogrenci numarasi zorunludur")
+    aid = (assignment_id or "").strip() or None
 
     if _DEMO_MODE:
         student_records = [item for item in _DEMO_STORE["evaluations"] if item.get("student_no") == key]
@@ -7618,8 +7825,14 @@ async def list_evaluations(principal: AuthPrincipal = Depends(require_teacher)):
 
 
 @app.post("/api/evaluations")
-async def submit_evaluation(req: EvaluationSubmitRequest):
-    key = req.student_no.strip()
+async def submit_evaluation(
+    req: EvaluationSubmitRequest,
+    principal: AuthPrincipal = Depends(require_student),
+):
+    profile = await _resolve_student_profile(principal)
+    if profile is None:
+        raise HTTPException(status_code=400, detail="Ogrenci numarasi zorunludur")
+    key = str(profile.get("student_no") or "").strip()
     if not key:
         raise HTTPException(status_code=400, detail="Ogrenci numarasi zorunludur")
     if not (1 <= req.usefulness <= 5 and 1 <= req.accuracy <= 5 and 1 <= req.clarity <= 5):
@@ -7677,12 +7890,20 @@ async def submit_evaluation(req: EvaluationSubmitRequest):
 
 
 @app.get("/api/upload-history")
-async def list_upload_history(student_no: str, assignment_id: str | None = None):
+async def list_upload_history(
+    student_no: str = "",
+    assignment_id: str | None = None,
+    principal: AuthPrincipal = Depends(require_student),
+):
+    profile = await _resolve_student_profile(principal)
+    if profile is None:
+        return []
+    resolved_student_no = str(profile.get("student_no") or "").strip()
     if _DEMO_MODE:
         rows = [
             dict(r)
             for r in _DEMO_STORE["upload_history"]
-            if r["student_no"] == student_no.strip()
+            if r["student_no"] == resolved_student_no
             and (assignment_id is None or r["assignment_id"] == assignment_id)
         ]
         rows.sort(key=lambda r: r.get("uploaded_at", ""), reverse=True)
@@ -7698,7 +7919,7 @@ async def list_upload_history(student_no: str, assignment_id: str | None = None)
             WHERE student_no = $1 AND assignment_id = $2
             ORDER BY uploaded_at DESC
             """,
-            student_no.strip(),
+            resolved_student_no,
             assignment_id,
         )
     else:
@@ -7710,7 +7931,7 @@ async def list_upload_history(student_no: str, assignment_id: str | None = None)
             WHERE student_no = $1
             ORDER BY uploaded_at DESC
             """,
-            student_no.strip(),
+            resolved_student_no,
         )
     return [dict(r) for r in rows]
 

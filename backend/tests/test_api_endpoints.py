@@ -136,6 +136,14 @@ class ApiEndpointTests(unittest.TestCase):
         self.assertEqual(resp.status_code, 200)
         return self.client.cookies.get("agentgrade_csrf")
 
+    def _login_student(self) -> str:
+        resp = self.client.post(
+            "/api/student/login",
+            json={"student_no": _DEMO_STUDENT_NO, "password": _DEMO_STUDENT_PASSWORD},
+        )
+        self.assertEqual(resp.status_code, 200)
+        return self.client.cookies.get("agentgrade_csrf")
+
     def _csrf_headers(self, csrf: str) -> dict[str, str]:
         return {CSRF_HEADER: csrf}
 
@@ -533,6 +541,7 @@ class ApiEndpointTests(unittest.TestCase):
         self.assertIsInstance(resp.json(), list)
 
     def test_get_rubric_by_assignment(self):
+        self._login_teacher()
         resp = self.client.get(f"/api/rubrics/by-assignment/{_DEMO_ASSIGNMENT_ID}")
         self.assertEqual(resp.status_code, 200)
         self.assertEqual(resp.json()["assignment_id"], _DEMO_ASSIGNMENT_ID)
@@ -599,6 +608,7 @@ class ApiEndpointTests(unittest.TestCase):
 
     # ── Upload history ────────────────────────────────────────────────────────────
     def test_create_upload_history_returns_status_ok(self):
+        csrf = self._login_student()
         resp = self.client.post(
             "/api/upload-history",
             json={
@@ -610,11 +620,13 @@ class ApiEndpointTests(unittest.TestCase):
                 "score": 85,
                 "has_error": False,
             },
+            headers=self._csrf_headers(csrf),
         )
         self.assertEqual(resp.status_code, 200)
         self.assertEqual(resp.json(), {"status": "ok"})
 
     def test_list_upload_history_by_student(self):
+        csrf = self._login_student()
         self.client.post(
             "/api/upload-history",
             json={
@@ -626,6 +638,7 @@ class ApiEndpointTests(unittest.TestCase):
                 "score": 90,
                 "has_error": False,
             },
+            headers=self._csrf_headers(csrf),
         )
         resp = self.client.get(f"/api/upload-history?student_no={_DEMO_STUDENT_NO}")
         self.assertEqual(resp.status_code, 200)
@@ -635,6 +648,7 @@ class ApiEndpointTests(unittest.TestCase):
 
     # ── Evaluations ────────────────────────────────────────────────────────────
     def test_submit_evaluation_after_upload(self):
+        csrf = self._login_student()
         # Once skorlu bir teslim olusturulur -> bekleyen degerlendirme acilir.
         self.client.post(
             "/api/upload-history",
@@ -647,6 +661,7 @@ class ApiEndpointTests(unittest.TestCase):
                 "score": 88,
                 "has_error": False,
             },
+            headers=self._csrf_headers(csrf),
         )
         resp = self.client.post(
             "/api/evaluations",
@@ -658,6 +673,7 @@ class ApiEndpointTests(unittest.TestCase):
                 "clarity": 5,
                 "comment": "Tesekkurler",
             },
+            headers=self._csrf_headers(csrf),
         )
         self.assertEqual(resp.status_code, 200)
         data = resp.json()
@@ -665,6 +681,7 @@ class ApiEndpointTests(unittest.TestCase):
         self.assertEqual(data["usefulness"], 5)
 
     def test_submit_evaluation_invalid_score_returns_400(self):
+        csrf = self._login_student()
         resp = self.client.post(
             "/api/evaluations",
             json={
@@ -674,6 +691,7 @@ class ApiEndpointTests(unittest.TestCase):
                 "accuracy": 4,
                 "clarity": 5,
             },
+            headers=self._csrf_headers(csrf),
         )
         self.assertEqual(resp.status_code, 400)
 
