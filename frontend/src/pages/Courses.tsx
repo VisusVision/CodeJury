@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { BookOpen, LogOut, GraduationCap } from "lucide-react";
 import { getStudentCourses } from "@/services/api";
+import { useAuth } from "../auth/AuthContext";
 import { useTranslation, LanguageToggle } from "@/i18n/LanguageContext";
 
 interface Student {
@@ -22,23 +23,35 @@ interface Course {
 
 const Courses = () => {
   const { t } = useTranslation();
+  const { status, role, user, logout } = useAuth();
   const [student, setStudent] = useState<Student | null>(null);
   const [courses, setCourses] = useState<Course[]>([]);
   const [loading, setLoading] = useState(true);
   const navigate = useNavigate();
 
   useEffect(() => {
-    const stored = sessionStorage.getItem("student");
-    if (!stored) {
+    if (status === "loading") return;
+    if (status === "anonymous" || role !== "student") {
       navigate("/login");
       return;
     }
-    const s = JSON.parse(stored) as Student;
-    setStudent(s);
+    if (!user) return;
+    setStudent({
+      id: String(user.id ?? ""),
+      first_name: String(user.first_name ?? ""),
+      last_name: String(user.last_name ?? ""),
+      student_no: String(user.student_no ?? ""),
+      department_name: user.department_name != null ? String(user.department_name) : null,
+      class_year: user.class_year != null ? Number(user.class_year) : null,
+    });
+  }, [status, role, user, navigate]);
+
+  useEffect(() => {
+    if (status !== "authenticated" || role !== "student" || !user) return;
 
     const fetchCourses = async () => {
       try {
-        const coursesData = await getStudentCourses(s.id);
+        const coursesData = await getStudentCourses(String(user.id));
         setCourses(coursesData || []);
       } catch (error) {
         console.error(error);
@@ -48,14 +61,20 @@ const Courses = () => {
       }
     };
     fetchCourses();
-  }, [navigate]);
+  }, [status, role, user]);
 
-  const handleLogout = () => {
-    sessionStorage.removeItem("student");
+  const handleLogout = async () => {
+    await logout();
     navigate("/login");
   };
 
-  if (!student) return null;
+  if (status === "loading" || !student) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-background">
+        <p className="text-sm text-muted-foreground">{t("common.loading")}</p>
+      </div>
+    );
+  }
 
   return (
     <div className="grid h-screen grid-cols-[260px_1fr] overflow-hidden bg-background">

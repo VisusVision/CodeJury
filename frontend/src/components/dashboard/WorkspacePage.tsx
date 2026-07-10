@@ -36,6 +36,7 @@ import { cn } from "@/lib/utils";
 import { useTranslation } from "@/i18n/LanguageContext";
 import { splitAssignmentDescription } from "@/lib/assignmentDescription";
 import { checkAnalysisPreflight } from "@/lib/analysisPreflight";
+import { useAuth } from "../../auth/AuthContext";
 
 interface UploadedFile {
   name: string;
@@ -370,6 +371,7 @@ function buildCodeAnnotations(result: ApiAnalysisResult): CodeAnnotation[] {
 }
 
 const WorkspacePage = ({ sidebarTitle, sidebarSubtitle, headerTitle, assignmentDescription, assignmentId, studentNo, assignmentDueDate, onBack }: WorkspacePageProps) => {
+  const { user, logout } = useAuth();
   const { t, language } = useTranslation();
   const agentDefs: AgentDef[] = useMemo(() =>
     agentKeys.map((a) => ({ id: a.id, name: t(a.nameKey), description: t(a.descKey), icon: a.icon })),
@@ -406,10 +408,8 @@ const WorkspacePage = ({ sidebarTitle, sidebarSubtitle, headerTitle, assignmentD
   useEffect(() => {
     const loadUploadHistory = async () => {
       try {
-        const rawStudent = sessionStorage.getItem("student");
-        if (!rawStudent) return;
-        const student = JSON.parse(rawStudent) as { student_no: string };
-        const rows = await getUploadHistoryRecords(student.student_no, assignmentId);
+        if (!studentNo) return;
+        const rows = await getUploadHistoryRecords(studentNo, assignmentId);
         const mapped: UploadRecord[] = rows.map((r) => ({
           id: r.id,
           fileName: r.uploaded_file_name,
@@ -423,15 +423,13 @@ const WorkspacePage = ({ sidebarTitle, sidebarSubtitle, headerTitle, assignmentD
       }
     };
     void loadUploadHistory();
-  }, [assignmentId]);
+  }, [assignmentId, studentNo]);
 
   useEffect(() => {
     const loadEvaluation = async () => {
       try {
-        const rawStudent = sessionStorage.getItem("student");
-        if (!rawStudent) return;
-        const student = JSON.parse(rawStudent) as { student_no: string };
-        const record = await getCurrentEvaluation(student.student_no, assignmentId);
+        if (!studentNo) return;
+        const record = await getCurrentEvaluation(studentNo, assignmentId);
         setCurrentEvaluation(record);
         if (record?.status === "pending") {
           setEvaluationOpen(true);
@@ -441,7 +439,7 @@ const WorkspacePage = ({ sidebarTitle, sidebarSubtitle, headerTitle, assignmentD
       }
     };
     void loadEvaluation();
-  }, [assignmentId]);
+  }, [assignmentId, studentNo]);
 
   // Persist state on changes
   useEffect(() => {
@@ -652,23 +650,17 @@ const WorkspacePage = ({ sidebarTitle, sidebarSubtitle, headerTitle, assignmentD
       });
 
       try {
-        const rawStudent = sessionStorage.getItem("student");
-        if (rawStudent) {
-          const student = JSON.parse(rawStudent) as {
-            first_name: string;
-            last_name: string;
-            student_no: string;
-          };
+        if (user) {
           await createUploadHistoryRecord({
-            student_first_name: student.first_name,
-            student_last_name: student.last_name,
-            student_no: student.student_no,
+            student_first_name: String(user.first_name ?? ""),
+            student_last_name: String(user.last_name ?? ""),
+            student_no: studentNo,
             uploaded_file_name: firstFile.name,
             assignment_id: assignmentId,
             score: totalPct,
             has_error: false,
           });
-          const record = await getCurrentEvaluation(student.student_no, assignmentId);
+          const record = await getCurrentEvaluation(studentNo, assignmentId);
           setCurrentEvaluation(record);
           if (record?.status === "pending") {
             toast.info(language === "tr" ? "Rapor oluştu. Lütfen önce değerlendirin." : "Report is ready. Please rate it first.");
@@ -703,17 +695,11 @@ const WorkspacePage = ({ sidebarTitle, sidebarSubtitle, headerTitle, assignmentD
       });
 
       try {
-        const rawStudent = sessionStorage.getItem("student");
-        if (rawStudent) {
-          const student = JSON.parse(rawStudent) as {
-            first_name: string;
-            last_name: string;
-            student_no: string;
-          };
+        if (user) {
           await createUploadHistoryRecord({
-            student_first_name: student.first_name,
-            student_last_name: student.last_name,
-            student_no: student.student_no,
+            student_first_name: String(user.first_name ?? ""),
+            student_last_name: String(user.last_name ?? ""),
+            student_no: studentNo,
             uploaded_file_name: firstFile.name,
             assignment_id: assignmentId,
             has_error: true,
@@ -729,19 +715,17 @@ const WorkspacePage = ({ sidebarTitle, sidebarSubtitle, headerTitle, assignmentD
       analysisInFlightRef.current = false;
       setIsRunning(false);
     }
-  }, [agentDefs, currentEvaluation?.status, files, addLog, assignmentId, isPastDue, language, studentNo, t]);
+  }, [agentDefs, currentEvaluation?.status, files, addLog, assignmentId, isPastDue, language, studentNo, t, user]);
 
   const handleEvaluationSubmit = useCallback(async (data: { usefulness: number; accuracy: number; clarity: number; comment: string }) => {
-    const rawStudent = sessionStorage.getItem("student");
-    if (!rawStudent) {
+    if (!studentNo) {
       throw new Error(language === "tr" ? "Öğrenci oturumu bulunamadı." : "Student session not found.");
     }
-    const student = JSON.parse(rawStudent) as { student_no: string };
     if (!currentEvaluation?.assignment_id) {
       throw new Error(language === "tr" ? "Değerlendirilecek aktif rapor bulunamadı." : "No active report found.");
     }
     const record = await submitEvaluation({
-      student_no: student.student_no,
+      student_no: studentNo,
       assignment_id: currentEvaluation.assignment_id,
       usefulness: data.usefulness,
       accuracy: data.accuracy,
@@ -751,7 +735,7 @@ const WorkspacePage = ({ sidebarTitle, sidebarSubtitle, headerTitle, assignmentD
     setCurrentEvaluation(record);
     toast.success(language === "tr" ? "Değerlendirme gönderildi." : "Feedback submitted.");
     setEvaluationOpen(false);
-  }, [currentEvaluation?.assignment_id, language]);
+  }, [currentEvaluation?.assignment_id, language, studentNo]);
 
   const handleRunAgentsClick = useCallback(() => {
     if (currentEvaluation?.status === "pending") {
@@ -798,18 +782,8 @@ const WorkspacePage = ({ sidebarTitle, sidebarSubtitle, headerTitle, assignmentD
         minute: "2-digit",
       });
 
-      const rawStudent = sessionStorage.getItem("student");
-      const student = rawStudent
-        ? (JSON.parse(rawStudent) as {
-            first_name?: string;
-            last_name?: string;
-            student_no?: string;
-            department_name?: string | null;
-          })
-        : null;
-
-      const studentName = `${student?.first_name || ""} ${student?.last_name || ""}`.trim() || sidebarTitle || "-";
-      const departmentName = student?.department_name?.trim() || "-";
+      const studentName = `${String(user?.first_name ?? "")} ${String(user?.last_name ?? "")}`.trim() || sidebarTitle || "-";
+      const departmentName = user?.department_name != null ? String(user.department_name).trim() || "-" : "-";
       const scorePct = Math.round((report.totalScore / report.maxScore) * 100);
       const scoreColor = scorePct >= 80 ? "#059669" : scorePct >= 60 ? "#d97706" : "#dc2626";
       const scoreBg = "#f9fafb";
@@ -907,7 +881,7 @@ const WorkspacePage = ({ sidebarTitle, sidebarSubtitle, headerTitle, assignmentD
         <div style="margin-bottom:10px;padding:10px 12px;border-radius:10px;background:${scoreBg};">
           <div style="display:flex;justify-content:space-between;gap:12px;align-items:flex-start;">
             <div style="flex:1;display:flex;flex-direction:column;gap:3px;color:#111827;min-width:0;padding-right:8px;">
-              <div style="font-size:15px;font-weight:800;line-height:1.15;">${escapeHtml(studentName)} - ${escapeHtml(student?.student_no || studentNo || "")}</div>
+              <div style="font-size:15px;font-weight:800;line-height:1.15;">${escapeHtml(studentName)} - ${escapeHtml(String(user?.student_no ?? "") || studentNo || "")}</div>
               <div style="font-size:11px;line-height:1.2;font-weight:500;"><span style="font-weight:800;">Bölüm:</span> ${escapeHtml(departmentName)}</div>
               <div style="font-size:11px;line-height:1.2;font-weight:500;"><span style="font-weight:800;">Ders:</span> ${escapeHtml(sidebarSubtitle || "-")}</div>
               <div style="font-size:11px;line-height:1.2;font-weight:500;"><span style="font-weight:800;">Ödev:</span> ${escapeHtml(headerTitle || "-")}</div>
@@ -1083,8 +1057,8 @@ const WorkspacePage = ({ sidebarTitle, sidebarSubtitle, headerTitle, assignmentD
 
         <div className="p-3 border-t border-border/50">
           <button
-            onClick={() => {
-              sessionStorage.removeItem("student");
+            onClick={async () => {
+              await logout();
               window.location.href = "/login";
             }}
             className="flex items-center gap-2 w-full px-3 py-2 rounded-lg text-sm text-muted-foreground hover:text-foreground hover:bg-muted/50 transition-colors duration-150"

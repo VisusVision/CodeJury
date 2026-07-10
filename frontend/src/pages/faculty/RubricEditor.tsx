@@ -11,6 +11,7 @@ import {
   type Rubric,
   type RubricCriterion,
 } from "@/services/api";
+import { useAuth } from "../../auth/AuthContext";
 
 const getErrorMessage = (error: unknown, fallback: string) =>
   error instanceof Error ? error.message : fallback;
@@ -46,24 +47,22 @@ const getRubricValidationMessage = (criteria: RubricCriterion[]) => {
 const RubricEditor = () => {
   const { assignmentId } = useParams<{ assignmentId: string }>();
   const navigate = useNavigate();
+  const { status, role } = useAuth();
   const [assignment, setAssignment] = useState<Assignment | null>(null);
   const [rubric, setRubric] = useState<Rubric | null>(null);
   const [criteria, setCriteria] = useState<RubricCriterion[]>([]);
   const [loading, setLoading] = useState(true);
   const [aiLoading, setAiLoading] = useState(false);
-  const [teacherId, setTeacherId] = useState<string | null>(null);
 
   useEffect(() => {
+    if (status === "loading") return;
+    if (status === "anonymous" || role !== "teacher") {
+      navigate("/login");
+      return;
+    }
+
     const init = async () => {
       try {
-        const teacherRaw = sessionStorage.getItem("teacher");
-        if (!teacherRaw) {
-          navigate("/login");
-          return;
-        }
-        const teacher = JSON.parse(teacherRaw) as { id: string };
-        setTeacherId(teacher.id);
-
         if (!assignmentId) {
           navigate("/faculty/dashboard");
           return;
@@ -87,8 +86,8 @@ const RubricEditor = () => {
         setLoading(false);
       }
     };
-    init();
-  }, [assignmentId, navigate]);
+    void init();
+  }, [assignmentId, navigate, role, status]);
 
   const requestAiSuggestion = async () => {
     if (!assignment) return;
@@ -144,7 +143,6 @@ const RubricEditor = () => {
         assignment_id: assignmentId,
         criteria,
         status,
-        created_by: teacherId,
       });
       setRubric(saved);
       toast.success(status === "approved" ? "Rubrik onaylandı!" : "Rubrik taslak olarak kaydedildi.");
