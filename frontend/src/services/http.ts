@@ -1,6 +1,7 @@
 export const SESSION_COOKIE_NAME = "agentgrade_session";
 export const CSRF_COOKIE_NAME = "agentgrade_csrf";
 export const CSRF_HEADER_NAME = "X-CSRF-Token";
+export const UNAUTHORIZED_EVENT = "agentgrade:unauthorized";
 
 export function readCookie(name: string): string | null {
   const cookies = document.cookie ? document.cookie.split("; ") : [];
@@ -27,5 +28,9 @@ export async function apiFetch(input: RequestInfo | URL, init: RequestInit = {})
       headers.set(CSRF_HEADER_NAME, csrf);
     }
   }
-  return fetch(input, { ...init, method, headers, credentials: "include" });
+  const response = await fetch(input, { ...init, method, headers, credentials: "include" });
+  if (response.status === 401 && typeof window !== "undefined") {
+    window.dispatchEvent(new CustomEvent(UNAUTHORIZED_EVENT));
+  }
+  return response;
 }

@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import {
   CSRF_COOKIE_NAME,
   CSRF_HEADER_NAME,
+  UNAUTHORIZED_EVENT,
   apiFetch,
   readCookie,
 } from "./http";
@@ -110,6 +111,45 @@ describe("apiFetch", () => {
     expect(init.signal).toBe(controller.signal);
     expect(init.body).toBe(body);
     expect(init.cache).toBe("no-store");
+  });
+
+  test("dispatches UNAUTHORIZED_EVENT on window when response status is 401", async () => {
+    fetchMock.mockResolvedValue(new Response(null, { status: 401 }));
+    const listener = vi.fn();
+    window.addEventListener(UNAUTHORIZED_EVENT, listener);
+
+    await apiFetch("/api/courses");
+
+    expect(listener).toHaveBeenCalledTimes(1);
+    window.removeEventListener(UNAUTHORIZED_EVENT, listener);
+  });
+
+  test("does not dispatch UNAUTHORIZED_EVENT when response status is 200 or other non-401", async () => {
+    const listener = vi.fn();
+    window.addEventListener(UNAUTHORIZED_EVENT, listener);
+
+    fetchMock.mockResolvedValue(new Response(null, { status: 200 }));
+    await apiFetch("/api/courses");
+    fetchMock.mockResolvedValue(new Response(null, { status: 403 }));
+    await apiFetch("/api/courses");
+    fetchMock.mockResolvedValue(new Response(null, { status: 500 }));
+    await apiFetch("/api/courses");
+
+    expect(listener).not.toHaveBeenCalled();
+    window.removeEventListener(UNAUTHORIZED_EVENT, listener);
+  });
+
+  test("still returns the real response object even when dispatching the 401 event", async () => {
+    fetchMock.mockResolvedValue(new Response(null, { status: 401 }));
+    const listener = vi.fn();
+    window.addEventListener(UNAUTHORIZED_EVENT, listener);
+
+    const response = await apiFetch("/api/courses");
+
+    expect(response.status).toBe(401);
+    expect(response.ok).toBe(false);
+    expect(listener).toHaveBeenCalledTimes(1);
+    window.removeEventListener(UNAUTHORIZED_EVENT, listener);
   });
 });
 

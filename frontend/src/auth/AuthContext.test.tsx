@@ -1,5 +1,6 @@
 import { render, renderHook, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import { UNAUTHORIZED_EVENT } from "../services/http";
 import { AuthProvider, useAuth } from "./AuthContext";
 
 function AuthHarness() {
@@ -224,5 +225,37 @@ describe("AuthProvider", () => {
 
   test("useAuth throws when used outside AuthProvider", () => {
     expect(() => renderHook(() => useAuth())).toThrow("useAuth must be used within an AuthProvider");
+  });
+
+  test("clears auth state to anonymous when UNAUTHORIZED_EVENT fires, without a new /api/auth/me call", async () => {
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        role: "teacher",
+        user: { email: "teacher@example.com", first_name: "Mehmet" },
+      }),
+    });
+
+    render(
+      <AuthProvider>
+        <AuthHarness />
+      </AuthProvider>,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByTestId("status").textContent).toBe("authenticated");
+    });
+
+    const fetchCallsAfterRestore = fetchMock.mock.calls.length;
+
+    window.dispatchEvent(new CustomEvent(UNAUTHORIZED_EVENT));
+
+    await waitFor(() => {
+      expect(screen.getByTestId("status").textContent).toBe("anonymous");
+    });
+    expect(screen.getByTestId("role").textContent).toBe("none");
+    expect(screen.getByTestId("user").textContent).toBe("none");
+    expect(fetchMock.mock.calls.length).toBe(fetchCallsAfterRestore);
   });
 });

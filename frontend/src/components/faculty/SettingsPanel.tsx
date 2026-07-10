@@ -1,4 +1,5 @@
 import { useState, useEffect } from "react";
+import { useNavigate } from "react-router-dom";
 import { toast } from "sonner";
 import { Mail, Lock, Save } from "lucide-react";
 import { updateTeacherEmail, updateTeacherPassword } from "@/services/api";
@@ -22,7 +23,8 @@ const getErrorMessage = (error: unknown, fallback: string) =>
 
 const SettingsPanel = ({ teacher, onTeacherUpdate }: SettingsPanelProps) => {
   const { t } = useTranslation();
-  const { refreshSession } = useAuth();
+  const navigate = useNavigate();
+  const { refreshSession, logout } = useAuth();
   const [currentEmail, setCurrentEmail] = useState("");
   const [newEmail, setNewEmail] = useState("");
   const [currentPassword, setCurrentPassword] = useState("");
@@ -79,6 +81,8 @@ const SettingsPanel = ({ teacher, onTeacherUpdate }: SettingsPanelProps) => {
       setCurrentPassword("");
       setNewPassword("");
       setConfirmPassword("");
+      await logout();
+      navigate("/login");
     } catch (err: unknown) {
       toast.error(getErrorMessage(err, t("faculty.settings.passwordUpdateError")));
     } finally {
