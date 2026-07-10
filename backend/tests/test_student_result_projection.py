@@ -638,6 +638,111 @@ class StudentResultProjectionTests(unittest.TestCase):
         serialized = json.dumps(out, ensure_ascii=False)
         self.assertNotIn(secret, serialized)
 
+    def test_dict_key_leak_in_rubric_is_redacted(self) -> None:
+        private = self._private_with_hidden_fragments()
+        secret = SENTINEL_HIDDEN_INPUT
+        private["rubric"] = {
+            "criteria": [{"name": "correctness", "score": 42}],
+            secret: "leaked via rubric dict key",
+        }
+        projected = project_student_result(private)
+        serialized = json.dumps(projected, ensure_ascii=False)
+        self.assertNotIn(secret, serialized)
+        self.assertIn("redacted_key", serialized)
+
+    def test_dict_key_leak_in_resource_recommendations_is_redacted(self) -> None:
+        private = self._private_with_hidden_fragments()
+        secret = SENTINEL_HIDDEN_INPUT
+        clean_rec = {"title": "clean", "url": "https://example.com"}
+        leaking_rec = {secret: "leaked via rec dict key", "title": "bad rec"}
+        private["resourceRecommendations"] = [leaking_rec, clean_rec]
+        projected = project_student_result(private)
+        serialized = json.dumps(projected, ensure_ascii=False)
+        self.assertNotIn(secret, serialized)
+        self.assertEqual(projected["resourceRecommendations"], [clean_rec])
+
+    def test_agent_name_leaking_hidden_data_is_redacted(self) -> None:
+        private = self._private_with_hidden_fragments()
+        secret = SENTINEL_HIDDEN_INPUT
+        private["agents"][0]["name"] = f"Test Agent {secret}"
+        projected = project_student_result(private)
+        serialized = json.dumps(projected, ensure_ascii=False)
+        self.assertNotIn(secret, serialized)
+        testing = _testing_agent(projected)
+        self.assertEqual(testing["name"], GENERIC_REDACTED_TEXT)
+
+    def test_agent_id_leaking_hidden_data_is_redacted(self) -> None:
+        private = self._private_with_hidden_fragments()
+        secret = SENTINEL_HIDDEN_INPUT
+        private["agents"][1]["id"] = secret
+        projected = project_student_result(private)
+        serialized = json.dumps(projected, ensure_ascii=False)
+        self.assertNotIn(secret, serialized)
+        quality = next(a for a in projected["agents"] if a.get("score") == 70)
+        self.assertEqual(quality["id"], GENERIC_REDACTED_TEXT)
+
+    def test_adversarial_dict_key_and_agent_metadata_leak_reproduction_is_blocked(
+        self,
+    ) -> None:
+        """Exact combined bug-report reproduction: dict keys + agent name."""
+        secret = SENTINEL_HIDDEN_INPUT
+        private = self._private_with_hidden_fragments()
+        private["rubric"] = {
+            "criteria": [{"name": "correctness", "score": 42}],
+            secret: "leaked via rubric key",
+        }
+        private["resourceRecommendations"] = [
+            {secret: "leaked via rec key", "title": "bad rec"},
+        ]
+        private["agents"][0]["name"] = f"Test Agent {secret}"
+        out = project_student_result(private)
+        serialized = json.dumps(out, ensure_ascii=False)
+        self.assertNotIn(secret, serialized)
+
+    def test_comprehensive_invariant_no_sentinel_survives_in_serialized_output_regardless_of_location(
+        self,
+    ) -> None:
+        """Kitchen-sink fail-closed invariant: sentinel absent from entire output."""
+        secret = SENTINEL_HIDDEN_INPUT
+        private = self._private_with_hidden_fragments()
+        private["rubric"] = {
+            "criteria": [
+                {
+                    "name": "correctness",
+                    "score": 42,
+                    "nested": {"deep": secret},
+                },
+            ],
+            secret: "rubric key leak",
+        }
+        private["taskAlignment"] = {
+            secret: "task alignment key leak",
+            "factor": 1.0,
+        }
+        private["resourceRecommendations"] = [
+            {secret: "rec key leak", "title": "bad rec"},
+            {"title": "clean rec", "url": "https://example.com"},
+        ]
+        private["evidence"] = [
+            {secret: "evidence key leak", "message": "clean"},
+            {"message": "clean evidence", "line": 1},
+        ]
+        private["agents"][0]["name"] = f"testing name {secret}"
+        private["agents"][1]["id"] = secret
+        private["agents"][1]["name"] = f"quality name {secret}"
+        quality = private["agents"][1]
+        quality["findings"] = [
+            {
+                "severity": "error",
+                "message": "clean message",
+                "agent": f"agent field {secret}",
+                "code": "E001",
+            },
+        ]
+        out = project_student_result(private)
+        serialized = json.dumps(out, ensure_ascii=False)
+        self.assertNotIn(secret, serialized)
+
 
 if __name__ == "__main__":
     unittest.main()

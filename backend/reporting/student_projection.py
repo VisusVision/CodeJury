@@ -77,7 +77,7 @@ def project_student_result(private_result: dict[str, Any]) -> dict[str, Any]:
         if value is None:
             continue
         projected[key] = _sanitize_top_level_value(key, value, hidden_private_fragments)
-    return projected
+    return _deep_redact(projected, hidden_private_fragments)
 
 
 def _sanitize_text(value: str, hidden_fragments: list[str]) -> str:
@@ -101,7 +101,11 @@ def _value_contains_leak(value: Any, hidden_fragments: list[str]) -> bool:
     if isinstance(value, str):
         return _message_leaks_hidden_data(value, hidden_fragments)
     if isinstance(value, dict):
-        return any(_value_contains_leak(v, hidden_fragments) for v in value.values())
+        return any(
+            (isinstance(k, str) and _message_leaks_hidden_data(k, hidden_fragments))
+            or _value_contains_leak(v, hidden_fragments)
+            for k, v in value.items()
+        )
     if isinstance(value, list):
         return any(_value_contains_leak(item, hidden_fragments) for item in value)
     return False
@@ -112,7 +116,13 @@ def _deep_redact(value: Any, hidden_fragments: list[str]) -> Any:
     if isinstance(value, str):
         return _sanitize_text(value, hidden_fragments)
     if isinstance(value, dict):
-        return {k: _deep_redact(v, hidden_fragments) for k, v in value.items()}
+        result: dict[str, Any] = {}
+        for k, v in value.items():
+            safe_key = k
+            if isinstance(k, str) and _message_leaks_hidden_data(k, hidden_fragments):
+                safe_key = "redacted_key"
+            result[safe_key] = _deep_redact(v, hidden_fragments)
+        return result
     if isinstance(value, list):
         return [_deep_redact(item, hidden_fragments) for item in value]
     return value
