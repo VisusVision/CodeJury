@@ -9,23 +9,18 @@ export function checkAnalysisPreflight(
   messages: {
     healthUnavailable: string;
     llmDisabled: string;
-    sandboxSimulation: string;
+    sandboxUnavailable: string;
     durationHint: string;
   },
 ): AnalysisPreflightResult {
-  if (!health || health.status !== "ok") {
+  if (!health) {
     return { ok: false, reason: messages.healthUnavailable };
   }
-
   if (health.llm?.enabled === false) {
     return { ok: false, reason: messages.llmDisabled };
   }
-
-  const warnings: string[] = [messages.durationHint];
-  const sandbox = health.sandbox;
-  if (!sandbox?.pool_ready || sandbox.mode !== "pool") {
-    warnings.push(messages.sandboxSimulation);
+  if (health.analysis_ready !== true) {
+    return { ok: false, reason: messages.sandboxUnavailable };
   }
-
-  return { ok: true, warnings };
+  return { ok: true, warnings: [messages.durationHint] };
 }

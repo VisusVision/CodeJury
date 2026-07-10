@@ -4,7 +4,7 @@ import { checkAnalysisPreflight } from "./analysisPreflight";
 const messages = {
   healthUnavailable: "health down",
   llmDisabled: "llm off",
-  sandboxSimulation: "simulation",
+  sandboxUnavailable: "sandbox unavailable",
   durationHint: "duration",
 };
 
@@ -15,25 +15,34 @@ describe("checkAnalysisPreflight", () => {
 
   test("blocks when llm is disabled", () => {
     const result = checkAnalysisPreflight(
-      { status: "ok", llm: { enabled: false } },
+      { status: "ok", analysis_ready: true, llm: { enabled: false } },
       messages,
     );
     expect(result).toEqual({ ok: false, reason: "llm off" });
   });
 
-  test("warns on simulation sandbox but allows analysis", () => {
+  test("blocks when worker sandbox is unavailable", () => {
+    expect(checkAnalysisPreflight(
+      {
+        status: "degraded",
+        analysis_ready: false,
+        llm: { enabled: true },
+        sandbox: { mode: "unavailable", pool_ready: false, container_count: 0 },
+      },
+      messages,
+    )).toEqual({ ok: false, reason: "sandbox unavailable" });
+  });
+
+  test("allows degraded partial capacity when analysis is ready", () => {
     const result = checkAnalysisPreflight(
       {
-        status: "ok",
+        status: "degraded",
+        analysis_ready: true,
         llm: { enabled: true },
-        sandbox: { mode: "simulation", pool_ready: false },
+        sandbox: { mode: "pool", pool_ready: true, container_count: 1, available_count: 0 },
       },
       messages,
     );
-    expect(result.ok).toBe(true);
-    if (result.ok) {
-      expect(result.warnings).toContain("simulation");
-      expect(result.warnings).toContain("duration");
-    }
+    expect(result).toEqual({ ok: true, warnings: ["duration"] });
   });
 });

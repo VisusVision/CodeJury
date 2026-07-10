@@ -116,7 +116,7 @@
     "preflight": {
       "healthUnavailable": "API'ye ulaşılamıyor. npm run dev:full ile sunucuyu başlatın.",
       "llmDisabled": "LLM kapalı veya Ollama çalışmıyor. ollama serve ve model indirmeyi kontrol edin.",
-      "sandboxSimulation": "Sandbox simülasyon modunda; Docker pool yoksa kod çalıştırma sınırlı olabilir.",
+      "sandboxUnavailable": "Sandbox kullanılamıyor. Docker Desktop ve analysis worker pool durumunu kontrol edip tekrar deneyin.",
       "durationHint": "İlk analiz 3–8 dakika sürebilir; bu normaldir."
     },
     "analysisError": "Analiz sırasında hata oluştu",

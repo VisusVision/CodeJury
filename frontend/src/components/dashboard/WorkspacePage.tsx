@@ -535,7 +535,7 @@ const WorkspacePage = ({ sidebarTitle, sidebarSubtitle, headerTitle, assignmentD
     const preflight = checkAnalysisPreflight(health, {
       healthUnavailable: t("workspace.preflight.healthUnavailable"),
       llmDisabled: t("workspace.preflight.llmDisabled"),
-      sandboxSimulation: t("workspace.preflight.sandboxSimulation"),
+      sandboxUnavailable: t("workspace.preflight.sandboxUnavailable"),
       durationHint: t("workspace.preflight.durationHint"),
     });
     if (!preflight.ok) {

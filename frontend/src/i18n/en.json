@@ -116,7 +116,7 @@
     "preflight": {
       "healthUnavailable": "Cannot reach the API. Start the stack with npm run dev:full.",
       "llmDisabled": "LLM is disabled or Ollama is not running. Check ollama serve and model pulls.",
-      "sandboxSimulation": "Sandbox is in simulation mode; code execution may be limited without a Docker pool.",
+      "sandboxUnavailable": "The sandbox is unavailable. Check Docker Desktop and the analysis worker pool, then try again.",
       "durationHint": "The first analysis may take 3–8 minutes; this is normal."
     },
     "analysisError": "An error occurred during analysis",
