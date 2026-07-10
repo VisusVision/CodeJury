@@ -35,9 +35,13 @@ class RuntimeDiagnosticsTests(unittest.TestCase):
     def test_try_initialize_sandbox_pool_returns_unavailable_when_pool_not_ready(self):
         from backend.ops.runtime_diagnostics import try_initialize_sandbox_pool
 
-        with patch("backend.sandbox.pool_manager.initialize_pool") as init_mock:
-            with patch("backend.sandbox.pool_manager.get_pool", return_value=None):
-                mode = try_initialize_sandbox_pool(pool_size=1, base_port=9101, timeout_s=5.0)
+        # try_initialize_sandbox_pool intentionally writes SANDBOX_POOL_* env vars so
+        # pool_manager.initialize_pool() picks them up; isolate that side effect here so
+        # it cannot leak into other tests/scripts sharing this process's environment.
+        with patch.dict(os.environ, clear=False):
+            with patch("backend.sandbox.pool_manager.initialize_pool") as init_mock:
+                with patch("backend.sandbox.pool_manager.get_pool", return_value=None):
+                    mode = try_initialize_sandbox_pool(pool_size=1, base_port=9101, timeout_s=5.0)
         self.assertEqual(mode, "unavailable")
         init_mock.assert_called_once()
 
@@ -53,9 +57,10 @@ class RuntimeDiagnosticsTests(unittest.TestCase):
             "target_size": 2,
             "last_error_code": None,
         }
-        with patch("backend.sandbox.pool_manager.initialize_pool") as init_mock:
-            with patch("backend.sandbox.pool_manager.get_pool", return_value=ready_pool):
-                mode = try_initialize_sandbox_pool(pool_size=2, base_port=9102, timeout_s=5.0)
+        with patch.dict(os.environ, clear=False):
+            with patch("backend.sandbox.pool_manager.initialize_pool") as init_mock:
+                with patch("backend.sandbox.pool_manager.get_pool", return_value=ready_pool):
+                    mode = try_initialize_sandbox_pool(pool_size=2, base_port=9102, timeout_s=5.0)
         self.assertEqual(mode, "pool")
         init_mock.assert_called_once()
 
