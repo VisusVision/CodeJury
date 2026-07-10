@@ -1,12 +1,17 @@
 from __future__ import annotations
 
+import asyncio
 import json
+from types import SimpleNamespace
 from typing import Any
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from backend.auth.dependencies import get_auth_session_store
 from backend.auth.models import AuthPrincipal
 from backend.auth.sessions import SessionStore, hash_token
+from frontend.backend import main
 
 SESSION_TTL = 28800
 
@@ -175,3 +180,40 @@ async def test_create_session_refreshes_user_index_ttl(
 
     assert index_key in redis.expirations
     assert redis.expirations[index_key] == SESSION_TTL
+
+
+@pytest.mark.asyncio
+async def test_get_auth_session_store_creates_only_one_client_under_concurrent_calls() -> None:
+    fake_app = SimpleNamespace(state=SimpleNamespace())
+    fake_request = SimpleNamespace(app=fake_app)
+    sentinel_redis = object()
+
+    with patch(
+        "backend.auth.dependencies.create_redis_client",
+        return_value=sentinel_redis,
+    ) as mock_create:
+        stores = await asyncio.gather(
+            get_auth_session_store(fake_request),
+            get_auth_session_store(fake_request),
+            get_auth_session_store(fake_request),
+        )
+
+    assert mock_create.call_count == 1
+    assert stores[0] is stores[1] is stores[2]
+    assert stores[0].redis is sentinel_redis
+
+
+@pytest.mark.asyncio
+async def test_shutdown_auth_session_store_closes_redis_client() -> None:
+    mock_redis = MagicMock()
+    mock_redis.aclose = AsyncMock()
+    store = SessionStore(mock_redis, ttl_seconds=SESSION_TTL)
+    main.app.state.auth_session_store = store
+
+    try:
+        await main._shutdown_auth_session_store()
+        mock_redis.aclose.assert_awaited_once()
+        assert getattr(main.app.state, "auth_session_store", "missing") is None
+    finally:
+        if hasattr(main.app.state, "auth_session_store"):
+            delattr(main.app.state, "auth_session_store")

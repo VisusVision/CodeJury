@@ -551,6 +551,14 @@ async def _shutdown_redis() -> None:
         _ANALYSIS_JOB_STORE = None
 
 
+@app.on_event("shutdown")
+async def _shutdown_auth_session_store() -> None:
+    store = getattr(app.state, "auth_session_store", None)
+    if store is not None:
+        await store.redis.aclose()
+        app.state.auth_session_store = None
+
+
 def _cors_allowed_origins() -> list[str]:
     origins = [item.strip() for item in settings.cors_allowed_origins.split(",") if item.strip()]
     if "*" in origins:
@@ -5466,16 +5474,18 @@ async def auth_logout(request: Request, response: Response):
         return
     try:
         principal = await store.read_session(raw)
-    except Exception:
-        clear_auth_cookies(response)
-        return
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail="Oturum servisine ulaşılamıyor") from exc
     if principal is None:
         clear_auth_cookies(response)
         return
     supplied = request.headers.get(CSRF_HEADER, "")
     if not supplied or not hmac.compare_digest(hash_token(supplied), principal.csrf_hash):
         raise HTTPException(status_code=403, detail="CSRF doğrulaması başarısız")
-    await store.revoke_session(raw)
+    try:
+        await store.revoke_session(raw)
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail="Oturum servisine ulaşılamıyor") from exc
     clear_auth_cookies(response)
     return
 
