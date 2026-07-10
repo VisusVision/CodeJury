@@ -70,6 +70,41 @@ class FakeSessionRedis:
         self.expirations[key] = seconds
 
     async def eval(self, script: str, numkeys: int, *keys_and_args):
+        if "smembers" in script:
+            lock_key = keys_and_args[0]
+            index_key = keys_and_args[1]
+            token = keys_and_args[2]
+            session_prefix = keys_and_args[3]
+            if self.values.get(lock_key) != token:
+                return -1
+            members = list(self.sets.get(index_key, set()))
+            deleted = 0
+            for member in members:
+                session_key = f"{session_prefix}{member}"
+                if session_key in self.values:
+                    self.values.pop(session_key, None)
+                    deleted += 1
+            self.sets.pop(index_key, None)
+            self.expirations.pop(index_key, None)
+            return deleted
+
+        if "sadd" in script and numkeys >= 3:
+            lock_key = keys_and_args[0]
+            session_key = keys_and_args[1]
+            index_key = keys_and_args[2]
+            token = keys_and_args[3]
+            session_json = keys_and_args[4]
+            ttl_seconds = int(keys_and_args[5])
+            session_hash = keys_and_args[6]
+            if self.values.get(lock_key) != token:
+                return 0
+            self.values[session_key] = session_json
+            self.expirations[session_key] = ttl_seconds
+            bucket = self.sets.setdefault(index_key, set())
+            bucket.add(session_hash)
+            self.expirations[index_key] = ttl_seconds
+            return 1
+
         key = keys_and_args[0]
         token = keys_and_args[1]
         if self.values.get(key) != token:
@@ -279,7 +314,7 @@ class AuthApiTests(unittest.TestCase):
         async def _boom(*_args, **_kwargs):
             raise RuntimeError("redis down")
 
-        with patch.object(self._session_store, "create_session", side_effect=_boom):
+        with patch.object(self._session_store, "create_session_if_lock_held", side_effect=_boom):
             resp = self.client.post(
                 "/api/student/login",
                 json={"student_no": _DEMO_STUDENT_NO, "password": _DEMO_STUDENT_PASSWORD},
