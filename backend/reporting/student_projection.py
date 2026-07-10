@@ -39,19 +39,7 @@ PUBLIC_TEST_KEYS = frozenset({
 })
 HIDDEN_TEST_KEYS = frozenset({"name", "visibility", "status", "passed"})
 
-HIDDEN_PRIVATE_FIELD_NAMES = (
-    "name",
-    "input",
-    "stdin",
-    "expected",
-    "expected_stdout",
-    "actual",
-    "actual_stdout",
-    "stderr",
-    "actual_stderr",
-    "diff",
-    "diffDetail",
-)
+SAFE_HIDDEN_METADATA_KEYS = frozenset({"visibility", "status", "passed"})
 
 GENERIC_HIDDEN_FAILURE_MESSAGE = "Hidden test basarisiz."
 GENERIC_REDACTED_TEXT = "İçerik gizli test verisi barındırdığı için kaldırıldı."
@@ -161,14 +149,30 @@ def _collect_hidden_private_fragments(private_result: dict[str, Any]) -> list[st
                 continue
             if str(case.get("visibility") or "").strip().lower() != "hidden":
                 continue
-            for field_name in HIDDEN_PRIVATE_FIELD_NAMES:
-                raw = case.get(field_name)
-                if raw is None:
+            for field_key, field_value in case.items():
+                if field_key in SAFE_HIDDEN_METADATA_KEYS:
                     continue
-                text = str(raw).strip()
-                if text:
-                    fragments.append(text)
+                _collect_string_leaves(field_value, fragments)
     return fragments
+
+
+def _collect_string_leaves(value: Any, out: list[str]) -> None:
+    """Recursively collect every non-empty string leaf inside value (dict values / list items,
+    any depth). Used to build the exhaustive hidden-fragment set from a hidden test case's
+    fields whose names are NOT in SAFE_HIDDEN_METADATA_KEYS, so unknown/future field names are
+    covered automatically instead of relying on a fixed allowlist of known field names."""
+    if isinstance(value, str):
+        text = value.strip()
+        if text:
+            out.append(text)
+        return
+    if isinstance(value, dict):
+        for v in value.values():
+            _collect_string_leaves(v, out)
+        return
+    if isinstance(value, list):
+        for item in value:
+            _collect_string_leaves(item, out)
 
 
 def _message_leaks_hidden_data(message: str, hidden_fragments: list[str]) -> bool:
