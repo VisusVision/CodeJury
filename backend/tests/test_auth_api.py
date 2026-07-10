@@ -9,7 +9,7 @@ from __future__ import annotations
 import asyncio
 import copy
 import unittest
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
@@ -311,3 +311,68 @@ class AuthApiTests(unittest.TestCase):
         me_resp = self.client.get("/api/auth/me")
         self.assertEqual(me_resp.status_code, 200)
         self.assertEqual(me_resp.json()["role"], "student")
+
+    def test_logout_returns_503_when_redis_raises_during_session_read(self):
+        login_resp = self._student_login()
+        self.assertEqual(login_resp.status_code, 200)
+        csrf_value = self.client.cookies.get("agentgrade_csrf")
+        self.assertIsNotNone(csrf_value)
+
+        with patch.object(
+            self._session_store,
+            "read_session",
+            new_callable=AsyncMock,
+            side_effect=ConnectionError("redis down"),
+        ):
+            logout_resp = self.client.post(
+                "/api/auth/logout",
+                headers={"X-CSRF-Token": csrf_value},
+            )
+        self.assertEqual(logout_resp.status_code, 503)
+        self.assertEqual(logout_resp.json()["detail"], "Oturum servisine ulaşılamıyor")
+
+    def test_logout_returns_503_when_redis_raises_during_session_revoke(self):
+        login_resp = self._student_login()
+        self.assertEqual(login_resp.status_code, 200)
+        csrf_value = self.client.cookies.get("agentgrade_csrf")
+        self.assertIsNotNone(csrf_value)
+
+        with patch.object(
+            self._session_store,
+            "revoke_session",
+            new_callable=AsyncMock,
+            side_effect=ConnectionError("redis down"),
+        ):
+            logout_resp = self.client.post(
+                "/api/auth/logout",
+                headers={"X-CSRF-Token": csrf_value},
+            )
+        self.assertEqual(logout_resp.status_code, 503)
+        self.assertEqual(logout_resp.json()["detail"], "Oturum servisine ulaşılamıyor")
+
+        me_resp = self.client.get("/api/auth/me")
+        self.assertEqual(me_resp.status_code, 200)
+
+    def test_logout_does_not_clear_cookies_on_503(self):
+        login_resp = self._student_login()
+        self.assertEqual(login_resp.status_code, 200)
+        csrf_value = self.client.cookies.get("agentgrade_csrf")
+        self.assertIsNotNone(csrf_value)
+
+        with patch.object(
+            self._session_store,
+            "read_session",
+            new_callable=AsyncMock,
+            side_effect=ConnectionError("redis down"),
+        ):
+            logout_resp = self.client.post(
+                "/api/auth/logout",
+                headers={"X-CSRF-Token": csrf_value},
+            )
+        self.assertEqual(logout_resp.status_code, 503)
+        headers = _set_cookie_headers(logout_resp)
+        self.assertIsNone(_cookie_header_for(headers, "agentgrade_session"))
+        self.assertIsNone(_cookie_header_for(headers, "agentgrade_csrf"))
+
+        me_resp = self.client.get("/api/auth/me")
+        self.assertEqual(me_resp.status_code, 200)

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import hmac
 
 from fastapi import Depends, HTTPException, Request, Response
@@ -15,15 +16,20 @@ CSRF_HEADER = "X-CSRF-Token"
 SAFE_METHODS = {"GET", "HEAD", "OPTIONS"}
 
 _SESSION_MAX_AGE = 28800
+_session_store_lock = asyncio.Lock()
 
 
 async def get_auth_session_store(request: Request) -> SessionStore:
     store = getattr(request.app.state, "auth_session_store", None)
-    if store is None:
-        redis = create_redis_client(settings.redis_url)
-        store = SessionStore(redis, ttl_seconds=settings.auth_session_ttl_seconds)
-        request.app.state.auth_session_store = store
-    return store
+    if store is not None:
+        return store
+    async with _session_store_lock:
+        store = getattr(request.app.state, "auth_session_store", None)
+        if store is None:
+            redis = create_redis_client(settings.redis_url)
+            store = SessionStore(redis, ttl_seconds=settings.auth_session_ttl_seconds)
+            request.app.state.auth_session_store = store
+        return store
 
 
 async def require_authenticated(
