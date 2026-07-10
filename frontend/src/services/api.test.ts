@@ -210,6 +210,9 @@ describe("fetchHealth", () => {
   test("returns llm and sandbox snapshots from /api/health", async () => {
     const payload = {
       status: "ok",
+      analysis_ready: true,
+      worker_count: 1,
+      ready_worker_count: 1,
       llm: { enabled: true, general_model: "llama3", coder_model: "qwen2.5-coder" },
       sandbox: { mode: "pool", pool_ready: true, container_count: 3, available_count: 2 },
     };
@@ -225,6 +228,8 @@ describe("fetchHealth", () => {
     expect(health?.llm?.general_model).toBe("llama3");
     expect(health?.sandbox?.mode).toBe("pool");
     expect(health?.sandbox?.available_count).toBe(2);
+    expect(health?.analysis_ready).toBe(true);
+    expect(health?.worker_count).toBe(1);
   });
 
   test("returns null when health endpoint is unavailable", async () => {

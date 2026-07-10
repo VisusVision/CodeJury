@@ -20,17 +20,18 @@ export function formatRuntimeHealthLabel(health: ApiHealthResponse | null): Runt
     ? `${llm?.general_model ?? "?"} / ${llm?.coder_model ?? "?"}`
     : "off";
 
-  let sandboxText = sandbox?.mode ?? "simulation";
-  if (sandbox?.pool_ready && typeof sandbox.available_count === "number" && typeof sandbox.container_count === "number") {
-    sandboxText = `${sandboxText} (${sandbox.available_count}/${sandbox.container_count})`;
-  }
+  const analysisReady = health.analysis_ready === true;
+  const workerCount = health.worker_count ?? 0;
+  const readyWorkerCount = health.ready_worker_count ?? 0;
+
+  const sandboxText = analysisReady
+    ? `${sandbox?.mode ?? "pool"} (${sandbox?.available_count ?? 0}/${sandbox?.container_count ?? 0}), workers ${readyWorkerCount}/${workerCount}`
+    : "unavailable";
 
   const status: RuntimeHealthStatus =
-    health.status !== "ok" || !llmEnabled
+    !llmEnabled || !analysisReady || readyWorkerCount < workerCount
       ? "degraded"
-      : sandbox?.mode === "pool" && !sandbox.pool_ready
-        ? "degraded"
-        : "ok";
+      : "ok";
 
   return { status, llmText, sandboxText };
 }

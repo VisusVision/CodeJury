@@ -467,7 +467,10 @@ export async function analyzeCode(
 }
 
 export interface ApiHealthResponse {
-  status: string;
+  status: "ok" | "degraded" | string;
+  analysis_ready?: boolean;
+  worker_count?: number;
+  ready_worker_count?: number;
   version?: string;
   analysis_engine?: string;
   demo_mode?: boolean;
@@ -479,10 +482,12 @@ export interface ApiHealthResponse {
     base_url?: string;
   };
   sandbox?: {
-    mode?: string;
+    mode?: "pool" | "unavailable" | string;
+    state?: string;
     pool_ready?: boolean;
     container_count?: number;
     available_count?: number;
+    target_size?: number;
   };
 }
 
