@@ -87,6 +87,15 @@ class SandboxPool:
             self._last_error_code = error_code
             self._state_condition.notify_all()
 
+    def _recompute_state(self, *, error_code: str | None = None) -> None:
+        count = len(self._slots)
+        if count == 0:
+            self._set_state(PoolState.UNAVAILABLE, error_code=error_code or "no_healthy_containers")
+        elif count == self.pool_size:
+            self._set_state(PoolState.READY)
+        else:
+            self._set_state(PoolState.DEGRADED, error_code=error_code)
+
     def wait_until_ready(self, timeout_s: float) -> bool:
         deadline = time.monotonic() + max(0.0, timeout_s)
         with self._state_condition:
@@ -172,12 +181,7 @@ class SandboxPool:
             f"(port {self.base_port}-{self.base_port + self.pool_size - 1})"
         )
 
-        if len(self._slots) == 0:
-            self._set_state(PoolState.UNAVAILABLE, error_code="no_healthy_containers")
-        elif len(self._slots) == self.pool_size:
-            self._set_state(PoolState.READY)
-        else:
-            self._set_state(PoolState.DEGRADED)
+        self._recompute_state()
 
     def _cleanup_existing(self) -> None:
         """Remove leftover containers from a previous run."""
@@ -218,7 +222,15 @@ class SandboxPool:
         )
 
         url = f"http://127.0.0.1:{port}"
-        self._wait_healthy(url, timeout=45.0)
+        try:
+            self._wait_healthy(url, timeout=45.0)
+        except Exception:
+            try:
+                container.stop(timeout=2)
+                container.remove(force=True)
+            except Exception:
+                pass
+            raise
         _log(f"Container hazir -> {url}")
         return ContainerSlot(container=container, url=url, port=port)
 
@@ -283,9 +295,13 @@ class SandboxPool:
                 if idx is not None:
                     self._slots[idx] = new_slot
             self._available.put(new_slot)
+            self._recompute_state()
             _log(f"Container yenilendi: {new_slot.url}")
         except Exception as e:
             _log(f"Container yenilenemedi (port {old_slot.port}): {e}")
+            with self._lock:
+                self._slots[:] = [s for s in self._slots if s.port != old_slot.port]
+            self._recompute_state(error_code="container_replace_failed")
 
     def _is_healthy(self, slot: ContainerSlot) -> bool:
         try:
