@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import re
+from dataclasses import dataclass
 from typing import Any
 
 STUDENT_TOP_LEVEL_KEYS = frozenset({
@@ -46,6 +48,12 @@ GENERIC_HIDDEN_FAILURE_MESSAGE = "Hidden test basarisiz."
 GENERIC_REDACTED_TEXT = "İçerik gizli test verisi barındırdığı için kaldırıldı."
 
 
+@dataclass(frozen=True)
+class HiddenFragments:
+    strings: list[str]
+    numbers: list[str]
+
+
 def project_student_result(private_result: dict[str, Any]) -> dict[str, Any]:
     """Build a student-safe allowlisted projection of a private analysis result.
 
@@ -70,13 +78,13 @@ def project_student_result(private_result: dict[str, Any]) -> dict[str, Any]:
     return _restore_synthetic_hidden_test_fields(redacted, projected_agents)
 
 
-def _sanitize_text(value: str, hidden_fragments: list[str]) -> str:
+def _sanitize_text(value: str, hidden_fragments: HiddenFragments) -> str:
     if _message_leaks_hidden_data(value, hidden_fragments):
         return GENERIC_REDACTED_TEXT
     return value
 
 
-def _sanitize_string_list(items: Any, hidden_fragments: list[str]) -> list[str]:
+def _sanitize_string_list(items: Any, hidden_fragments: HiddenFragments) -> list[str]:
     if not isinstance(items, list):
         return []
     return [
@@ -86,7 +94,7 @@ def _sanitize_string_list(items: Any, hidden_fragments: list[str]) -> list[str]:
     ]
 
 
-def _value_contains_leak(value: Any, hidden_fragments: list[str]) -> bool:
+def _value_contains_leak(value: Any, hidden_fragments: HiddenFragments) -> bool:
     """Recursively check whether ANY string leaf inside value (dict/list/str, any depth) leaks."""
     if isinstance(value, str):
         return _message_leaks_hidden_data(value, hidden_fragments)
@@ -101,7 +109,7 @@ def _value_contains_leak(value: Any, hidden_fragments: list[str]) -> bool:
     return False
 
 
-def _deep_redact(value: Any, hidden_fragments: list[str]) -> Any:
+def _deep_redact(value: Any, hidden_fragments: HiddenFragments) -> Any:
     """Recursively replace any leaking string leaf with GENERIC_REDACTED_TEXT."""
     if isinstance(value, str):
         return _sanitize_text(value, hidden_fragments)
@@ -118,7 +126,7 @@ def _deep_redact(value: Any, hidden_fragments: list[str]) -> Any:
     return value
 
 
-def _deep_sanitize_list(items: Any, hidden_fragments: list[str]) -> list[Any]:
+def _deep_sanitize_list(items: Any, hidden_fragments: HiddenFragments) -> list[Any]:
     """Drop list items that leak hidden data at any depth."""
     if not isinstance(items, list):
         return []
@@ -128,7 +136,7 @@ def _deep_sanitize_list(items: Any, hidden_fragments: list[str]) -> list[Any]:
 def _sanitize_top_level_value(
     key: str,
     value: Any,
-    hidden_fragments: list[str],
+    hidden_fragments: HiddenFragments,
 ) -> Any:
     if isinstance(value, str):
         return _sanitize_text(value, hidden_fragments)
@@ -141,8 +149,9 @@ def _sanitize_top_level_value(
     return value
 
 
-def _collect_hidden_private_fragments(private_result: dict[str, Any]) -> list[str]:
-    fragments: list[str] = []
+def _collect_hidden_private_fragments(private_result: dict[str, Any]) -> HiddenFragments:
+    string_fragments: list[str] = []
+    numeric_fragments: list[str] = []
     for agent in private_result.get("agents", []) or []:
         if not isinstance(agent, dict) or agent.get("id") != "testing":
             continue
@@ -157,8 +166,8 @@ def _collect_hidden_private_fragments(private_result: dict[str, Any]) -> list[st
                     and _is_safe_hidden_metadata_value(field_key, field_value)
                 ):
                     continue
-                _collect_string_leaves(field_value, fragments)
-    return fragments
+                _collect_hidden_leaves(field_value, string_fragments, numeric_fragments)
+    return HiddenFragments(strings=string_fragments, numbers=numeric_fragments)
 
 
 def _is_safe_hidden_metadata_value(field_key: str, field_value: Any) -> bool:
@@ -179,41 +188,62 @@ def _is_safe_hidden_metadata_value(field_key: str, field_value: Any) -> bool:
     return False
 
 
-def _collect_string_leaves(value: Any, out: list[str]) -> None:
-    """Recursively collect every non-empty string leaf inside value (dict values / list items,
-    any depth). Used to build the exhaustive hidden-fragment set from a hidden test case's
-    fields whose names are NOT in SAFE_HIDDEN_METADATA_KEYS, so unknown/future field names are
-    covered automatically instead of relying on a fixed allowlist of known field names."""
+def _is_numeric_leaf(value: Any) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
+def _collect_hidden_leaves(
+    value: Any,
+    string_out: list[str],
+    numeric_out: list[str],
+) -> None:
+    """Recursively collect string and numeric leaves from hidden test case fields."""
     if isinstance(value, str):
         text = value.strip()
         if text:
-            out.append(text)
+            string_out.append(text)
+        return
+    if _is_numeric_leaf(value):
+        numeric_out.append(str(value))
         return
     if isinstance(value, dict):
         for k, v in value.items():
             if isinstance(k, str):
                 key_text = k.strip()
                 if key_text:
-                    out.append(key_text)
-            _collect_string_leaves(v, out)
+                    string_out.append(key_text)
+            elif _is_numeric_leaf(k):
+                numeric_out.append(str(k))
+            _collect_hidden_leaves(v, string_out, numeric_out)
         return
     if isinstance(value, list):
         for item in value:
-            _collect_string_leaves(item, out)
+            _collect_hidden_leaves(item, string_out, numeric_out)
 
 
-def _message_leaks_hidden_data(message: str, hidden_fragments: list[str]) -> bool:
+def _message_contains_numeric_token(message: str, numeric_fragment: str) -> bool:
+    """True only if numeric_fragment appears as a complete, standalone numeric token."""
+    if not numeric_fragment:
+        return False
+    pattern = r"(?<![0-9.])" + re.escape(numeric_fragment) + r"(?![0-9.])"
+    return re.search(pattern, message) is not None
+
+
+def _message_leaks_hidden_data(message: str, hidden_fragments: HiddenFragments) -> bool:
     if not message:
         return False
-    for fragment in hidden_fragments:
+    for fragment in hidden_fragments.strings:
         if fragment and fragment in message:
+            return True
+    for fragment in hidden_fragments.numbers:
+        if _message_contains_numeric_token(message, fragment):
             return True
     return False
 
 
 def _project_agents(
     agents: Any,
-    hidden_private_fragments: list[str],
+    hidden_private_fragments: HiddenFragments,
 ) -> list[dict[str, Any]]:
     if not isinstance(agents, list):
         return []
@@ -252,7 +282,7 @@ def _project_agents(
 
 def _project_non_testing_findings(
     findings: Any,
-    hidden_private_fragments: list[str],
+    hidden_private_fragments: HiddenFragments,
 ) -> list[dict[str, Any]]:
     if not isinstance(findings, list):
         return []
@@ -270,7 +300,7 @@ def _project_non_testing_findings(
 
 def _project_testing_findings(
     findings: Any,
-    hidden_private_fragments: list[str],
+    hidden_private_fragments: HiddenFragments,
     projected_test_results: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
     projected: list[dict[str, Any]] = []
