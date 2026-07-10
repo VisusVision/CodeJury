@@ -18,6 +18,29 @@ class UserLockUnavailable(Exception):
     """Raised when a per-user auth lock cannot be acquired (Redis failure or contention exhausted)."""
 
 
+class LockLost(UserLockUnavailable):
+    """Raised when a held per-user lock lease is lost before the guarded operation completes."""
+
+
+class UserLockHandle:
+    """Yielded by user_lock(). Callers MUST call check() immediately before any
+    security-critical persistence step (e.g. issuing a session, writing a password
+    hash, revoking sessions) so a lost lease aborts the operation instead of silently
+    continuing without exclusivity."""
+
+    def __init__(self) -> None:
+        self._lost = asyncio.Event()
+
+    def mark_lost(self) -> None:
+        self._lost.set()
+
+    def check(self) -> None:
+        if self._lost.is_set():
+            raise LockLost(
+                "per-user lock lease was lost before this operation completed; aborting fail-closed"
+            )
+
+
 _USER_LOCK_PREFIX = "auth:userlock:"
 
 _RELEASE_LOCK_SCRIPT = """
@@ -86,12 +109,17 @@ async def _renew_user_lock_periodically(
     token: str,
     ttl_seconds: int,
     interval_seconds: float,
+    handle: UserLockHandle,
 ) -> None:
     while True:
         await asyncio.sleep(interval_seconds)
         try:
-            await redis.eval(_EXTEND_LOCK_SCRIPT, 1, key, token, ttl_seconds)
+            renewed = await redis.eval(_EXTEND_LOCK_SCRIPT, 1, key, token, ttl_seconds)
         except Exception:
+            handle.mark_lost()
+            return
+        if not renewed:
+            handle.mark_lost()
             return
 
 
@@ -99,12 +127,15 @@ async def _renew_user_lock_periodically(
 async def user_lock(redis, role: str, user_id: str, *, ttl_seconds: int = 10):
     token = await acquire_user_lock(redis, role, user_id, ttl_seconds=ttl_seconds)
     key = _user_lock_key(role, user_id)
+    handle = UserLockHandle()
     renew_interval = max(ttl_seconds / 3, 0.01)
     renew_task = asyncio.create_task(
-        _renew_user_lock_periodically(redis, key, token, ttl_seconds, renew_interval)
+        _renew_user_lock_periodically(
+            redis, key, token, ttl_seconds, renew_interval, handle
+        )
     )
     try:
-        yield
+        yield handle
     finally:
         renew_task.cancel()
         try:

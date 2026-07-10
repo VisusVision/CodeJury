@@ -14,7 +14,9 @@ from unittest.mock import AsyncMock, patch
 from fastapi.testclient import TestClient
 
 from backend.auth.dependencies import CSRF_HEADER, get_auth_session_store
-from backend.auth.sessions import SessionStore, acquire_user_lock, release_user_lock
+from contextlib import asynccontextmanager
+
+from backend.auth.sessions import SessionStore, acquire_user_lock, release_user_lock, user_lock
 from frontend.backend import main
 
 _DEMO_TEACHER_ID = "11111111-1111-4111-8111-111111111111"
@@ -717,6 +719,35 @@ class TeacherAuthorizationTests(unittest.TestCase):
 
         me_pre_change = client_pre_change.get("/api/auth/me")
         self.assertEqual(me_pre_change.status_code, 401)
+
+    def test_password_change_returns_503_and_leaves_password_unchanged_when_lock_lease_lost(self):
+        """Fail-closed: lost per-user lock lease must abort before session revoke / password write."""
+        csrf_a = self._login_teacher(self.client_a)
+        original_hash = main._DEMO_STORE["teachers"][0]["password_hash"]
+        new_password = "yeniparola1"
+
+        @asynccontextmanager
+        async def user_lock_with_immediate_lease_loss(redis, role, user_id, *, ttl_seconds=10):
+            async with user_lock(redis, role, user_id, ttl_seconds=ttl_seconds) as lock:
+                lock.mark_lost()
+                yield lock
+
+        with patch("frontend.backend.main.user_lock", user_lock_with_immediate_lease_loss):
+            resp = self.client_a.patch(
+                f"/api/teacher/{_DEMO_TEACHER_ID}/password",
+                json={"current_password": _DEMO_TEACHER_PASSWORD, "new_password": new_password},
+                headers=self._csrf_headers(csrf_a),
+            )
+        self.assertEqual(resp.status_code, 503)
+        self.assertEqual(resp.json()["detail"], "Oturum servisine ulaşılamıyor")
+        self.assertEqual(main._DEMO_STORE["teachers"][0]["password_hash"], original_hash)
+
+        new_login = TestClient(main.app)
+        new_login_resp = new_login.post(
+            "/api/teacher/login",
+            json={"email": _DEMO_TEACHER_EMAIL, "password": new_password},
+        )
+        self.assertEqual(new_login_resp.status_code, 401)
 
     def test_password_change_returns_503_and_leaves_password_unchanged_when_revoke_fails(self):
         csrf_a = self._login_teacher(self.client_a)
