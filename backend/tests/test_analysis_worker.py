@@ -3,9 +3,14 @@ import unittest
 from unittest.mock import AsyncMock, patch
 
 from backend.agents.base import LLMInferenceError
-from backend.queue.analysis_jobs import AnalysisJobStore, create_analysis_job, get_analysis_job
+from backend.queue.analysis_jobs import (
+    AnalysisJobOwner,
+    AnalysisJobStore,
+    create_analysis_job,
+    get_analysis_job,
+)
 from backend.sandbox.errors import SandboxUnavailableError
-from backend.tests.test_analysis_jobs import FakeRedis
+from backend.tests.test_analysis_jobs import DEFAULT_OWNER, FakeRedis
 from backend.workers import analysis_worker
 from backend.workers.analysis_worker import process_analysis_job
 
@@ -32,6 +37,7 @@ class AnalysisWorkerTests(unittest.IsolatedAsyncioTestCase):
                 "faculty_rubric_criteria": [{"name": "Correctness", "max_score": 100}],
                 "report_language": "tr",
             },
+            owner=DEFAULT_OWNER,
         )
         calls = []
 
@@ -43,7 +49,8 @@ class AnalysisWorkerTests(unittest.IsolatedAsyncioTestCase):
 
         job = await get_analysis_job(self.store, "job-123")
         self.assertEqual(job["status"], "completed")
-        self.assertEqual(job["result"], {"totalScore": 91})
+        self.assertEqual(job["private_result"], {"totalScore": 91})
+        self.assertIsInstance(job["student_result"], dict)
         self.assertEqual(job["report_status"], "ready")
         self.assertEqual(calls[0]["file_name"], "main.py")
         self.assertEqual(calls[0]["assignment_brief"], "Write a Python program.")
@@ -56,6 +63,7 @@ class AnalysisWorkerTests(unittest.IsolatedAsyncioTestCase):
                 "file_content": "print('ok')",
                 "report_language": "tr",
             },
+            owner=DEFAULT_OWNER,
         )
 
         async def pipeline(**kwargs):
@@ -64,17 +72,21 @@ class AnalysisWorkerTests(unittest.IsolatedAsyncioTestCase):
             preview_job = await get_analysis_job(self.store, "job-123")
             self.assertEqual(preview_job["status"], "running")
             self.assertEqual(preview_job["report_status"], "preparing")
-            self.assertEqual(preview_job["result"]["totalScore"], 61)
+            self.assertEqual(preview_job["private_result"]["totalScore"], 61)
             return {"totalScore": 84, "reportStatus": "ready"}
 
         job = await process_analysis_job(self.store, "job-123", pipeline=pipeline)
 
         self.assertEqual(job["status"], "completed")
         self.assertEqual(job["report_status"], "ready")
-        self.assertEqual(job["result"]["totalScore"], 84)
+        self.assertEqual(job["private_result"]["totalScore"], 84)
 
     async def test_process_analysis_job_marks_failed_when_pipeline_raises(self):
-        await create_analysis_job(self.store, {"file_name": "main.py", "file_content": "bad"})
+        await create_analysis_job(
+            self.store,
+            {"file_name": "main.py", "file_content": "bad"},
+            owner=DEFAULT_OWNER,
+        )
 
         async def pipeline(**kwargs):
             raise RuntimeError("boom")
@@ -87,7 +99,11 @@ class AnalysisWorkerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(job["error"], "Analiz tamamlanamadi. Lutfen tekrar deneyin.")
 
     async def test_process_analysis_job_returns_actionable_message_when_llm_unavailable(self):
-        await create_analysis_job(self.store, {"file_name": "main.py", "file_content": "print('ok')"})
+        await create_analysis_job(
+            self.store,
+            {"file_name": "main.py", "file_content": "print('ok')"},
+            owner=DEFAULT_OWNER,
+        )
 
         async def pipeline(**kwargs):
             raise LLMInferenceError("[code_quality] Ollama is disabled (ollama_enabled=false); LLM is required.")
@@ -125,7 +141,11 @@ class AnalysisWorkerTests(unittest.IsolatedAsyncioTestCase):
         reload_mock.assert_not_called()
 
     async def test_process_analysis_job_marks_failed_when_pipeline_times_out(self):
-        await create_analysis_job(self.store, {"file_name": "main.py", "file_content": "slow"})
+        await create_analysis_job(
+            self.store,
+            {"file_name": "main.py", "file_content": "slow"},
+            owner=DEFAULT_OWNER,
+        )
 
         async def pipeline(**kwargs):
             await asyncio.sleep(0.2)
@@ -140,7 +160,11 @@ class AnalysisWorkerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(job["error"], analysis_worker.PIPELINE_TIMEOUT_ERROR)
 
     async def test_process_job_returns_sandbox_message_for_infrastructure_failure(self):
-        await create_analysis_job(self.store, {"file_name": "main.py", "file_content": "print(1)"})
+        await create_analysis_job(
+            self.store,
+            {"file_name": "main.py", "file_content": "print(1)"},
+            owner=DEFAULT_OWNER,
+        )
 
         async def pipeline(**kwargs):
             raise SandboxUnavailableError(

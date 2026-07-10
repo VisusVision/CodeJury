@@ -65,6 +65,7 @@ from backend.auth.policies import enforce_teacher_owner
 from backend.auth.sessions import hash_token
 from backend.queue.analysis_jobs import (
     AnalysisJobNotFound,
+    AnalysisJobOwner,
     AnalysisJobStore,
     create_analysis_job,
     create_redis_client,
@@ -5097,7 +5098,36 @@ async def _require_analysis_ready(store: AnalysisJobStore) -> dict[str, Any]:
     return readiness
 
 
-async def _enqueue_analysis_request(req: AnalysisRequest) -> dict[str, Any]:
+async def _enqueue_analysis_request(req: AnalysisRequest, principal: AuthPrincipal) -> dict[str, Any]:
+    profile = await _resolve_student_profile(principal)
+    if profile is None:
+        raise HTTPException(status_code=404, detail="Ogrenci bulunamadi")
+
+    assignment_owner_teacher_id: str | None = None
+    if req.assignment_id:
+        if not await _student_can_access_assignment(principal, req.assignment_id):
+            raise HTTPException(status_code=404, detail="Odev bulunamadi")
+        if _DEMO_MODE:
+            assignment = next(
+                (a for a in _DEMO_STORE["assignments"] if str(a["id"]) == str(req.assignment_id).strip()),
+                None,
+            )
+            if assignment is not None:
+                assignment_owner_teacher_id = assignment.get("created_by")
+        else:
+            pool = await _get_db_pool()
+            row = await pool.fetchrow(
+                """
+                SELECT created_by
+                FROM public.assignments
+                WHERE id = $1::uuid
+                LIMIT 1
+                """,
+                _parse_assignment_uuid_param(req.assignment_id),
+            )
+            if row is not None and row["created_by"] is not None:
+                assignment_owner_teacher_id = str(row["created_by"])
+
     store = await _get_analysis_job_store()
     await _require_analysis_ready(store)
     brief = await _fetch_assignment_brief_for_pipeline(req.assignment_id)
@@ -5107,6 +5137,13 @@ async def _enqueue_analysis_request(req: AnalysisRequest) -> dict[str, Any]:
         if req.test_cases is None
         else req.test_cases
     )
+    owner = AnalysisJobOwner(
+        owner_user_id=principal.user_id,
+        owner_role="student",
+        student_id=principal.user_id,
+        assignment_id=req.assignment_id,
+        assignment_owner_teacher_id=assignment_owner_teacher_id,
+    )
     return await create_analysis_job(store, {
         "file_name": req.file_name,
         "file_content": req.file_content,
@@ -5115,14 +5152,17 @@ async def _enqueue_analysis_request(req: AnalysisRequest) -> dict[str, Any]:
         "faculty_rubric_criteria": faculty,
         "test_cases": saved_test_cases or [],
         "report_language": req.report_language or "tr",
-        "student_no": (req.student_no or "").strip(),
-    })
+        "student_no": (profile.get("student_no") or "").strip(),
+    }, owner=owner)
 
 
 @app.post("/api/analyze")
-async def analyze_code(req: AnalysisRequest):
+async def analyze_code(req: AnalysisRequest, principal: AuthPrincipal = Depends(require_student)):
     try:
-        student_no = (req.student_no or "").strip()
+        profile = await _resolve_student_profile(principal)
+        if profile is None:
+            raise HTTPException(status_code=404, detail="Ogrenci bulunamadi")
+        student_no = (profile.get("student_no") or "").strip()
         if student_no:
           if _DEMO_MODE:
               pending = next((item for item in _DEMO_STORE["evaluations"] if item["student_no"] == student_no and item.get("status") == "pending"), None)
@@ -5140,7 +5180,7 @@ async def analyze_code(req: AnalysisRequest):
                   )
                   if pending is not None:
                       raise HTTPException(status_code=409, detail="Önce açık değerlendirmeyi tamamlayın")
-        return await _enqueue_analysis_request(req)
+        return await _enqueue_analysis_request(req, principal)
     except HTTPException:
         raise
     except Exception as e:
@@ -5152,7 +5192,7 @@ async def analyze_code(req: AnalysisRequest):
 
 
 @app.get("/api/analyze/jobs/{job_id}")
-async def get_analysis_job_status(job_id: str):
+async def get_analysis_job_status(job_id: str, principal: AuthPrincipal = Depends(require_authenticated)):
     try:
         store = await _get_analysis_job_store()
         job = await get_analysis_job(store, job_id)
@@ -5165,7 +5205,25 @@ async def get_analysis_job_status(job_id: str):
             detail="Analiz kuyruğuna ulaşılamadı. Redis çalışıyor mu?",
         ) from exc
 
-    return {key: value for key, value in job.items() if key != "request"}
+    if principal.role == "student" and job.get("owner_user_id") and job.get("owner_user_id") == principal.user_id:
+        selected_result = job.get("student_result")
+    elif principal.role == "teacher" and job.get("assignment_owner_teacher_id") and job.get("assignment_owner_teacher_id") == principal.user_id:
+        selected_result = job.get("private_result")
+    else:
+        raise HTTPException(status_code=404, detail="Analiz işi bulunamadı")
+
+    response = {
+        key: value
+        for key, value in job.items()
+        if key not in {
+            "request", "private_result", "student_result",
+            "owner_user_id", "owner_role", "student_id",
+            "assignment_id", "assignment_owner_teacher_id",
+        }
+    }
+    if selected_result is not None:
+        response["result"] = selected_result
+    return response
 
 
 @app.post("/api/student/login")
@@ -7937,11 +7995,11 @@ async def list_upload_history(
 
 
 @app.post("/api/upload")
-async def upload_file(file: UploadFile = File(...)):
+async def upload_file(file: UploadFile = File(...), principal: AuthPrincipal = Depends(require_student)):
     content = await file.read()
     try:
         text_content = content.decode("utf-8")
     except UnicodeDecodeError:
         raise HTTPException(status_code=400, detail="Dosya metin olarak okunamadi.")
     req = AnalysisRequest(file_name=file.filename or "unknown.py", file_content=text_content)
-    return await _enqueue_analysis_request(req)
+    return await _enqueue_analysis_request(req, principal)

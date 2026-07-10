@@ -2,8 +2,11 @@ from __future__ import annotations
 
 import json
 import uuid
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Awaitable, Callable, Protocol
+
+from backend.reporting.student_projection import project_student_result
 
 
 class RedisLike(Protocol):
@@ -18,6 +21,15 @@ class RedisLike(Protocol):
 
 class AnalysisJobNotFound(Exception):
     """Raised when a requested analysis job does not exist."""
+
+
+@dataclass(frozen=True, slots=True)
+class AnalysisJobOwner:
+    owner_user_id: str
+    owner_role: str
+    student_id: str
+    assignment_id: str | None
+    assignment_owner_teacher_id: str | None
 
 
 def utc_now_iso() -> str:
@@ -45,6 +57,13 @@ def _loads_optional(raw: Any) -> Any:
     return json.loads(str(raw))
 
 
+def _decode_optional_owner_field(raw: Any) -> str | None:
+    decoded = _decode(raw)
+    if decoded in (None, ""):
+        return None
+    return str(decoded)
+
+
 class AnalysisJobStore:
     def __init__(
         self,
@@ -65,7 +84,12 @@ class AnalysisJobStore:
         return f"analysis_job:{job_id}"
 
 
-async def create_analysis_job(store: AnalysisJobStore, request: dict[str, Any]) -> dict[str, Any]:
+async def create_analysis_job(
+    store: AnalysisJobStore,
+    request: dict[str, Any],
+    *,
+    owner: AnalysisJobOwner,
+) -> dict[str, Any]:
     job_id = store.id_factory()
     now = store.clock()
     key = store.key(job_id)
@@ -78,6 +102,11 @@ async def create_analysis_job(store: AnalysisJobStore, request: dict[str, Any]) 
             "created_at": now,
             "updated_at": now,
             "attempts": 0,
+            "owner_user_id": owner.owner_user_id,
+            "owner_role": owner.owner_role,
+            "student_id": owner.student_id,
+            "assignment_id": owner.assignment_id or "",
+            "assignment_owner_teacher_id": owner.assignment_owner_teacher_id or "",
         },
     )
     await store.redis.expire(key, store.job_ttl_seconds)
@@ -104,9 +133,13 @@ async def get_analysis_job(store: AnalysisJobStore, job_id: str) -> dict[str, An
     request = _loads_optional(decoded.get("request"))
     if request is not None:
         job["request"] = request
-    result = _loads_optional(decoded.get("result"))
-    if result is not None:
-        job["result"] = result
+    for field in ("owner_user_id", "owner_role", "student_id", "assignment_id", "assignment_owner_teacher_id"):
+        if field in decoded:
+            job[field] = _decode_optional_owner_field(decoded.get(field))
+    for field in ("private_result", "student_result"):
+        value = _loads_optional(decoded.get(field))
+        if value is not None:
+            job[field] = value
     return job
 
 
@@ -131,26 +164,34 @@ async def mark_analysis_job_running(store: AnalysisJobStore, job_id: str) -> dic
 async def update_analysis_job_result(
     store: AnalysisJobStore,
     job_id: str,
-    result: dict[str, Any],
+    private_result: dict[str, Any],
     *,
     report_status: str = "preparing",
 ) -> dict[str, Any]:
+    student_result = project_student_result(private_result)
     now = store.clock()
     await store.redis.hset(
         store.key(job_id),
-        mapping={"result": _json_dumps(result), "report_status": report_status, "updated_at": now},
+        mapping={
+            "private_result": _json_dumps(private_result),
+            "student_result": _json_dumps(student_result),
+            "report_status": report_status,
+            "updated_at": now,
+        },
     )
     await store.redis.expire(store.key(job_id), store.job_ttl_seconds)
     return await get_analysis_job(store, job_id)
 
 
 async def mark_analysis_job_completed(store: AnalysisJobStore, job_id: str, result: dict[str, Any]) -> dict[str, Any]:
+    student_result = project_student_result(result)
     now = store.clock()
     await store.redis.hset(
         store.key(job_id),
         mapping={
             "status": "completed",
-            "result": _json_dumps(result),
+            "private_result": _json_dumps(result),
+            "student_result": _json_dumps(student_result),
             "finished_at": now,
             "updated_at": now,
             "report_status": "ready",
