@@ -7,7 +7,10 @@ import json
 import unittest
 from typing import Any
 
-from backend.reporting.student_projection import project_student_result
+from backend.reporting.student_projection import (
+    GENERIC_REDACTED_TEXT,
+    project_student_result,
+)
 
 # Distinct greppable sentinels for hidden-test private fields.
 SENTINEL_HIDDEN_NAME = "SENTINEL_HIDDEN_NAME_7f3a"
@@ -354,6 +357,147 @@ class StudentResultProjectionTests(unittest.TestCase):
             self.assertNotIn(sentinel, serialized)
         self.assertNotIn("resourceRecommendations", projected)
         self.assertEqual(projected["reportStatus"], "preparing")
+
+    def _private_with_hidden_fragments(self) -> dict[str, Any]:
+        """Private result whose hidden test cases define greppable fragments."""
+        return private_result_with_hidden_sentinels()
+
+    def test_top_level_summary_leaking_hidden_data_is_redacted(self) -> None:
+        private = self._private_with_hidden_fragments()
+        private["summary"] = f"Model summary includes {SENTINEL_HIDDEN_INPUT}"
+        projected = project_student_result(private)
+        self.assertNotIn(SENTINEL_HIDDEN_INPUT, projected["summary"])
+        self.assertEqual(projected["summary"], GENERIC_REDACTED_TEXT)
+
+    def test_top_level_strengths_weaknesses_recommendations_drop_leaking_items(
+        self,
+    ) -> None:
+        private = self._private_with_hidden_fragments()
+        clean = "Clean item preserved"
+        private["strengths"] = [f"Leaks {SENTINEL_HIDDEN_INPUT}", clean]
+        private["weaknesses"] = [f"Leaks {SENTINEL_HIDDEN_EXPECTED}", clean]
+        private["recommendations"] = [f"Leaks {SENTINEL_HIDDEN_ACTUAL}", clean]
+        projected = project_student_result(private)
+        self.assertEqual(projected["strengths"], [clean])
+        self.assertEqual(projected["weaknesses"], [clean])
+        self.assertEqual(projected["recommendations"], [clean])
+
+    def test_top_level_evidence_entries_leaking_hidden_data_are_dropped(self) -> None:
+        private = self._private_with_hidden_fragments()
+        clean_evidence = {"message": "clean evidence", "line": 1, "agent": "quality"}
+        leaking_evidence = {
+            "message": f"evidence includes {SENTINEL_HIDDEN_INPUT}",
+            "line": 2,
+            "agent": "testing",
+        }
+        private["evidence"] = [leaking_evidence, clean_evidence]
+        projected = project_student_result(private)
+        self.assertEqual(projected["evidence"], [clean_evidence])
+
+    def test_agent_summary_leaking_hidden_data_is_redacted_for_every_agent(
+        self,
+    ) -> None:
+        private = self._private_with_hidden_fragments()
+        for agent in private["agents"]:
+            agent["summary"] = f"{agent['id']} summary includes {SENTINEL_HIDDEN_INPUT}"
+        projected = project_student_result(private)
+        for agent in projected["agents"]:
+            self.assertNotIn(SENTINEL_HIDDEN_INPUT, agent["summary"])
+            self.assertEqual(agent["summary"], GENERIC_REDACTED_TEXT)
+
+    def test_non_testing_agent_finding_leaking_hidden_data_is_dropped(self) -> None:
+        private = self._private_with_hidden_fragments()
+        quality = next(a for a in private["agents"] if a["id"] == "quality")
+        quality["findings"] = [
+            {
+                "severity": "error",
+                "message": f"quality finding includes {SENTINEL_HIDDEN_INPUT}",
+                "line": 1,
+                "agent": "Kod Kalitesi Ajani",
+                "code": "E001",
+            },
+            {
+                "severity": "warning",
+                "message": "Unused variable on line 5",
+                "line": 5,
+                "agent": "Kod Kalitesi Ajani",
+                "code": "W001",
+            },
+        ]
+        projected = project_student_result(private)
+        quality_projected = next(a for a in projected["agents"] if a["id"] == "quality")
+        self.assertEqual(len(quality_projected["findings"]), 1)
+        self.assertEqual(quality_projected["findings"][0]["message"], "Unused variable on line 5")
+
+    def test_non_leaking_top_level_and_agent_text_is_preserved_unchanged(self) -> None:
+        private = self._private_with_hidden_fragments()
+        projected = project_student_result(private)
+        self.assertEqual(projected["summary"], "Orta duzey bir cozum.")
+        self.assertEqual(projected["strengths"], ["Temiz kod"])
+        self.assertEqual(projected["weaknesses"], ["Eksik edge case"])
+        self.assertEqual(projected["recommendations"], ["Daha fazla test yazin"])
+        self.assertEqual(projected["evidence"], [{"line": 1, "message": "sample evidence"}])
+        testing = _testing_agent(projected)
+        self.assertEqual(testing["summary"], "Derleme basarili, 1 test gecti, 1 basarisiz")
+        quality = next(a for a in projected["agents"] if a["id"] == "quality")
+        self.assertEqual(quality["summary"], "Skor: 70/100")
+
+    def test_adversarial_hidden_fragment_leak_reproduction_is_blocked(self) -> None:
+        """End-to-end regression for the reported vulnerability."""
+        secret = SENTINEL_HIDDEN_INPUT
+        private = {
+            "totalScore": 42,
+            "maxScore": 100,
+            "rubric": {},
+            "summary": f"Model summary includes {secret}",
+            "evidence": [{"message": f"evidence includes {secret}"}],
+            "agents": [
+                {
+                    "id": "testing",
+                    "name": "Test Ajani",
+                    "summary": f"testing summary includes {secret}",
+                    "score": 50,
+                    "maxScore": 100,
+                    "testResults": [
+                        {
+                            "name": SENTINEL_HIDDEN_NAME,
+                            "input": secret,
+                            "expected": SENTINEL_HIDDEN_EXPECTED,
+                            "actual": SENTINEL_HIDDEN_ACTUAL,
+                            "passed": False,
+                            "visibility": "hidden",
+                        },
+                    ],
+                    "findings": [],
+                },
+                {
+                    "id": "quality",
+                    "name": "Kod Kalitesi Ajani",
+                    "summary": f"quality summary includes {secret}",
+                    "score": 70,
+                    "maxScore": 100,
+                    "findings": [
+                        {
+                            "severity": "error",
+                            "message": f"quality finding includes {secret}",
+                        },
+                    ],
+                },
+            ],
+            "fileName": "solution.py",
+            "executionTimeMs": 100,
+            "memoryUsageMb": 1.0,
+            "peakMemoryMb": 1.0,
+            "analysisEngine": "agentgrade-v1",
+            "strengths": [],
+            "weaknesses": [],
+            "recommendations": [],
+            "taskAlignment": {},
+            "reportStatus": "ready",
+        }
+        out = project_student_result(private)
+        serialized = json.dumps(out, ensure_ascii=False)
+        self.assertNotIn(secret, serialized)
 
 
 if __name__ == "__main__":
