@@ -10,7 +10,13 @@ import pytest
 
 from backend.auth.dependencies import get_auth_session_store
 from backend.auth.models import AuthPrincipal
-from backend.auth.sessions import SessionStore, hash_token
+from backend.auth.sessions import (
+    SessionStore,
+    UserLockUnavailable,
+    acquire_user_lock,
+    hash_token,
+    release_user_lock,
+)
 from frontend.backend import main
 
 SESSION_TTL = 28800
@@ -22,10 +28,13 @@ class FakeSessionRedis:
         self.sets: dict[str, set[str]] = {}
         self.expirations: dict[str, int] = {}
 
-    async def set(self, key: str, value: str, ex: int | None = None) -> None:
+    async def set(self, key: str, value: str, ex: int | None = None, nx: bool = False) -> bool | None:
+        if nx and key in self.values:
+            return None
         self.values[key] = value
         if ex is not None:
             self.expirations[key] = ex
+        return True
 
     async def get(self, key: str) -> str | None:
         return self.values.get(key)
@@ -201,6 +210,63 @@ async def test_get_auth_session_store_creates_only_one_client_under_concurrent_c
     assert mock_create.call_count == 1
     assert stores[0] is stores[1] is stores[2]
     assert stores[0].redis is sentinel_redis
+
+
+@pytest.mark.asyncio
+async def test_acquire_and_release_user_lock_round_trip(redis: FakeSessionRedis) -> None:
+    token = await acquire_user_lock(redis, "teacher", "user-1")
+    assert token
+    assert redis.values["auth:userlock:teacher:user-1"] == token
+    await release_user_lock(redis, "teacher", "user-1", token)
+    assert "auth:userlock:teacher:user-1" not in redis.values
+
+
+@pytest.mark.asyncio
+async def test_second_acquire_fails_while_lock_is_held(redis: FakeSessionRedis) -> None:
+    token = await acquire_user_lock(redis, "student", "user-2", max_attempts=1)
+    with pytest.raises(UserLockUnavailable):
+        await acquire_user_lock(redis, "student", "user-2", max_attempts=1)
+    await release_user_lock(redis, "student", "user-2", token)
+
+
+@pytest.mark.asyncio
+async def test_release_only_succeeds_for_the_owning_token(redis: FakeSessionRedis) -> None:
+    token = await acquire_user_lock(redis, "teacher", "user-3")
+    await release_user_lock(redis, "teacher", "user-3", "wrong-token")
+    assert "auth:userlock:teacher:user-3" in redis.values
+    with pytest.raises(UserLockUnavailable):
+        await acquire_user_lock(redis, "teacher", "user-3", max_attempts=1)
+    await release_user_lock(redis, "teacher", "user-3", token)
+    new_token = await acquire_user_lock(redis, "teacher", "user-3", max_attempts=1)
+    await release_user_lock(redis, "teacher", "user-3", new_token)
+
+
+@pytest.mark.asyncio
+async def test_acquire_raises_user_lock_unavailable_when_redis_raises(
+    redis: FakeSessionRedis,
+) -> None:
+    async def failing_set(*_args, **_kwargs):
+        raise ConnectionError("redis down")
+
+    with patch.object(redis, "set", side_effect=failing_set):
+        with pytest.raises(UserLockUnavailable, match="redis error"):
+            await acquire_user_lock(redis, "teacher", "user-4", max_attempts=1)
+
+
+@pytest.mark.asyncio
+async def test_acquire_retries_and_eventually_raises_when_contention_never_clears(
+    redis: FakeSessionRedis,
+) -> None:
+    holder_token = await acquire_user_lock(redis, "teacher", "user-5")
+    with pytest.raises(UserLockUnavailable, match="contention exhausted"):
+        await acquire_user_lock(
+            redis,
+            "teacher",
+            "user-5",
+            max_attempts=3,
+            retry_delay_seconds=0.01,
+        )
+    await release_user_lock(redis, "teacher", "user-5", holder_token)
 
 
 @pytest.mark.asyncio

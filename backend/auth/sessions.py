@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import secrets
+from contextlib import asynccontextmanager
 from dataclasses import asdict
 from datetime import datetime, timezone
 from typing import Any, Awaitable, Protocol
@@ -10,6 +12,77 @@ from typing import Any, Awaitable, Protocol
 from backend.auth.models import AuthPrincipal, AuthRole, IssuedSession, SessionRecord
 
 _VALID_ROLES: frozenset[str] = frozenset({"student", "teacher"})
+
+
+class UserLockUnavailable(Exception):
+    """Raised when a per-user auth lock cannot be acquired (Redis failure or contention exhausted)."""
+
+
+_USER_LOCK_PREFIX = "auth:userlock:"
+
+
+def _user_lock_key(role: str, user_id: str) -> str:
+    return f"{_USER_LOCK_PREFIX}{role}:{user_id}"
+
+
+async def acquire_user_lock(
+    redis,
+    role: str,
+    user_id: str,
+    *,
+    ttl_seconds: int = 10,
+    max_attempts: int = 40,
+    retry_delay_seconds: float = 0.05,
+) -> str:
+    """Acquire a short-TTL per-user lock (SET NX EX pattern). Returns a unique owner token that
+    MUST be passed to release_user_lock to release it. Retries on contention up to max_attempts
+    with a short delay between attempts. Raises UserLockUnavailable if the Redis call itself fails,
+    or if contention is never resolved within max_attempts (fail closed in both cases — callers must
+    turn this into an HTTP 503, never proceed as if the lock were held)."""
+    key = _user_lock_key(role, user_id)
+    token = secrets.token_urlsafe(16)
+    for attempt in range(max_attempts):
+        try:
+            acquired = await redis.set(key, token, nx=True, ex=ttl_seconds)
+        except Exception as exc:
+            raise UserLockUnavailable(f"redis error acquiring lock for {role}:{user_id}") from exc
+        if acquired:
+            return token
+        if attempt < max_attempts - 1:
+            await asyncio.sleep(retry_delay_seconds)
+    raise UserLockUnavailable(f"lock contention exhausted for {role}:{user_id}")
+
+
+async def release_user_lock(redis, role: str, user_id: str, token: str) -> None:
+    """Release the lock ONLY if it is still owned by this exact token (best-effort atomic
+    check-then-delete: reads the current value and deletes only on an exact match, so a lock
+    that has already expired and been re-acquired by someone else is never accidentally released).
+    Swallows Redis errors here (best-effort on release; the TTL is the ultimate safety net if release
+    fails for any reason — do NOT raise from this function, callers rely on it being safe to await
+    unconditionally in a `finally` block)."""
+    key = _user_lock_key(role, user_id)
+    try:
+        current = await redis.get(key)
+    except Exception:
+        return
+    if current is None:
+        return
+    current_str = current.decode() if isinstance(current, bytes) else current
+    if current_str != token:
+        return
+    try:
+        await redis.delete(key)
+    except Exception:
+        pass
+
+
+@asynccontextmanager
+async def user_lock(redis, role: str, user_id: str, *, ttl_seconds: int = 10):
+    token = await acquire_user_lock(redis, role, user_id, ttl_seconds=ttl_seconds)
+    try:
+        yield
+    finally:
+        await release_user_lock(redis, role, user_id, token)
 
 
 class RedisLike(Protocol):

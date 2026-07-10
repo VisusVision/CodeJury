@@ -51,10 +51,13 @@ class _FakeSessionRedis:
         self.sets.clear()
         self.expirations.clear()
 
-    async def set(self, key: str, value: str, ex: int | None = None) -> None:
+    async def set(self, key: str, value: str, ex: int | None = None, nx: bool = False) -> bool | None:
+        if nx and key in self.values:
+            return None
         self.values[key] = value
         if ex is not None:
             self.expirations[key] = ex
+        return True
 
     async def get(self, key: str) -> str | None:
         return self.values.get(key)
