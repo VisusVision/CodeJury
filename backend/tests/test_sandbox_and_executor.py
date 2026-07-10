@@ -484,5 +484,69 @@ def test_cleanup_only_removes_current_owner_containers():
     )
 
 
+def test_create_slot_removes_leaked_container_when_health_check_fails():
+    pool = SandboxPool(image="test-image", pool_size=1, base_port=19000, owner_id="worker-a")
+    pool._client = MagicMock()
+    container = MagicMock()
+    pool._client.containers.run.return_value = container
+    with patch.object(pool, "_wait_healthy", side_effect=RuntimeError("health check timeout")):
+        try:
+            pool._create_slot(19000)
+            assert False, "expected RuntimeError"
+        except RuntimeError:
+            pass
+    container.stop.assert_called_once()
+    container.remove.assert_called_once_with(force=True)
+
+
+def test_replace_slot_marks_pool_degraded_when_recreate_fails():
+    pool = SandboxPool(image="test-image", pool_size=2, base_port=19000, owner_id="worker-a")
+    slot_a = ContainerSlot(container=MagicMock(), url="http://localhost:19000", port=19000)
+    slot_b = ContainerSlot(container=MagicMock(), url="http://localhost:19001", port=19001)
+    pool._slots.extend([slot_a, slot_b])
+    pool._available.put(slot_a)
+    pool._available.put(slot_b)
+    pool._set_state(PoolState.READY)
+
+    with patch.object(pool, "_create_slot", side_effect=RuntimeError("docker down")):
+        pool._replace_slot(slot_a)
+
+    snapshot = pool.snapshot()
+    assert snapshot["container_count"] == 1
+    assert snapshot["state"] == "degraded"
+    assert snapshot["pool_ready"] is True
+
+
+def test_replace_slot_marks_pool_unavailable_when_last_slot_fails():
+    pool = SandboxPool(image="test-image", pool_size=1, base_port=19000, owner_id="worker-a")
+    slot_a = ContainerSlot(container=MagicMock(), url="http://localhost:19000", port=19000)
+    pool._slots.append(slot_a)
+    pool._set_state(PoolState.READY)
+
+    with patch.object(pool, "_create_slot", side_effect=RuntimeError("docker down")):
+        pool._replace_slot(slot_a)
+
+    snapshot = pool.snapshot()
+    assert snapshot["container_count"] == 0
+    assert snapshot["state"] == "unavailable"
+    assert snapshot["pool_ready"] is False
+
+
+def test_replace_slot_succeeds_and_stays_ready():
+    pool = SandboxPool(image="test-image", pool_size=1, base_port=19000, owner_id="worker-a")
+    slot_a = ContainerSlot(container=MagicMock(), url="http://localhost:19000", port=19000)
+    pool._slots.append(slot_a)
+    pool._set_state(PoolState.READY)
+    new_slot = ContainerSlot(container=MagicMock(), url="http://localhost:19000", port=19000)
+
+    with patch.object(pool, "_create_slot", return_value=new_slot):
+        pool._replace_slot(slot_a)
+
+    snapshot = pool.snapshot()
+    assert snapshot["container_count"] == 1
+    assert snapshot["state"] == "ready"
+    assert snapshot["pool_ready"] is True
+
+
 if __name__ == "__main__":
     unittest.main()
