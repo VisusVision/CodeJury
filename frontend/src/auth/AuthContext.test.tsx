@@ -1,7 +1,15 @@
 import { render, renderHook, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import { toast } from "sonner";
 import { UNAUTHORIZED_EVENT } from "../services/http";
 import { AuthProvider, useAuth } from "./AuthContext";
+
+vi.mock("sonner", () => ({
+  toast: {
+    success: vi.fn(),
+    error: vi.fn(),
+  },
+}));
 
 function AuthHarness() {
   const auth = useAuth();
@@ -10,6 +18,7 @@ function AuthHarness() {
       <span data-testid="status">{auth.status}</span>
       <span data-testid="role">{auth.role ?? "none"}</span>
       <span data-testid="user">{auth.user ? JSON.stringify(auth.user) : "none"}</span>
+      <span data-testid="lastAuthError">{auth.lastAuthError ?? "none"}</span>
     </div>
   );
 }
@@ -20,6 +29,8 @@ describe("AuthProvider", () => {
   beforeEach(() => {
     fetchMock = vi.fn();
     vi.stubGlobal("fetch", fetchMock);
+    vi.mocked(toast.error).mockClear();
+    vi.mocked(toast.success).mockClear();
   });
 
   afterEach(() => {
@@ -225,6 +236,95 @@ describe("AuthProvider", () => {
 
   test("useAuth throws when used outside AuthProvider", () => {
     expect(() => renderHook(() => useAuth())).toThrow("useAuth must be used within an AuthProvider");
+  });
+
+  test("restoreSession surfaces the backend detail via toast when /api/auth/me returns 503", async () => {
+    fetchMock.mockResolvedValueOnce({
+      ok: false,
+      status: 503,
+      text: async () => JSON.stringify({ detail: "Redis unavailable" }),
+    });
+
+    render(
+      <AuthProvider>
+        <AuthHarness />
+      </AuthProvider>,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByTestId("status").textContent).toBe("anonymous");
+    });
+    expect(screen.getByTestId("lastAuthError").textContent).toBe("Redis unavailable");
+    expect(toast.error).toHaveBeenCalledWith("Redis unavailable");
+  });
+
+  test("restoreSession surfaces a message via toast when /api/auth/me throws a network error", async () => {
+    fetchMock.mockRejectedValueOnce(new Error("Failed to fetch"));
+
+    render(
+      <AuthProvider>
+        <AuthHarness />
+      </AuthProvider>,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByTestId("status").textContent).toBe("anonymous");
+    });
+    expect(screen.getByTestId("lastAuthError").textContent).toBe("Failed to fetch");
+    expect(toast.error).toHaveBeenCalledWith("Failed to fetch");
+  });
+
+  test("restoreSession does NOT show an error toast for a legitimate 401 (not logged in)", async () => {
+    fetchMock.mockResolvedValueOnce({
+      ok: false,
+      status: 401,
+    });
+
+    render(
+      <AuthProvider>
+        <AuthHarness />
+      </AuthProvider>,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByTestId("status").textContent).toBe("anonymous");
+    });
+    expect(screen.getByTestId("lastAuthError").textContent).toBe("none");
+    expect(toast.error).not.toHaveBeenCalled();
+  });
+
+  test("lastAuthError is cleared after a subsequent successful restore/login", async () => {
+    fetchMock
+      .mockResolvedValueOnce({
+        ok: false,
+        status: 503,
+        text: async () => JSON.stringify({ detail: "Redis unavailable" }),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: async () => ({
+          role: "student",
+          user: { student_no: "12345", first_name: "Ali" },
+        }),
+      });
+
+    const { result } = renderHook(() => useAuth(), {
+      wrapper: AuthProvider,
+    });
+
+    await waitFor(() => {
+      expect(result.current.status).toBe("anonymous");
+    });
+    expect(result.current.lastAuthError).toBe("Redis unavailable");
+
+    await result.current.refreshSession();
+
+    await waitFor(() => {
+      expect(result.current.status).toBe("authenticated");
+    });
+    expect(result.current.lastAuthError).toBeNull();
+    expect(toast.error).toHaveBeenCalledTimes(1);
   });
 
   test("clears auth state to anonymous when UNAUTHORIZED_EVENT fires, without a new /api/auth/me call", async () => {
