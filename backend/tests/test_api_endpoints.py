@@ -183,6 +183,7 @@ class ApiEndpointTests(unittest.TestCase):
         self.assertIn("worker_count", data)
 
     def test_upload_endpoint_enqueues_instead_of_running_pipeline(self):
+        csrf = self._login_student()
         with (
             patch.object(main, "_enqueue_analysis_request", new=AsyncMock(return_value={"job_id": "job-upload", "status": "queued"})),
             patch.object(main, "run_analysis_pipeline", new=AsyncMock()) as pipeline,
@@ -190,6 +191,7 @@ class ApiEndpointTests(unittest.TestCase):
             response = self.client.post(
                 "/api/upload",
                 files={"file": ("main.py", b"print('ok')", "text/x-python")},
+                headers=self._csrf_headers(csrf),
             )
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["job_id"], "job-upload")
@@ -491,9 +493,10 @@ class ApiEndpointTests(unittest.TestCase):
             }
         )
 
-        async def fake_create_analysis_job(_store, request):
+        async def fake_create_analysis_job(_store, request, *, owner=None):
             return {"job_id": "job-saved-tests", "status": "queued", "request": request}
 
+        csrf = self._login_student()
         store = MagicMock(redis=object())
         with (
             patch.object(main, "_get_analysis_job_store", new=AsyncMock(return_value=store)),
@@ -511,6 +514,7 @@ class ApiEndpointTests(unittest.TestCase):
                     "file_content": "print(int(input()) ** 2)\n",
                     "assignment_id": _DEMO_ASSIGNMENT_ID,
                 },
+                headers=self._csrf_headers(csrf),
             )
 
         self.assertEqual(resp.status_code, 200)
@@ -703,6 +707,7 @@ class ApiEndpointTests(unittest.TestCase):
 
     # ── Analyze (kuyruk patch'li) ────────────────────────────────────────────────
     def test_analyze_enqueues_job(self):
+        csrf = self._login_student()
         store = MagicMock(redis=object())
         with (
             patch.object(main, "_fetch_assignment_brief_for_pipeline", new=AsyncMock(return_value="brief")),
@@ -722,12 +727,18 @@ class ApiEndpointTests(unittest.TestCase):
                     "file_content": "print('ok')",
                     "assignment_id": _DEMO_ASSIGNMENT_ID,
                 },
+                headers=self._csrf_headers(csrf),
             )
         self.assertEqual(resp.status_code, 200)
         self.assertEqual(resp.json(), {"job_id": "job-1", "status": "queued"})
 
     def test_analyze_missing_content_returns_422(self):
-        resp = self.client.post("/api/analyze", json={"file_name": "main.py"})
+        csrf = self._login_student()
+        resp = self.client.post(
+            "/api/analyze",
+            json={"file_name": "main.py"},
+            headers=self._csrf_headers(csrf),
+        )
         self.assertEqual(resp.status_code, 422)
 
 
