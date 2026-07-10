@@ -54,6 +54,7 @@ HIDDEN_PRIVATE_FIELD_NAMES = (
 )
 
 GENERIC_HIDDEN_FAILURE_MESSAGE = "Hidden test basarisiz."
+GENERIC_REDACTED_TEXT = "İçerik gizli test verisi barındırdığı için kaldırıldı."
 
 
 def project_student_result(private_result: dict[str, Any]) -> dict[str, Any]:
@@ -75,8 +76,53 @@ def project_student_result(private_result: dict[str, Any]) -> dict[str, Any]:
         value = private_result[key]
         if value is None:
             continue
-        projected[key] = value
+        projected[key] = _sanitize_top_level_value(key, value, hidden_private_fragments)
     return projected
+
+
+def _sanitize_text(value: str, hidden_fragments: list[str]) -> str:
+    if _message_leaks_hidden_data(value, hidden_fragments):
+        return GENERIC_REDACTED_TEXT
+    return value
+
+
+def _sanitize_string_list(items: Any, hidden_fragments: list[str]) -> list[str]:
+    if not isinstance(items, list):
+        return []
+    return [
+        item
+        for item in items
+        if isinstance(item, str) and not _message_leaks_hidden_data(item, hidden_fragments)
+    ]
+
+
+def _sanitize_evidence_list(items: Any, hidden_fragments: list[str]) -> list[dict[str, Any]]:
+    if not isinstance(items, list):
+        return []
+    projected: list[dict[str, Any]] = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        message = str(item.get("message") or "")
+        if _message_leaks_hidden_data(message, hidden_fragments):
+            continue
+        projected.append(item)
+    return projected
+
+
+def _sanitize_top_level_value(
+    key: str,
+    value: Any,
+    hidden_fragments: list[str],
+) -> Any:
+    if isinstance(value, str):
+        return _sanitize_text(value, hidden_fragments)
+    if isinstance(value, list):
+        if key == "evidence":
+            return _sanitize_evidence_list(value, hidden_fragments)
+        if key in ("strengths", "weaknesses", "recommendations"):
+            return _sanitize_string_list(value, hidden_fragments)
+    return value
 
 
 def _collect_hidden_private_fragments(private_result: dict[str, Any]) -> list[str]:
@@ -123,7 +169,10 @@ def _project_agents(
         projected_agent: dict[str, Any] = {}
         for key in ("id", "name", "summary", "score", "maxScore"):
             if key in agent and agent[key] is not None:
-                projected_agent[key] = agent[key]
+                if key == "summary" and isinstance(agent[key], str):
+                    projected_agent[key] = _sanitize_text(agent[key], hidden_private_fragments)
+                else:
+                    projected_agent[key] = agent[key]
 
         if agent_id == "testing":
             projected_test_results = _project_test_results(agent.get("testResults", []))
@@ -135,18 +184,27 @@ def _project_agents(
                 projected_test_results,
             )
         else:
-            projected_agent["findings"] = _project_non_testing_findings(agent.get("findings", []))
+            projected_agent["findings"] = _project_non_testing_findings(
+                agent.get("findings", []),
+                hidden_private_fragments,
+            )
 
         projected_agents.append(projected_agent)
     return projected_agents
 
 
-def _project_non_testing_findings(findings: Any) -> list[dict[str, Any]]:
+def _project_non_testing_findings(
+    findings: Any,
+    hidden_private_fragments: list[str],
+) -> list[dict[str, Any]]:
     if not isinstance(findings, list):
         return []
     projected: list[dict[str, Any]] = []
     for finding in findings:
         if not isinstance(finding, dict):
+            continue
+        message = str(finding.get("message") or "")
+        if _message_leaks_hidden_data(message, hidden_private_fragments):
             continue
         rebuilt = {key: finding[key] for key in FINDING_KEYS if key in finding}
         if rebuilt:
