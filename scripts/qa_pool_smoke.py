@@ -15,6 +15,9 @@ def run_pool_smoke(
     base_port: int = 8181,
     timeout_s: float = 60.0,
 ) -> int:
+    import os
+
+    os.environ.setdefault("SANDBOX_POOL_OWNER", "qa-pool-smoke")
     from backend.ops.runtime_diagnostics import try_initialize_sandbox_pool
     from backend.sandbox.executor import run_in_sandbox
     from backend.sandbox.pool_manager import shutdown_pool

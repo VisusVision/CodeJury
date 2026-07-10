@@ -27,6 +27,7 @@ FAILED_IDS = ("text_freq", "api_client", "data_clean_api")
 async def main() -> int:
     import argparse
     import os
+    import sys as _sys
 
     parser = argparse.ArgumentParser()
     parser.add_argument("--pool", action="store_true")
@@ -34,17 +35,24 @@ async def main() -> int:
     args = parser.parse_args()
     target_ids = tuple(args.only)
 
-    _force_env()
-    shutdown_pool = None
-    if args.pool:
-        _init_sandbox_pool(
-            pool_size=int(os.getenv("SANDBOX_POOL_SIZE", "3")),
-            base_port=int(os.getenv("SANDBOX_POOL_BASE_PORT", "8181")),
-            timeout_s=float(os.getenv("SANDBOX_POOL_TIMEOUT", "30")),
+    if not args.pool:
+        print(
+            "A real sandbox pool is required: pass --pool. Direct pipeline rerun never falls back to simulation.",
+            file=_sys.stderr,
+            flush=True,
         )
-        from backend.sandbox.pool_manager import shutdown_pool as _shutdown_pool
+        return 2
 
-        shutdown_pool = _shutdown_pool
+    _force_env()
+    os.environ.setdefault("SANDBOX_POOL_OWNER", "e2e-failed-scenarios-rerun")
+    _init_sandbox_pool(
+        pool_size=int(os.getenv("SANDBOX_POOL_SIZE", "3")),
+        base_port=int(os.getenv("SANDBOX_POOL_BASE_PORT", "8181")),
+        timeout_s=float(os.getenv("SANDBOX_POOL_TIMEOUT", "30")),
+    )
+    from backend.sandbox.pool_manager import shutdown_pool as _shutdown_pool
+
+    shutdown_pool = _shutdown_pool
 
     run_id = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
     run_dir = QA_DIR / f"rerun_{run_id}"

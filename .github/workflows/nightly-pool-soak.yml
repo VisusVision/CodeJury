@@ -33,6 +33,7 @@ jobs:
           SANDBOX_POOL_SIZE: "2"
           SANDBOX_POOL_BASE_PORT: "8181"
           SANDBOX_POOL_TIMEOUT: "90"
+          SANDBOX_POOL_OWNER: "nightly-pool-smoke"
         run: python scripts/qa_pool_smoke.py
 
   consistency-soak:
@@ -59,4 +60,5 @@ jobs:
           SANDBOX_POOL_SIZE: "2"
           SANDBOX_POOL_BASE_PORT: "8181"
           SANDBOX_POOL_TIMEOUT: "90"
+          SANDBOX_POOL_OWNER: "nightly-pool-soak"
         run: python scripts/qa_soak_consistency.py --pool --minutes "${{ github.event.inputs.soak_minutes }}"

@@ -189,9 +189,12 @@ async function start() {
     env: {
       ...process.env,
       ANALYSIS_WORKER_RELOAD: process.env.ANALYSIS_WORKER_RELOAD || "1",
-      ANALYSIS_WORKER_SANDBOX_POOL: process.env.ANALYSIS_WORKER_SANDBOX_POOL || "1",
+      ANALYSIS_WORKER_ID: process.env.ANALYSIS_WORKER_ID || "dev-worker",
+      SANDBOX_POOL_OWNER: process.env.SANDBOX_POOL_OWNER || "dev-worker",
       SANDBOX_POOL_BASE_PORT: process.env.SANDBOX_WORKER_POOL_BASE_PORT || "8281",
       SANDBOX_POOL_SIZE: process.env.SANDBOX_WORKER_POOL_SIZE || process.env.SANDBOX_POOL_SIZE || "3",
+      ANALYSIS_WORKER_HEARTBEAT_INTERVAL_SECONDS: process.env.ANALYSIS_WORKER_HEARTBEAT_INTERVAL_SECONDS || "5",
+      ANALYSIS_WORKER_HEARTBEAT_TTL_SECONDS: process.env.ANALYSIS_WORKER_HEARTBEAT_TTL_SECONDS || "15",
       PYTHONPATH: [repoRootAbs, process.env.PYTHONPATH].filter(Boolean).join(path.delimiter),
     },
   });

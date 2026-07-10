@@ -395,7 +395,7 @@ async def _run_cycle(cycle: int, scenario: Scenario) -> CycleResult:
         return result
 
 
-async def run_soak(duration_min: int, *, sandbox_mode: str = "simulation") -> dict[str, Any]:
+async def run_soak(duration_min: int, *, sandbox_mode: str = "unavailable") -> dict[str, Any]:
     QA_DIR.mkdir(parents=True, exist_ok=True)
     run_id = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
     run_dir = QA_DIR / run_id
@@ -547,6 +547,7 @@ def _build_summary(
 
 
 def _init_sandbox_pool(*, pool_size: int, base_port: int, timeout_s: float) -> str:
+    os.environ.setdefault("SANDBOX_POOL_OWNER", "e2e-coder-soak")
     from backend.ops.runtime_diagnostics import try_initialize_sandbox_pool
 
     mode = try_initialize_sandbox_pool(
@@ -559,13 +560,14 @@ def _init_sandbox_pool(*, pool_size: int, base_port: int, timeout_s: float) -> s
 
         pool = get_pool()
         if pool is not None:
+            snapshot = pool.snapshot()
             print(
-                f"[e2e-soak] sandbox pool ready ({pool.available_count}/{len(pool._slots)} free)",
+                f"[e2e-soak] sandbox pool ready ({snapshot['available_count']}/{snapshot['container_count']} free)",
                 flush=True,
             )
         return "pool"
-    print("[e2e-soak] sandbox pool unavailable — simulation", flush=True)
-    return "simulation"
+    print("[e2e-soak] sandbox pool unavailable", flush=True)
+    return "unavailable"
 
 
 async def main() -> int:
@@ -578,17 +580,34 @@ async def main() -> int:
     args = parser.parse_args()
 
     _force_env()
-    shutdown_pool = None
-    sandbox_mode = "simulation"
-    if args.pool:
-        sandbox_mode = _init_sandbox_pool(
-            pool_size=args.pool_size,
-            base_port=args.pool_base_port,
-            timeout_s=args.pool_timeout,
-        )
-        from backend.sandbox.pool_manager import shutdown_pool as _shutdown_pool
 
-        shutdown_pool = _shutdown_pool
+    if not args.pool:
+        print(
+            "A real sandbox pool is required: pass --pool. Direct pipeline soak never falls back to simulation.",
+            file=sys.stderr,
+            flush=True,
+        )
+        return 2
+
+    sandbox_mode = _init_sandbox_pool(
+        pool_size=args.pool_size,
+        base_port=args.pool_base_port,
+        timeout_s=args.pool_timeout,
+    )
+    if sandbox_mode != "pool":
+        print(
+            "A real sandbox pool is required but did not become ready.",
+            file=sys.stderr,
+            flush=True,
+        )
+        from backend.sandbox.pool_manager import shutdown_pool
+
+        shutdown_pool()
+        return 2
+
+    from backend.sandbox.pool_manager import shutdown_pool as _shutdown_pool
+
+    shutdown_pool = _shutdown_pool
 
     try:
         summary = await run_soak(args.minutes, sandbox_mode=sandbox_mode)
