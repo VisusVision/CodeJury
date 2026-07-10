@@ -13,7 +13,7 @@ Sunucu veya bulut kurulumu gerekmez.
 | Süre | ~15 dk | ~45–90 dk |
 | Docker | Gerekmez | Gerekli |
 | PostgreSQL | Gerekmez (bellek içi) | Docker ile |
-| Sandbox | Simülasyon | Docker pool |
+| Sandbox | Docker gerekli (yoksa analiz engellenir) | Docker pool |
 | Ollama | Opsiyonel | Önerilir (zorunlu sayılır) |
 | Amaç | Arayüzü görmek | Tam puanlama + PDF |
 

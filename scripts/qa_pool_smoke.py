@@ -50,7 +50,13 @@ def run_pool_smoke(
 
 
 def main() -> int:
-    return run_pool_smoke()
+    import os
+
+    return run_pool_smoke(
+        pool_size=int(os.getenv("SANDBOX_POOL_SIZE", "2")),
+        base_port=int(os.getenv("SANDBOX_POOL_BASE_PORT", "8181")),
+        timeout_s=float(os.getenv("SANDBOX_POOL_TIMEOUT", "60.0")),
+    )
 
 
 if __name__ == "__main__":
