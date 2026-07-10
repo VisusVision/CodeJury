@@ -22,6 +22,11 @@ SENTINEL_AGENT_DIAGNOSTICS = "SENTINEL_AGENT_DIAGNOSTICS_7f3a"
 SENTINEL_REJECTED_CLAIMS = "SENTINEL_REJECTED_CLAIMS_7f3a"
 SENTINEL_UNKNOWN_TOP = "SENTINEL_UNKNOWN_TOP_7f3a"
 SENTINEL_NESTED = "NESTED_SENTINEL_7f3a"
+SENTINEL_PRIVATE_ERROR = "PRIVATE_ERROR_SENTINEL_XYZ"
+SENTINEL_DIFF_DETAIL_SNAKE = "SENTINEL_DIFF_DETAIL_SNAKE_7f3a"
+SENTINEL_FUTURE_DEBUG = "SENTINEL_FUTURE_DEBUG_7f3a"
+SENTINEL_TRACEBACK = "SENTINEL_TRACEBACK_7f3a"
+SENTINEL_HIDDEN_NAME_LEAK = "SENTINEL_HIDDEN_NAME_LEAK_7f3a"
 
 PUBLIC_NAME = "PUBLIC_KEEP_NAME_7f3a"
 PUBLIC_INPUT = "PUBLIC_KEEP_INPUT_7f3a"
@@ -698,6 +703,151 @@ class StudentResultProjectionTests(unittest.TestCase):
         out = project_student_result(private)
         serialized = json.dumps(out, ensure_ascii=False)
         self.assertNotIn(secret, serialized)
+
+    def _assert_sentinel_absent_from_projection(
+        self,
+        private: dict[str, Any],
+        sentinel: str,
+    ) -> None:
+        projected = project_student_result(private)
+        serialized = json.dumps(projected, ensure_ascii=False)
+        self.assertNotIn(
+            sentinel,
+            serialized,
+            msg=f"sentinel leaked into student projection: {sentinel}",
+        )
+
+    def _hidden_case_with_sentinel_in_error_field(self) -> dict[str, Any]:
+        """Minimal private result reproducing the reported error-field leak."""
+        return {
+            "totalScore": 42,
+            "maxScore": 100,
+            "rubric": {},
+            "summary": f"Model summary includes {SENTINEL_PRIVATE_ERROR}",
+            "evidence": [{"message": f"evidence includes {SENTINEL_PRIVATE_ERROR}"}],
+            "agents": [
+                {
+                    "id": "testing",
+                    "name": "Test Ajani",
+                    "summary": "testing summary",
+                    "score": 50,
+                    "maxScore": 100,
+                    "testResults": [
+                        {
+                            "name": SENTINEL_HIDDEN_NAME,
+                            "input": SENTINEL_HIDDEN_INPUT,
+                            "passed": False,
+                            "visibility": "hidden",
+                            "error": SENTINEL_PRIVATE_ERROR,
+                        },
+                    ],
+                    "findings": [],
+                },
+                {
+                    "id": "quality",
+                    "name": "Kod Kalitesi Ajani",
+                    "summary": "quality summary",
+                    "score": 70,
+                    "maxScore": 100,
+                    "findings": [
+                        {
+                            "severity": "error",
+                            "message": f"quality finding includes {SENTINEL_PRIVATE_ERROR}",
+                        },
+                    ],
+                },
+            ],
+            "fileName": "solution.py",
+            "executionTimeMs": 100,
+            "memoryUsageMb": 1.0,
+            "peakMemoryMb": 1.0,
+            "analysisEngine": "agentgrade-v1",
+            "strengths": [],
+            "weaknesses": [],
+            "recommendations": [],
+            "taskAlignment": {},
+            "reportStatus": "ready",
+        }
+
+    def test_hidden_error_field_leak_is_redacted_end_to_end(self) -> None:
+        """Reproduce exact reported leak: hidden case error field echoed in output."""
+        private = self._hidden_case_with_sentinel_in_error_field()
+        self._assert_sentinel_absent_from_projection(private, SENTINEL_PRIVATE_ERROR)
+
+    def test_hidden_diff_detail_snake_case_field_is_redacted(self) -> None:
+        private = self._private_with_hidden_fragments()
+        private["summary"] = f"summary includes {SENTINEL_DIFF_DETAIL_SNAKE}"
+        hidden = private["agents"][0]["testResults"][1]
+        hidden["diff_detail"] = SENTINEL_DIFF_DETAIL_SNAKE
+        self._assert_sentinel_absent_from_projection(private, SENTINEL_DIFF_DETAIL_SNAKE)
+
+    def test_hidden_unknown_future_field_nested_is_redacted(self) -> None:
+        private = self._private_with_hidden_fragments()
+        private["summary"] = f"summary includes {SENTINEL_FUTURE_DEBUG}"
+        hidden = private["agents"][0]["testResults"][1]
+        hidden["some_future_debug_field"] = {
+            "layer1": [
+                {"layer2": {"layer3": SENTINEL_FUTURE_DEBUG}},
+            ],
+        }
+        self._assert_sentinel_absent_from_projection(private, SENTINEL_FUTURE_DEBUG)
+
+    def test_hidden_traceback_field_is_redacted(self) -> None:
+        private = self._private_with_hidden_fragments()
+        private["summary"] = f"summary includes {SENTINEL_TRACEBACK}"
+        hidden = private["agents"][0]["testResults"][1]
+        hidden["traceback"] = SENTINEL_TRACEBACK
+        self._assert_sentinel_absent_from_projection(private, SENTINEL_TRACEBACK)
+
+    def test_safe_hidden_metadata_does_not_cause_over_redaction(self) -> None:
+        """passed/failed/hidden metadata must not trigger false-positive redaction."""
+        legitimate_summary = "3 out of 5 tests passed, 2 failed overall."
+        private = {
+            "totalScore": 42,
+            "maxScore": 100,
+            "rubric": {},
+            "summary": legitimate_summary,
+            "agents": [
+                {
+                    "id": "testing",
+                    "name": "Test Ajani",
+                    "summary": "testing summary",
+                    "score": 50,
+                    "maxScore": 100,
+                    "testResults": [
+                        {
+                            "name": "hidden metadata only",
+                            "input": "secret-input-not-in-summary",
+                            "expected": "secret-expected-not-in-summary",
+                            "actual": "secret-actual-not-in-summary",
+                            "passed": False,
+                            "visibility": "hidden",
+                            "status": "failed",
+                        },
+                    ],
+                    "findings": [],
+                },
+            ],
+            "fileName": "solution.py",
+            "executionTimeMs": 100,
+            "memoryUsageMb": 1.0,
+            "peakMemoryMb": 1.0,
+            "analysisEngine": "agentgrade-v1",
+            "strengths": [],
+            "weaknesses": [],
+            "recommendations": [],
+            "taskAlignment": {},
+            "reportStatus": "ready",
+        }
+        projected = project_student_result(private)
+        self.assertEqual(projected["summary"], legitimate_summary)
+
+    def test_hidden_name_field_still_collected_and_redacted(self) -> None:
+        private = self._private_with_hidden_fragments()
+        private["summary"] = f"summary includes {SENTINEL_HIDDEN_NAME_LEAK}"
+        hidden = private["agents"][0]["testResults"][1]
+        hidden["name"] = SENTINEL_HIDDEN_NAME_LEAK
+        self._assert_sentinel_absent_from_projection(private, SENTINEL_HIDDEN_NAME_LEAK)
 
     def test_comprehensive_invariant_no_sentinel_survives_in_serialized_output_regardless_of_location(
         self,
