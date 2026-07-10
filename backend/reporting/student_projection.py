@@ -96,18 +96,33 @@ def _sanitize_string_list(items: Any, hidden_fragments: list[str]) -> list[str]:
     ]
 
 
-def _sanitize_evidence_list(items: Any, hidden_fragments: list[str]) -> list[dict[str, Any]]:
+def _value_contains_leak(value: Any, hidden_fragments: list[str]) -> bool:
+    """Recursively check whether ANY string leaf inside value (dict/list/str, any depth) leaks."""
+    if isinstance(value, str):
+        return _message_leaks_hidden_data(value, hidden_fragments)
+    if isinstance(value, dict):
+        return any(_value_contains_leak(v, hidden_fragments) for v in value.values())
+    if isinstance(value, list):
+        return any(_value_contains_leak(item, hidden_fragments) for item in value)
+    return False
+
+
+def _deep_redact(value: Any, hidden_fragments: list[str]) -> Any:
+    """Recursively replace any leaking string leaf with GENERIC_REDACTED_TEXT."""
+    if isinstance(value, str):
+        return _sanitize_text(value, hidden_fragments)
+    if isinstance(value, dict):
+        return {k: _deep_redact(v, hidden_fragments) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_deep_redact(item, hidden_fragments) for item in value]
+    return value
+
+
+def _deep_sanitize_list(items: Any, hidden_fragments: list[str]) -> list[Any]:
+    """Drop list items that leak hidden data at any depth."""
     if not isinstance(items, list):
         return []
-    projected: list[dict[str, Any]] = []
-    for item in items:
-        if not isinstance(item, dict):
-            continue
-        message = str(item.get("message") or "")
-        if _message_leaks_hidden_data(message, hidden_fragments):
-            continue
-        projected.append(item)
-    return projected
+    return [item for item in items if not _value_contains_leak(item, hidden_fragments)]
 
 
 def _sanitize_top_level_value(
@@ -117,11 +132,12 @@ def _sanitize_top_level_value(
 ) -> Any:
     if isinstance(value, str):
         return _sanitize_text(value, hidden_fragments)
-    if isinstance(value, list):
-        if key == "evidence":
-            return _sanitize_evidence_list(value, hidden_fragments)
-        if key in ("strengths", "weaknesses", "recommendations"):
-            return _sanitize_string_list(value, hidden_fragments)
+    if key in ("evidence", "resourceRecommendations"):
+        return _deep_sanitize_list(value, hidden_fragments)
+    if key in ("strengths", "weaknesses", "recommendations"):
+        return _sanitize_string_list(value, hidden_fragments)
+    if key in ("rubric", "taskAlignment"):
+        return _deep_redact(value, hidden_fragments)
     return value
 
 
@@ -203,8 +219,7 @@ def _project_non_testing_findings(
     for finding in findings:
         if not isinstance(finding, dict):
             continue
-        message = str(finding.get("message") or "")
-        if _message_leaks_hidden_data(message, hidden_private_fragments):
+        if _value_contains_leak(finding, hidden_private_fragments):
             continue
         rebuilt = {key: finding[key] for key in FINDING_KEYS if key in finding}
         if rebuilt:
@@ -222,8 +237,7 @@ def _project_testing_findings(
         for finding in findings:
             if not isinstance(finding, dict):
                 continue
-            message = str(finding.get("message") or "")
-            if _message_leaks_hidden_data(message, hidden_private_fragments):
+            if _value_contains_leak(finding, hidden_private_fragments):
                 continue
             rebuilt = {key: finding[key] for key in FINDING_KEYS if key in finding}
             if rebuilt:
