@@ -288,12 +288,23 @@ class SandboxPool:
         try:
             new_slot = self._create_slot(old_slot.port)
             with self._lock:
-                idx = next(
-                    (i for i, s in enumerate(self._slots) if s.port == old_slot.port),
-                    None
-                )
-                if idx is not None:
-                    self._slots[idx] = new_slot
+                if self._state in {PoolState.STOPPING, PoolState.UNAVAILABLE}:
+                    idx = None
+                else:
+                    idx = next(
+                        (i for i, s in enumerate(self._slots) if s.port == old_slot.port),
+                        None,
+                    )
+                    if idx is not None:
+                        self._slots[idx] = new_slot
+            if idx is None:
+                try:
+                    new_slot.container.stop(timeout=2)
+                    new_slot.container.remove(force=True)
+                except Exception:
+                    pass
+                _log(f"Container yenilendi ancak havuz durduruluyor/degisti, imha edildi: {new_slot.url}")
+                return
             self._available.put(new_slot)
             self._recompute_state()
             _log(f"Container yenilendi: {new_slot.url}")
