@@ -73,6 +73,41 @@ class _FakeSessionRedis:
         self.expirations[key] = seconds
 
     async def eval(self, script: str, numkeys: int, *keys_and_args):
+        if "smembers" in script:
+            lock_key = keys_and_args[0]
+            index_key = keys_and_args[1]
+            token = keys_and_args[2]
+            session_prefix = keys_and_args[3]
+            if self.values.get(lock_key) != token:
+                return -1
+            members = list(self.sets.get(index_key, set()))
+            deleted = 0
+            for member in members:
+                session_key = f"{session_prefix}{member}"
+                if session_key in self.values:
+                    self.values.pop(session_key, None)
+                    deleted += 1
+            self.sets.pop(index_key, None)
+            self.expirations.pop(index_key, None)
+            return deleted
+
+        if "sadd" in script and numkeys >= 3:
+            lock_key = keys_and_args[0]
+            session_key = keys_and_args[1]
+            index_key = keys_and_args[2]
+            token = keys_and_args[3]
+            session_json = keys_and_args[4]
+            ttl_seconds = int(keys_and_args[5])
+            session_hash = keys_and_args[6]
+            if self.values.get(lock_key) != token:
+                return 0
+            self.values[session_key] = session_json
+            self.expirations[session_key] = ttl_seconds
+            bucket = self.sets.setdefault(index_key, set())
+            bucket.add(session_hash)
+            self.expirations[index_key] = ttl_seconds
+            return 1
+
         key = keys_and_args[0]
         token = keys_and_args[1]
         if self.values.get(key) != token:
@@ -84,6 +119,14 @@ class _FakeSessionRedis:
         self.values.pop(key, None)
         self.expirations.pop(key, None)
         return 1
+
+
+class _RaceAtSessionWriteEvalRedis(_FakeSessionRedis):
+    async def eval(self, script: str, numkeys: int, *keys_and_args):
+        if "sadd" in script and numkeys >= 3:
+            lock_key = keys_and_args[0]
+            self.values[lock_key] = "new-owner-after-lease-loss"
+        return await super().eval(script, numkeys, *keys_and_args)
 
 
 class StudentAuthorizationTests(unittest.TestCase):
@@ -374,6 +417,30 @@ class StudentAuthorizationTests(unittest.TestCase):
 
         courses_resp = self.client.get(f"/api/student/{_DEMO_STUDENT_ID}/courses")
         self.assertEqual(courses_resp.status_code, 403)
+
+    def test_login_returns_503_when_lock_token_lost_at_atomic_session_write_moment(self):
+        race_redis = _RaceAtSessionWriteEvalRedis()
+        race_store = SessionStore(race_redis, ttl_seconds=28800)
+
+        async def _override_store():
+            return race_store
+
+        main.app.dependency_overrides[get_auth_session_store] = _override_store
+        main.app.state.auth_session_store = race_store
+        try:
+            client = TestClient(main.app)
+            resp = client.post(
+                "/api/student/login",
+                json={"student_no": _DEMO_STUDENT_NO, "password": _DEMO_STUDENT_PASSWORD},
+            )
+        finally:
+            main.app.dependency_overrides[get_auth_session_store] = lambda: type(self)._session_store
+            main.app.state.auth_session_store = type(self)._session_store
+
+        self.assertEqual(resp.status_code, 503)
+        self.assertEqual(resp.json()["detail"], "Oturum servisine ulaşılamıyor")
+        session_keys = [key for key in race_redis.values if key.startswith("auth:session:")]
+        self.assertEqual(session_keys, [])
 
 
 if __name__ == "__main__":

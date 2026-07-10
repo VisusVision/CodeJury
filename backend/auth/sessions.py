@@ -28,7 +28,8 @@ class UserLockHandle:
     hash, revoking sessions) so a lost lease aborts the operation instead of silently
     continuing without exclusivity."""
 
-    def __init__(self) -> None:
+    def __init__(self, token: str) -> None:
+        self.token = token
         self._lost = asyncio.Event()
 
     def mark_lost(self) -> None:
@@ -55,6 +56,32 @@ if redis.call("get", KEYS[1]) == ARGV[1] then
   return redis.call("expire", KEYS[1], ARGV[2])
 end
 return 0
+"""
+
+_LOCKED_SESSION_WRITE_SCRIPT = """
+if redis.call("get", KEYS[1]) ~= ARGV[1] then
+  return 0
+end
+redis.call("set", KEYS[2], ARGV[2], "EX", ARGV[3])
+redis.call("sadd", KEYS[3], ARGV[4])
+redis.call("expire", KEYS[3], ARGV[3])
+return 1
+"""
+
+_LOCKED_REVOKE_SCRIPT = """
+if redis.call("get", KEYS[1]) ~= ARGV[1] then
+  return -1
+end
+local members = redis.call("smembers", KEYS[2])
+local deleted = 0
+for _, member in ipairs(members) do
+  local removed = redis.call("del", ARGV[2] .. member)
+  if removed == 1 then
+    deleted = deleted + 1
+  end
+end
+redis.call("del", KEYS[2])
+return deleted
 """
 
 
@@ -127,7 +154,7 @@ async def _renew_user_lock_periodically(
 async def user_lock(redis, role: str, user_id: str, *, ttl_seconds: int = 10):
     token = await acquire_user_lock(redis, role, user_id, ttl_seconds=ttl_seconds)
     key = _user_lock_key(role, user_id)
-    handle = UserLockHandle()
+    handle = UserLockHandle(token)
     renew_interval = max(ttl_seconds / 3, 0.01)
     renew_task = asyncio.create_task(
         _renew_user_lock_periodically(
@@ -153,6 +180,10 @@ class RedisLike(Protocol):
     def smembers(self, key: str) -> Awaitable[set[Any]]: ...
     def srem(self, key: str, *values: str) -> Awaitable[Any]: ...
     def expire(self, key: str, seconds: int) -> Awaitable[Any]: ...
+    def eval(self, script: str, numkeys: int, *keys_and_args: Any) -> Awaitable[Any]: ...
+
+
+_SESSION_KEY_PREFIX = "auth:session:"
 
 
 def hash_token(raw: str) -> str:
@@ -164,7 +195,7 @@ def _utc_now_iso() -> str:
 
 
 def _session_key(session_hash: str) -> str:
-    return f"auth:session:{session_hash}"
+    return f"{_SESSION_KEY_PREFIX}{session_hash}"
 
 
 def _user_index_key(user_id: str, role: AuthRole) -> str:
@@ -250,6 +281,59 @@ class SessionStore:
             principal=principal,
         )
 
+    async def create_session_if_lock_held(
+        self, user_id: str, role: AuthRole, lock_token: str
+    ) -> IssuedSession:
+        session_token = secrets.token_urlsafe(32)
+        csrf_token = secrets.token_urlsafe(32)
+        session_hash = hash_token(session_token)
+        csrf_hash = hash_token(csrf_token)
+        created_at = _utc_now_iso()
+
+        record = SessionRecord(
+            user_id=user_id,
+            role=role,
+            csrf_hash=csrf_hash,
+            created_at=created_at,
+        )
+        lock_key = _user_lock_key(role, user_id)
+        session_key = _session_key(session_hash)
+        index_key = _user_index_key(user_id, role)
+
+        try:
+            written = await self.redis.eval(
+                _LOCKED_SESSION_WRITE_SCRIPT,
+                3,
+                lock_key,
+                session_key,
+                index_key,
+                lock_token,
+                _json_dumps(asdict(record)),
+                self.ttl_seconds,
+                session_hash,
+            )
+        except Exception as exc:
+            raise UserLockUnavailable(
+                f"redis error creating session under lock for {role}:{user_id}"
+            ) from exc
+
+        if not written:
+            raise LockLost(
+                "per-user lock lease was lost before session write; aborting fail-closed"
+            )
+
+        principal = AuthPrincipal(
+            user_id=user_id,
+            role=role,
+            session_hash=session_hash,
+            csrf_hash=csrf_hash,
+        )
+        return IssuedSession(
+            session_token=session_token,
+            csrf_token=csrf_token,
+            principal=principal,
+        )
+
     async def read_session(self, raw_token: str) -> AuthPrincipal | None:
         session_hash = hash_token(raw_token)
         raw = await self.redis.get(_session_key(session_hash))
@@ -291,3 +375,30 @@ class SessionStore:
 
         await self.redis.delete(index_key)
         return deleted_count
+
+    async def revoke_user_sessions_if_lock_held(
+        self, user_id: str, role: AuthRole, lock_token: str
+    ) -> int:
+        lock_key = _user_lock_key(role, user_id)
+        index_key = _user_index_key(user_id, role)
+
+        try:
+            deleted = await self.redis.eval(
+                _LOCKED_REVOKE_SCRIPT,
+                2,
+                lock_key,
+                index_key,
+                lock_token,
+                _SESSION_KEY_PREFIX,
+            )
+        except Exception as exc:
+            raise UserLockUnavailable(
+                f"redis error revoking sessions under lock for {role}:{user_id}"
+            ) from exc
+
+        if deleted == -1:
+            raise LockLost(
+                "per-user lock lease was lost before session revoke; aborting fail-closed"
+            )
+
+        return int(deleted)
