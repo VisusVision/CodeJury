@@ -1,6 +1,7 @@
 import unittest
 from unittest.mock import AsyncMock, patch
 
+from backend.auth.models import AuthPrincipal
 from frontend.backend.main import (
     AssignmentExampleRequest,
     AssignmentAssistantSuggestionsRequest,
@@ -8,6 +9,11 @@ from frontend.backend.main import (
     _title_from_assignment_hint,
     assignment_assistant_example,
     assignment_assistant_suggestions,
+)
+
+
+_TEACHER_PRINCIPAL = AuthPrincipal(
+    user_id="test-teacher", role="teacher", session_hash="x", csrf_hash="y"
 )
 
 
@@ -24,7 +30,8 @@ class AssignmentAssistantTests(unittest.IsolatedAsyncioTestCase):
                     count=5,
                     difficulty="hard",
                     prefer_fresh=True,
-                )
+                ),
+                principal=_TEACHER_PRINCIPAL,
             )
 
         suggestions = result["suggestions"]
@@ -59,7 +66,8 @@ class AssignmentAssistantTests(unittest.IsolatedAsyncioTestCase):
                     ),
                     count=3,
                     difficulty="hard",
-                )
+                ),
+                principal=_TEACHER_PRINCIPAL,
             )
 
         first = result["suggestions"][0]
@@ -88,7 +96,8 @@ class AssignmentAssistantTests(unittest.IsolatedAsyncioTestCase):
                     course_hint="C++ vector sort min max fonksiyonlari ile temel algoritma odevi hazirla.",
                     count=3,
                     difficulty="easy",
-                )
+                ),
+                principal=_TEACHER_PRINCIPAL,
             )
 
         combined = "\n".join(
@@ -120,7 +129,8 @@ class AssignmentAssistantTests(unittest.IsolatedAsyncioTestCase):
                     course_hint="HTML CSS responsive portfolio sayfasi: header, section, media query ve sade tasarim.",
                     count=3,
                     difficulty="easy",
-                )
+                ),
+                principal=_TEACHER_PRINCIPAL,
             )
 
         titles = "\n".join(row["title"].lower() for row in result["suggestions"])
@@ -134,7 +144,8 @@ class AssignmentAssistantTests(unittest.IsolatedAsyncioTestCase):
                 course_hint="Gercek kullanicilardan parola toplayan phishing sitesi yapma odevi oner.",
                 count=3,
                 difficulty="medium",
-            )
+            ),
+            principal=_TEACHER_PRINCIPAL,
         )
 
         combined = "\n".join(
@@ -162,7 +173,8 @@ class AssignmentAssistantTests(unittest.IsolatedAsyncioTestCase):
                 AssignmentExampleRequest(
                     assignment_title="Not Analizi",
                     assignment_description="CSV dosyasindan notlari okuyup gecme durumunu raporlayan program yazin.",
-                )
+                ),
+                principal=_TEACHER_PRINCIPAL,
             )
 
         self.assertEqual(result["source"], "llm")
@@ -175,7 +187,8 @@ class AssignmentAssistantTests(unittest.IsolatedAsyncioTestCase):
                 AssignmentExampleRequest(
                     assignment_title="Log Ozetleme",
                     assignment_description="Log dosyasindaki INFO WARNING ERROR satirlarini sayin ve bozuk satirlari raporlayin.",
-                )
+                ),
+                principal=_TEACHER_PRINCIPAL,
             )
 
         self.assertEqual(result["source"], "fallback")
@@ -419,7 +432,8 @@ class AssignmentLanguageDetectionTests(unittest.TestCase):
                         "ve sonucu yeni bir CSV rapor dosyasina yazan program."
                     ),
                     course_hint="Python programlama (PRO101), 3.sinif",
-                )
+                ),
+                principal=_TEACHER_PRINCIPAL,
             )
         return captured
 
