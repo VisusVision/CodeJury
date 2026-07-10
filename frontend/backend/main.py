@@ -5252,10 +5252,11 @@ async def student_login(req: StudentLoginRequest, request: Request, response: Re
             raise HTTPException(status_code=401, detail="Ogrenci no veya sifre hatali")
         store = await get_auth_session_store(request)
         try:
-            async with user_lock(store.redis, "student", str(candidate["id"])):
+            async with user_lock(store.redis, "student", str(candidate["id"])) as lock:
                 if not _verify_password(password, str(candidate.get("password_hash") or "")):
                     raise HTTPException(status_code=401, detail="Ogrenci no veya sifre hatali")
                 profile = _demo_student_record(candidate)
+                lock.check()
                 try:
                     issued = await store.create_session(str(candidate["id"]), "student")
                 except Exception as exc:
@@ -5279,7 +5280,7 @@ async def student_login(req: StudentLoginRequest, request: Request, response: Re
         raise HTTPException(status_code=401, detail="Ogrenci no veya sifre hatali")
     store = await get_auth_session_store(request)
     try:
-        async with user_lock(store.redis, "student", str(existing["id"])):
+        async with user_lock(store.redis, "student", str(existing["id"])) as lock:
             row = await pool.fetchrow(
                 """
                 SELECT s.id, s.student_no, s.tc_no, s.first_name, s.last_name, s.class_year, s.department_id,
@@ -5297,6 +5298,7 @@ async def student_login(req: StudentLoginRequest, request: Request, response: Re
             await _sync_student_to_all_courses(pool, str(row["id"]))
             payload = dict(row)
             payload.pop("password_hash", None)
+            lock.check()
             try:
                 issued = await store.create_session(str(row["id"]), "student")
             except Exception as exc:
@@ -5387,7 +5389,7 @@ async def teacher_login(req: TeacherLoginRequest, request: Request, response: Re
             raise HTTPException(status_code=401, detail="E-posta veya sifre hatali")
         store = await get_auth_session_store(request)
         try:
-            async with user_lock(store.redis, "teacher", str(candidate["id"])):
+            async with user_lock(store.redis, "teacher", str(candidate["id"])) as lock:
                 if not _verify_password(password, candidate["password_hash"]):
                     raise HTTPException(status_code=401, detail="E-posta veya sifre hatali")
                 profile = {
@@ -5397,6 +5399,7 @@ async def teacher_login(req: TeacherLoginRequest, request: Request, response: Re
                     "email": candidate["email"],
                     "created_at": candidate["created_at"],
                 }
+                lock.check()
                 try:
                     issued = await store.create_session(str(candidate["id"]), "teacher")
                 except Exception as exc:
@@ -5420,7 +5423,7 @@ async def teacher_login(req: TeacherLoginRequest, request: Request, response: Re
         raise HTTPException(status_code=401, detail="E-posta veya sifre hatali")
     store = await get_auth_session_store(request)
     try:
-        async with user_lock(store.redis, "teacher", str(existing["id"])):
+        async with user_lock(store.redis, "teacher", str(existing["id"])) as lock:
             row = await pool.fetchrow(
                 """
                 SELECT id, first_name, last_name, email, password_hash, created_at
@@ -5440,6 +5443,7 @@ async def teacher_login(req: TeacherLoginRequest, request: Request, response: Re
                 "email": row["email"],
                 "created_at": row["created_at"],
             }
+            lock.check()
             try:
                 issued = await store.create_session(str(row["id"]), "teacher")
             except Exception as exc:
@@ -6940,9 +6944,10 @@ async def update_teacher_password(
             raise HTTPException(status_code=404, detail="Ogretmen bulunamadi")
         store = await get_auth_session_store(request)
         try:
-            async with user_lock(store.redis, "teacher", teacher_id):
+            async with user_lock(store.redis, "teacher", teacher_id) as lock:
                 if not _verify_password(current_password, teacher["password_hash"]):
                     raise HTTPException(status_code=400, detail="Mevcut şifre hatalı")
+                lock.check()
                 try:
                     await store.revoke_user_sessions(principal.user_id, "teacher")
                 except Exception as exc:
@@ -6956,7 +6961,7 @@ async def update_teacher_password(
     pool = await _get_db_pool()
     store = await get_auth_session_store(request)
     try:
-        async with user_lock(store.redis, "teacher", teacher_id):
+        async with user_lock(store.redis, "teacher", teacher_id) as lock:
             row = await pool.fetchrow(
                 """
                 SELECT id, password_hash
@@ -6971,6 +6976,7 @@ async def update_teacher_password(
             if not _verify_password(current_password, row["password_hash"]):
                 raise HTTPException(status_code=400, detail="Mevcut şifre hatalı")
 
+            lock.check()
             try:
                 await store.revoke_user_sessions(principal.user_id, "teacher")
             except Exception as exc:

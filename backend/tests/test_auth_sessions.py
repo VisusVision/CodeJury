@@ -12,6 +12,7 @@ import pytest
 from backend.auth.dependencies import get_auth_session_store
 from backend.auth.models import AuthPrincipal
 from backend.auth.sessions import (
+    LockLost,
     SessionStore,
     UserLockUnavailable,
     acquire_user_lock,
@@ -316,15 +317,63 @@ async def test_release_is_atomic_against_a_new_owner_after_expiry_and_reacquire(
     assert redis.values[key] == new_token
 
 
+class _RenewalFailRedis(FakeSessionRedis):
+    """Fake Redis that fails lock renewal EVAL calls deterministically."""
+
+    def __init__(self, *, renewal_result: int | None = None, renewal_error: Exception | None = None) -> None:
+        super().__init__()
+        self._renewal_result = renewal_result
+        self._renewal_error = renewal_error
+        self.renewal_eval_calls = 0
+
+    async def eval(self, script: str, numkeys: int, *keys_and_args):
+        if "expire" in script:
+            self.renewal_eval_calls += 1
+            if self._renewal_error is not None:
+                raise self._renewal_error
+            if self._renewal_result is not None:
+                return self._renewal_result
+        return await super().eval(script, numkeys, *keys_and_args)
+
+
+async def _wait_until(predicate, *, timeout: float = 1.0, interval: float = 0.01) -> None:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if predicate():
+            return
+        await asyncio.sleep(interval)
+    raise AssertionError("condition not met before timeout")
+
+
+@pytest.mark.asyncio
+async def test_user_lock_check_raises_lock_lost_when_renewal_eval_returns_zero() -> None:
+    redis = _RenewalFailRedis(renewal_result=0)
+    async with user_lock(redis, "teacher", "user-lost-zero", ttl_seconds=0.2) as lock:
+        await _wait_until(lambda: redis.renewal_eval_calls >= 1)
+        with pytest.raises(LockLost, match="lease was lost"):
+            lock.check()
+
+
+@pytest.mark.asyncio
+async def test_user_lock_check_raises_lock_lost_when_renewal_eval_raises() -> None:
+    redis = _RenewalFailRedis(renewal_error=ConnectionError("redis down"))
+    async with user_lock(redis, "teacher", "user-lost-error", ttl_seconds=0.2) as lock:
+        await _wait_until(lambda: redis.renewal_eval_calls >= 1)
+        with pytest.raises(LockLost, match="lease was lost"):
+            lock.check()
+
+
 @pytest.mark.asyncio
 async def test_lock_lease_is_renewed_and_survives_past_the_original_ttl(
     redis: FakeSessionRedis,
 ) -> None:
-    async with user_lock(redis, "teacher", "user-renew", ttl_seconds=0.2):
+    async with user_lock(redis, "teacher", "user-renew", ttl_seconds=0.2) as lock:
         await asyncio.sleep(0.1)
+        lock.check()
         with pytest.raises(UserLockUnavailable):
             await acquire_user_lock(redis, "teacher", "user-renew", max_attempts=1)
         await asyncio.sleep(0.25)
+        lock.check()
         with pytest.raises(UserLockUnavailable):
             await acquire_user_lock(redis, "teacher", "user-renew", max_attempts=1)
 
