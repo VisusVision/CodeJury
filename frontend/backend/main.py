@@ -56,9 +56,11 @@ from backend.auth.dependencies import (
     clear_auth_cookies,
     get_auth_session_store,
     require_authenticated,
+    require_teacher,
     set_auth_cookies,
 )
 from backend.auth.models import AuthPrincipal
+from backend.auth.policies import enforce_teacher_owner
 from backend.auth.sessions import hash_token
 from backend.queue.analysis_jobs import (
     AnalysisJobNotFound,
@@ -5331,23 +5333,29 @@ async def auth_logout(request: Request, response: Response):
 
 
 @app.get("/api/departments")
-async def list_departments():
+async def list_departments(principal: AuthPrincipal = Depends(require_teacher)):
     if _DEMO_MODE:
-        return _DEMO_STORE["departments"]
+        return [
+            d
+            for d in _DEMO_STORE["departments"]
+            if not d.get("created_by") or str(d["created_by"]) == principal.user_id
+        ]
 
     pool = await _get_db_pool()
     rows = await pool.fetch(
         """
         SELECT id, name, created_by, created_at
         FROM public.departments
+        WHERE created_by = $1::uuid OR created_by IS NULL
         ORDER BY name
-        """
+        """,
+        principal.user_id,
     )
     return [dict(r) for r in rows]
 
 
 @app.post("/api/departments")
-async def create_department(req: DepartmentCreateRequest):
+async def create_department(req: DepartmentCreateRequest, principal: AuthPrincipal = Depends(require_teacher)):
     name = _normalize_department_title(req.name)
     if not name:
         raise HTTPException(status_code=400, detail="Bölüm adı zorunludur")
@@ -5357,7 +5365,7 @@ async def create_department(req: DepartmentCreateRequest):
         department = {
             "id": _demo_uuid(),
             "name": name,
-            "created_by": req.created_by,
+            "created_by": principal.user_id,
             "created_at": _demo_now(),
         }
         _DEMO_STORE["departments"].append(department)
@@ -5378,28 +5386,36 @@ async def create_department(req: DepartmentCreateRequest):
     row = await pool.fetchrow(
         """
         INSERT INTO public.departments (name, created_by)
-        VALUES ($1, $2)
+        VALUES ($1, $2::uuid)
         RETURNING id, name, created_by, created_at
         """,
         name,
-        req.created_by,
+        principal.user_id,
     )
     return dict(row)
 
 
 @app.delete("/api/departments/{department_id}")
-async def delete_department(department_id: str):
+async def delete_department(department_id: str, principal: AuthPrincipal = Depends(require_teacher)):
     if _DEMO_MODE:
-        before = len(_DEMO_STORE["departments"])
+        dept = next((d for d in _DEMO_STORE["departments"] if d["id"] == department_id), None)
+        if dept is None:
+            raise HTTPException(status_code=404, detail="Bölüm bulunamadı")
+        enforce_teacher_owner(principal, dept.get("created_by"), mutation=True)
         _DEMO_STORE["departments"] = [
             d for d in _DEMO_STORE["departments"] if d["id"] != department_id
         ]
-        if len(_DEMO_STORE["departments"]) == before:
-            raise HTTPException(status_code=404, detail="Bölüm bulunamadı")
         _save_demo_store_to_disk()
         return {"status": "ok"}
 
     pool = await _get_db_pool()
+    row = await pool.fetchrow(
+        "SELECT created_by FROM public.departments WHERE id = $1",
+        department_id,
+    )
+    if row is None:
+        raise HTTPException(status_code=404, detail="Bolum bulunamadi")
+    enforce_teacher_owner(principal, row["created_by"], mutation=True)
     result = await pool.execute(
         """
         DELETE FROM public.departments
@@ -5413,23 +5429,29 @@ async def delete_department(department_id: str):
 
 
 @app.get("/api/courses")
-async def list_courses():
+async def list_courses(principal: AuthPrincipal = Depends(require_teacher)):
     if _DEMO_MODE:
-        return _DEMO_STORE["courses"]
+        return [
+            c
+            for c in _DEMO_STORE["courses"]
+            if not c.get("created_by") or str(c["created_by"]) == principal.user_id
+        ]
 
     pool = await _get_db_pool()
     rows = await pool.fetch(
         """
         SELECT id, name, code, class_year, department_id, created_by, created_at
         FROM public.courses
+        WHERE created_by = $1::uuid OR created_by IS NULL
         ORDER BY name
-        """
+        """,
+        principal.user_id,
     )
     return [dict(r) for r in rows]
 
 
 @app.post("/api/courses")
-async def create_course(req: CourseCreateRequest):
+async def create_course(req: CourseCreateRequest, principal: AuthPrincipal = Depends(require_teacher)):
     name = req.name.strip()
     name = " ".join(word.capitalize() for word in name.split())
     code = req.code.strip()
@@ -5445,14 +5467,18 @@ async def create_course(req: CourseCreateRequest):
             for c in _DEMO_STORE["courses"]
         ):
             raise HTTPException(status_code=409, detail="Bu ders kombinasyonu zaten kayıtlı")
-        if req.department_id and not any(d["id"] == req.department_id for d in _DEMO_STORE["departments"]):
-            raise HTTPException(status_code=400, detail="Seçilen bölüm geçersiz")
+        if req.department_id:
+            dept = next((d for d in _DEMO_STORE["departments"] if d["id"] == req.department_id), None)
+            if dept is None:
+                raise HTTPException(status_code=400, detail="Seçilen bölüm geçersiz")
+            enforce_teacher_owner(principal, dept.get("created_by"), mutation=True)
         course = {
             "id": _demo_uuid(),
             "name": name,
             "code": code,
             "class_year": class_year,
             "department_id": req.department_id,
+            "created_by": principal.user_id,
             "created_at": _demo_now(),
         }
         _DEMO_STORE["courses"].append(course)
@@ -5461,6 +5487,14 @@ async def create_course(req: CourseCreateRequest):
 
     pool = await _get_db_pool()
     try:
+        if req.department_id:
+            dept_row = await pool.fetchrow(
+                "SELECT created_by FROM public.departments WHERE id = $1",
+                req.department_id,
+            )
+            if dept_row is None:
+                raise HTTPException(status_code=400, detail="Seçilen bölüm geçersiz")
+            enforce_teacher_owner(principal, dept_row["created_by"], mutation=True)
         existing = await pool.fetchrow(
             """
             SELECT id FROM public.courses
@@ -5476,14 +5510,15 @@ async def create_course(req: CourseCreateRequest):
             raise HTTPException(status_code=409, detail="Bu ders kombinasyonu zaten kayıtlı")
         row = await pool.fetchrow(
             """
-            INSERT INTO public.courses (name, code, class_year, department_id)
-            VALUES ($1, $2, $3, $4)
+            INSERT INTO public.courses (name, code, class_year, department_id, created_by)
+            VALUES ($1, $2, $3, $4, $5::uuid)
             RETURNING id, name, code, class_year, department_id, created_by, created_at
             """,
             name,
             code,
             class_year,
             req.department_id,
+            principal.user_id,
         )
         await _sync_course_to_all_students(pool, str(row["id"]))
         return dict(row)
@@ -5494,12 +5529,13 @@ async def create_course(req: CourseCreateRequest):
 
 
 @app.delete("/api/courses/{course_id}")
-async def delete_course(course_id: str):
+async def delete_course(course_id: str, principal: AuthPrincipal = Depends(require_teacher)):
     if _DEMO_MODE:
-        before = len(_DEMO_STORE["courses"])
-        _DEMO_STORE["courses"] = [c for c in _DEMO_STORE["courses"] if c["id"] != course_id]
-        if len(_DEMO_STORE["courses"]) == before:
+        course = next((c for c in _DEMO_STORE["courses"] if c["id"] == course_id), None)
+        if course is None:
             raise HTTPException(status_code=404, detail="Ders bulunamadı")
+        enforce_teacher_owner(principal, course.get("created_by"), mutation=True)
+        _DEMO_STORE["courses"] = [c for c in _DEMO_STORE["courses"] if c["id"] != course_id]
         _DEMO_STORE["assignments"] = [a for a in _DEMO_STORE["assignments"] if a["course_id"] != course_id]
         _DEMO_STORE["rubrics"] = [
             r for r in _DEMO_STORE["rubrics"]
@@ -5509,6 +5545,13 @@ async def delete_course(course_id: str):
         return {"status": "ok"}
 
     pool = await _get_db_pool()
+    row = await pool.fetchrow(
+        "SELECT created_by FROM public.courses WHERE id = $1",
+        course_id,
+    )
+    if row is None:
+        raise HTTPException(status_code=404, detail="Ders bulunamadı")
+    enforce_teacher_owner(principal, row["created_by"], mutation=True)
     result = await pool.execute(
         """
         DELETE FROM public.courses
@@ -5522,10 +5565,15 @@ async def delete_course(course_id: str):
 
 
 @app.get("/api/assignments")
-async def list_assignments():
+async def list_assignments(principal: AuthPrincipal = Depends(require_teacher)):
     if _DEMO_MODE:
+        visible = [
+            a
+            for a in _DEMO_STORE["assignments"]
+            if not a.get("created_by") or str(a["created_by"]) == principal.user_id
+        ]
         return sorted(
-            [dict(a) for a in _DEMO_STORE["assignments"]],
+            [dict(a) for a in visible],
             key=lambda a: str(a.get("created_at") or ""),
             reverse=True,
         )
@@ -5535,8 +5583,10 @@ async def list_assignments():
         """
         SELECT id, course_id, name, description, due_date, created_by, created_at
         FROM public.assignments
+        WHERE created_by = $1::uuid OR created_by IS NULL
         ORDER BY created_at DESC
-        """
+        """,
+        principal.user_id,
     )
     return [dict(r) for r in rows]
 
@@ -5563,7 +5613,7 @@ async def _ensure_assignment_safety(name: str, description: str | None, course_c
 
 
 @app.post("/api/assignments")
-async def create_assignment(req: AssignmentCreateRequest):
+async def create_assignment(req: AssignmentCreateRequest, principal: AuthPrincipal = Depends(require_teacher)):
     name = req.name.strip()
     name = " ".join(word.capitalize() for word in name.split())
     if not name or not req.course_id:
@@ -5573,6 +5623,7 @@ async def create_assignment(req: AssignmentCreateRequest):
         course = next((c for c in _DEMO_STORE["courses"] if c["id"] == req.course_id), None)
         if course is None:
             raise HTTPException(status_code=400, detail="Geçersiz ders seçimi")
+        enforce_teacher_owner(principal, course.get("created_by"), mutation=True)
         await _ensure_assignment_safety(name, description, _course_context_for_assignment_safety(course))
         assignment = {
             "id": _demo_uuid(),
@@ -5580,6 +5631,7 @@ async def create_assignment(req: AssignmentCreateRequest):
             "name": name,
             "description": description,
             "due_date": req.due_date,
+            "created_by": principal.user_id,
             "created_at": _demo_now(),
         }
         _DEMO_STORE["assignments"].append(assignment)
@@ -5590,7 +5642,7 @@ async def create_assignment(req: AssignmentCreateRequest):
     try:
         course = await pool.fetchrow(
             """
-            SELECT id, name, code, class_year
+            SELECT id, name, code, class_year, created_by
             FROM public.courses
             WHERE id = $1
             LIMIT 1
@@ -5599,18 +5651,20 @@ async def create_assignment(req: AssignmentCreateRequest):
         )
         if course is None:
             raise HTTPException(status_code=400, detail="Gecersiz ders secimi")
+        enforce_teacher_owner(principal, course["created_by"], mutation=True)
         await _ensure_assignment_safety(name, description, _course_context_for_assignment_safety(course))
         due_date = _parse_optional_datetime(req.due_date)
         row = await pool.fetchrow(
             """
-            INSERT INTO public.assignments (course_id, name, description, due_date)
-            VALUES ($1, $2, $3, $4)
+            INSERT INTO public.assignments (course_id, name, description, due_date, created_by)
+            VALUES ($1, $2, $3, $4, $5::uuid)
             RETURNING id, course_id, name, description, due_date, created_by, created_at
             """,
             req.course_id,
             name,
             description,
             due_date,
+            principal.user_id,
         )
         return dict(row)
     except asyncpg.ForeignKeyViolationError as exc:
@@ -5622,13 +5676,14 @@ async def create_assignment(req: AssignmentCreateRequest):
 
 
 @app.delete("/api/assignments/{assignment_id}")
-async def delete_assignment(assignment_id: str):
+async def delete_assignment(assignment_id: str, principal: AuthPrincipal = Depends(require_teacher)):
     aid = assignment_id.strip()
     if _DEMO_MODE:
-        before = len(_DEMO_STORE["assignments"])
-        _DEMO_STORE["assignments"] = [a for a in _DEMO_STORE["assignments"] if str(a["id"]) != aid]
-        if len(_DEMO_STORE["assignments"]) == before:
+        assignment = next((a for a in _DEMO_STORE["assignments"] if str(a["id"]) == aid), None)
+        if assignment is None:
             raise HTTPException(status_code=404, detail="Ödev bulunamadı")
+        enforce_teacher_owner(principal, assignment.get("created_by"), mutation=True)
+        _DEMO_STORE["assignments"] = [a for a in _DEMO_STORE["assignments"] if str(a["id"]) != aid]
         _DEMO_STORE["rubrics"] = [r for r in _DEMO_STORE["rubrics"] if str(r["assignment_id"]) != aid]
         _DEMO_STORE["assignment_test_cases"] = [
             t for t in _DEMO_STORE.get("assignment_test_cases", []) if str(t.get("assignment_id")) != aid
@@ -5638,6 +5693,13 @@ async def delete_assignment(assignment_id: str):
 
     uid = _parse_assignment_uuid_param(aid)
     pool = await _get_db_pool()
+    row = await pool.fetchrow(
+        "SELECT created_by FROM public.assignments WHERE id = $1::uuid",
+        uid,
+    )
+    if row is None:
+        raise HTTPException(status_code=404, detail="Ödev bulunamadı")
+    enforce_teacher_owner(principal, row["created_by"], mutation=True)
     result = await pool.execute(
         """
         DELETE FROM public.assignments
@@ -5651,11 +5713,13 @@ async def delete_assignment(assignment_id: str):
 
 
 @app.get("/api/assignments/{assignment_id}/test-cases")
-async def list_assignment_test_cases(assignment_id: str):
+async def list_assignment_test_cases(assignment_id: str, principal: AuthPrincipal = Depends(require_teacher)):
     aid = assignment_id.strip()
     if _DEMO_MODE:
-        if not any(str(a.get("id")) == aid for a in _DEMO_STORE.get("assignments", [])):
+        assignment = next((a for a in _DEMO_STORE.get("assignments", []) if str(a.get("id")) == aid), None)
+        if assignment is None:
             raise HTTPException(status_code=404, detail="Odev bulunamadi")
+        enforce_teacher_owner(principal, assignment.get("created_by"), mutation=False)
         rows = [
             _assignment_test_case_response(row)
             for row in _DEMO_STORE.get("assignment_test_cases", [])
@@ -5665,9 +5729,13 @@ async def list_assignment_test_cases(assignment_id: str):
 
     uid = _parse_assignment_uuid_param(aid)
     pool = await _get_db_pool()
-    exists = await pool.fetchval("SELECT 1 FROM public.assignments WHERE id = $1::uuid LIMIT 1", uid)
-    if exists is None:
+    assignment_row = await pool.fetchrow(
+        "SELECT created_by FROM public.assignments WHERE id = $1::uuid LIMIT 1",
+        uid,
+    )
+    if assignment_row is None:
         raise HTTPException(status_code=404, detail="Odev bulunamadi")
+    enforce_teacher_owner(principal, assignment_row["created_by"], mutation=False)
     rows = await pool.fetch(
         """
         SELECT id, assignment_id, name, stdin, expected_stdout, expected_exit_code,
@@ -5682,21 +5750,27 @@ async def list_assignment_test_cases(assignment_id: str):
 
 
 @app.post("/api/assignments/{assignment_id}/test-cases/suggest")
-async def suggest_assignment_test_cases(assignment_id: str):
+async def suggest_assignment_test_cases(assignment_id: str, principal: AuthPrincipal = Depends(require_teacher)):
     aid = assignment_id.strip()
     if _DEMO_MODE:
         assignment = next((a for a in _DEMO_STORE.get("assignments", []) if str(a.get("id")) == aid), None)
         if assignment is None:
             raise HTTPException(status_code=404, detail="Odev bulunamadi")
+        enforce_teacher_owner(principal, assignment.get("created_by"), mutation=False)
     else:
         uid = _parse_assignment_uuid_param(aid)
         pool = await _get_db_pool()
+        assignment_row = await pool.fetchrow(
+            "SELECT created_by FROM public.assignments WHERE id = $1::uuid LIMIT 1",
+            uid,
+        )
+        if assignment_row is None:
+            raise HTTPException(status_code=404, detail="Odev bulunamadi")
+        enforce_teacher_owner(principal, assignment_row["created_by"], mutation=False)
         assignment = await pool.fetchrow(
             "SELECT id, name, description FROM public.assignments WHERE id = $1::uuid LIMIT 1",
             uid,
         )
-        if assignment is None:
-            raise HTTPException(status_code=404, detail="Odev bulunamadi")
 
     raw_suggestions = [
         {
@@ -5731,7 +5805,11 @@ async def suggest_assignment_test_cases(assignment_id: str):
 
 
 @app.put("/api/assignments/{assignment_id}/test-cases")
-async def replace_assignment_test_cases(assignment_id: str, req: AssignmentTestCaseUpsertRequest):
+async def replace_assignment_test_cases(
+    assignment_id: str,
+    req: AssignmentTestCaseUpsertRequest,
+    principal: AuthPrincipal = Depends(require_teacher),
+):
     aid = assignment_id.strip()
     if len(req.test_cases) > 50:
         raise HTTPException(status_code=400, detail="En fazla 50 test kaydedilebilir")
@@ -5742,8 +5820,10 @@ async def replace_assignment_test_cases(assignment_id: str, req: AssignmentTestC
     ]
 
     if _DEMO_MODE:
-        if not any(str(a.get("id")) == aid for a in _DEMO_STORE.get("assignments", [])):
+        assignment = next((a for a in _DEMO_STORE.get("assignments", []) if str(a.get("id")) == aid), None)
+        if assignment is None:
             raise HTTPException(status_code=404, detail="Odev bulunamadi")
+        enforce_teacher_owner(principal, assignment.get("created_by"), mutation=True)
         _DEMO_STORE["assignment_test_cases"] = [
             row for row in _DEMO_STORE.get("assignment_test_cases", []) if str(row.get("assignment_id")) != aid
         ]
@@ -5760,9 +5840,13 @@ async def replace_assignment_test_cases(assignment_id: str, req: AssignmentTestC
 
     uid = _parse_assignment_uuid_param(aid)
     pool = await _get_db_pool()
-    exists = await pool.fetchval("SELECT 1 FROM public.assignments WHERE id = $1::uuid LIMIT 1", uid)
-    if exists is None:
+    assignment_row = await pool.fetchrow(
+        "SELECT created_by FROM public.assignments WHERE id = $1::uuid LIMIT 1",
+        uid,
+    )
+    if assignment_row is None:
         raise HTTPException(status_code=404, detail="Odev bulunamadi")
+    enforce_teacher_owner(principal, assignment_row["created_by"], mutation=True)
     async with pool.acquire() as conn:
         async with conn.transaction():
             await conn.execute(
@@ -5792,16 +5876,30 @@ async def replace_assignment_test_cases(assignment_id: str, req: AssignmentTestC
 
 
 @app.get("/api/rubrics")
-async def list_rubrics():
+async def list_rubrics(principal: AuthPrincipal = Depends(require_teacher)):
     if _DEMO_MODE:
-        return _DEMO_STORE["rubrics"]
+        visible = []
+        for rubric in _DEMO_STORE["rubrics"]:
+            assignment = next(
+                (a for a in _DEMO_STORE["assignments"] if str(a["id"]) == str(rubric.get("assignment_id"))),
+                None,
+            )
+            if assignment is None:
+                continue
+            created_by = assignment.get("created_by")
+            if not created_by or str(created_by) == principal.user_id:
+                visible.append(rubric)
+        return visible
 
     pool = await _get_db_pool()
     rows = await pool.fetch(
         """
-        SELECT id, assignment_id, criteria, status, created_by, created_at, updated_at
-        FROM public.rubrics
-        """
+        SELECT r.id, r.assignment_id, r.criteria, r.status, r.created_by, r.created_at, r.updated_at
+        FROM public.rubrics r
+        JOIN public.assignments a ON a.id = r.assignment_id
+        WHERE a.created_by = $1::uuid OR a.created_by IS NULL
+        """,
+        principal.user_id,
     )
     return [dict(r) for r in rows]
 
@@ -5832,7 +5930,7 @@ async def get_rubric_by_assignment(assignment_id: str):
 
 
 @app.post("/api/rubrics/upsert")
-async def upsert_rubric(req: RubricUpsertRequest):
+async def upsert_rubric(req: RubricUpsertRequest, principal: AuthPrincipal = Depends(require_teacher)):
     if req.status not in {"draft", "approved"}:
         raise HTTPException(status_code=400, detail="Geçersiz rubrik statusu")
     if not req.criteria:
@@ -5841,8 +5939,10 @@ async def upsert_rubric(req: RubricUpsertRequest):
 
     if _DEMO_MODE:
         aid = (req.assignment_id or "").strip()
-        if not any(str(a["id"]) == aid for a in _DEMO_STORE["assignments"]):
+        assignment = next((a for a in _DEMO_STORE["assignments"] if str(a["id"]) == aid), None)
+        if assignment is None:
             raise HTTPException(status_code=400, detail="Geçersiz ödev veya öğretmen bilgisi")
+        enforce_teacher_owner(principal, assignment.get("created_by"), mutation=True)
 
         existing = next(
             (r for r in _DEMO_STORE["rubrics"] if str(r["assignment_id"]) == aid),
@@ -5860,7 +5960,7 @@ async def upsert_rubric(req: RubricUpsertRequest):
             "assignment_id": aid,
             "criteria": criteria,
             "status": req.status,
-            "created_by": req.created_by,
+            "created_by": principal.user_id,
             "created_at": _demo_now(),
             "updated_at": _demo_now(),
         }
@@ -5870,14 +5970,13 @@ async def upsert_rubric(req: RubricUpsertRequest):
 
     pool = await _get_db_pool()
     auid = _parse_assignment_uuid_param((req.assignment_id or "").strip())
-    a_ok = await pool.fetchval(
-        """
-        SELECT 1 FROM public.assignments WHERE id = $1::uuid LIMIT 1
-        """,
+    assignment_row = await pool.fetchrow(
+        "SELECT created_by FROM public.assignments WHERE id = $1::uuid LIMIT 1",
         auid,
     )
-    if a_ok is None:
+    if assignment_row is None:
         raise HTTPException(status_code=400, detail="Geçersiz ödev veya öğretmen bilgisi")
+    enforce_teacher_owner(principal, assignment_row["created_by"], mutation=True)
 
     existing = await pool.fetchrow(
         """
@@ -5909,13 +6008,13 @@ async def upsert_rubric(req: RubricUpsertRequest):
             row = await pool.fetchrow(
                 """
                 INSERT INTO public.rubrics (assignment_id, criteria, status, created_by)
-                VALUES ($1::uuid, $2::jsonb, $3, $4)
+                VALUES ($1::uuid, $2::jsonb, $3, $4::uuid)
                 RETURNING id, assignment_id, criteria, status, created_by, created_at, updated_at
                 """,
                 auid,
                 json.dumps(criteria),
                 req.status,
-                req.created_by,
+                principal.user_id,
             )
         except asyncpg.ForeignKeyViolationError as exc:
             raise HTTPException(status_code=400, detail="Geçersiz ödev veya öğretmen bilgisi") from exc
@@ -5925,11 +6024,19 @@ async def upsert_rubric(req: RubricUpsertRequest):
 
 
 @app.patch("/api/rubrics/by-assignment/{assignment_id}")
-async def update_rubric_status(assignment_id: str, req: RubricUpdateStatusRequest):
+async def update_rubric_status(
+    assignment_id: str,
+    req: RubricUpdateStatusRequest,
+    principal: AuthPrincipal = Depends(require_teacher),
+):
     if req.status not in {"draft", "approved"}:
         raise HTTPException(status_code=400, detail="Geçersiz rubrik statusu")
     aid = assignment_id.strip()
     if _DEMO_MODE:
+        assignment = next((a for a in _DEMO_STORE["assignments"] if str(a["id"]) == aid), None)
+        if assignment is None:
+            raise HTTPException(status_code=404, detail="Odev bulunamadi")
+        enforce_teacher_owner(principal, assignment.get("created_by"), mutation=True)
         row = next((r for r in _DEMO_STORE["rubrics"] if str(r["assignment_id"]) == aid), None)
         if row is None:
             raise HTTPException(status_code=404, detail="Rubrik bulunamadı")
@@ -5940,6 +6047,13 @@ async def update_rubric_status(assignment_id: str, req: RubricUpdateStatusReques
 
     uid = _parse_assignment_uuid_param(aid)
     pool = await _get_db_pool()
+    assignment_row = await pool.fetchrow(
+        "SELECT created_by FROM public.assignments WHERE id = $1::uuid LIMIT 1",
+        uid,
+    )
+    if assignment_row is None:
+        raise HTTPException(status_code=404, detail="Odev bulunamadi")
+    enforce_teacher_owner(principal, assignment_row["created_by"], mutation=True)
     row = await pool.fetchrow(
         """
         UPDATE public.rubrics
@@ -5956,7 +6070,7 @@ async def update_rubric_status(assignment_id: str, req: RubricUpdateStatusReques
 
 
 @app.post("/api/rubric/suggest")
-async def suggest_rubric(req: RubricSuggestionRequest):
+async def suggest_rubric(req: RubricSuggestionRequest, principal: AuthPrincipal = Depends(require_teacher)):
     from backend.core.config import settings as _llm_cfg
 
     if not _llm_cfg.ollama_enabled:
@@ -6023,7 +6137,10 @@ async def suggest_rubric(req: RubricSuggestionRequest):
     return {"criteria": criteria}
 
 @app.post("/api/faculty/assignment-assistant/example")
-async def assignment_assistant_example(req: AssignmentExampleRequest):
+async def assignment_assistant_example(
+    req: AssignmentExampleRequest,
+    principal: AuthPrincipal = Depends(require_teacher),
+):
     """Create a concrete expected-output example for a draft assignment."""
     from backend.core.config import settings as _llm_cfg
 
@@ -6074,7 +6191,10 @@ async def assignment_assistant_example(req: AssignmentExampleRequest):
 
 
 @app.post("/api/faculty/assignment-assistant/suggestions")
-async def assignment_assistant_suggestions(req: AssignmentAssistantSuggestionsRequest):
+async def assignment_assistant_suggestions(
+    req: AssignmentAssistantSuggestionsRequest,
+    principal: AuthPrincipal = Depends(require_teacher),
+):
     """Ollama ile yapılandırılmış ödev konusu önerileri (markdown yok)."""
     from backend.core.config import settings as _llm_cfg
 
@@ -6340,24 +6460,30 @@ async def assignment_assistant_suggestions(req: AssignmentAssistantSuggestionsRe
 
 
 @app.get("/api/questions")
-async def list_questions():
+async def list_questions(principal: AuthPrincipal = Depends(require_teacher)):
     """Tum sorulari listele"""
     if _DEMO_MODE:
-        return _DEMO_STORE.get("questions", [])
+        return [
+            q
+            for q in _DEMO_STORE.get("questions", [])
+            if not q.get("created_by") or str(q["created_by"]) == principal.user_id
+        ]
     
     pool = await _get_db_pool()
     rows = await pool.fetch(
         """
         SELECT id, content, color, created_by, created_at, updated_at
         FROM public.question_bank
+        WHERE created_by = $1::uuid OR created_by IS NULL
         ORDER BY created_at DESC
-        """
+        """,
+        principal.user_id,
     )
     return [dict(row) for row in rows]
 
 
 @app.post("/api/questions")
-async def create_question(req: dict[str, Any]):
+async def create_question(req: dict[str, Any], principal: AuthPrincipal = Depends(require_teacher)):
     """Yeni soru olustur"""
     content = req.get("content", "").strip()
     color = req.get("color", "blue")
@@ -6379,7 +6505,7 @@ async def create_question(req: dict[str, Any]):
             "id": question_id,
             "content": content,
             "color": color,
-            "created_by": None,
+            "created_by": principal.user_id,
             "created_at": now,
             "updated_at": now
         }
@@ -6389,30 +6515,39 @@ async def create_question(req: dict[str, Any]):
     pool = await _get_db_pool()
     row = await pool.fetchrow(
         """
-        INSERT INTO public.question_bank (id, content, color)
-        VALUES ($1, $2, $3)
+        INSERT INTO public.question_bank (id, content, color, created_by)
+        VALUES ($1, $2, $3, $4::uuid)
         RETURNING id, content, color, created_by, created_at, updated_at
         """,
         question_id,
         content,
         color,
+        principal.user_id,
     )
     return dict(row) if row else {}
 
 
 @app.delete("/api/questions/{question_id}")
-async def delete_question(question_id: str):
+async def delete_question(question_id: str, principal: AuthPrincipal = Depends(require_teacher)):
     """Soruyu sil"""
     if _DEMO_MODE:
-        if "questions" in _DEMO_STORE:
+        question = next((q for q in _DEMO_STORE.get("questions", []) if q["id"] == question_id), None)
+        if question is not None:
+            enforce_teacher_owner(principal, question.get("created_by"), mutation=True)
             _DEMO_STORE["questions"] = [q for q in _DEMO_STORE["questions"] if q["id"] != question_id]
         return {"status": "ok"}
     
     pool = await _get_db_pool()
-    await pool.execute(
-        "DELETE FROM public.question_bank WHERE id = $1",
-        question_id
+    row = await pool.fetchrow(
+        "SELECT created_by FROM public.question_bank WHERE id = $1",
+        question_id,
     )
+    if row is not None:
+        enforce_teacher_owner(principal, row["created_by"], mutation=True)
+        await pool.execute(
+            "DELETE FROM public.question_bank WHERE id = $1",
+            question_id,
+        )
     return {"status": "ok"}
 
 
@@ -6439,7 +6574,7 @@ async def get_assignment_questions(assignment_id: str):
 
 
 @app.post("/api/assignment-questions/update")
-async def update_assignment_questions(req: dict[str, Any]):
+async def update_assignment_questions(req: dict[str, Any], principal: AuthPrincipal = Depends(require_teacher)):
     """Odev icin sorulari guncelle"""
     assignment_id = req.get("assignment_id", "").strip()
     question_ids = req.get("question_ids", [])
@@ -6448,12 +6583,26 @@ async def update_assignment_questions(req: dict[str, Any]):
         raise HTTPException(status_code=400, detail="assignment_id zorunludur")
     
     if _DEMO_MODE:
+        assignment = next(
+            (a for a in _DEMO_STORE["assignments"] if str(a.get("id")) == assignment_id),
+            None,
+        )
+        if assignment is None:
+            raise HTTPException(status_code=404, detail="Odev bulunamadi")
+        enforce_teacher_owner(principal, assignment.get("created_by"), mutation=True)
         if "assignment_questions" not in _DEMO_STORE:
             _DEMO_STORE["assignment_questions"] = {}
         _DEMO_STORE["assignment_questions"][assignment_id] = question_ids
         return {"status": "ok"}
     
     pool = await _get_db_pool()
+    assignment_row = await pool.fetchrow(
+        "SELECT created_by FROM public.assignments WHERE id = $1",
+        assignment_id,
+    )
+    if assignment_row is None:
+        raise HTTPException(status_code=404, detail="Odev bulunamadi")
+    enforce_teacher_owner(principal, assignment_row["created_by"], mutation=True)
     
     # Onceki sorulari sil
     await pool.execute(

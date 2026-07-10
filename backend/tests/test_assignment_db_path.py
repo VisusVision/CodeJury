@@ -2,12 +2,17 @@ import asyncio
 import unittest
 from unittest.mock import AsyncMock, patch
 
+from backend.auth.models import AuthPrincipal
 from frontend.backend import main
 
 
 _COURSE_ID = "44444444-4444-4444-8444-444444444444"
 _ASSIGNMENT_ID = "55555555-5555-4555-8555-555555555555"
 _DEPARTMENT_ID = "33333333-3333-4333-8333-333333333333"
+_TEACHER_ID = "11111111-1111-4111-8111-111111111111"
+_TEACHER_PRINCIPAL = AuthPrincipal(
+    user_id=_TEACHER_ID, role="teacher", session_hash="x", csrf_hash="y"
+)
 
 
 class AssignmentDbPathTests(unittest.TestCase):
@@ -18,12 +23,15 @@ class AssignmentDbPathTests(unittest.TestCase):
 
             async def fetchrow(self, query, *args):
                 self.calls.append((query, args))
+                if "FROM public.departments" in query:
+                    return {"created_by": _TEACHER_ID}
                 if "FROM public.courses" in query:
                     return {
                         "id": _COURSE_ID,
                         "name": "Python Programlama",
                         "code": "PRO101",
                         "class_year": 3,
+                        "created_by": _TEACHER_ID,
                     }
                 return {
                     "id": _ASSIGNMENT_ID,
@@ -45,14 +53,15 @@ class AssignmentDbPathTests(unittest.TestCase):
                                 course_id=_COURSE_ID,
                                 name="Dosya Analizi",
                                 description="Sayilari oku.",
-                            )
+                            ),
+                            principal=_TEACHER_PRINCIPAL,
                         )
 
         asyncio.run(run_case())
 
         insert_calls = [call for call in pool.calls if "INSERT INTO public.assignments" in call[0]]
         self.assertEqual(len(insert_calls), 1)
-        self.assertEqual(len(insert_calls[0][1]), 4)
+        self.assertEqual(len(insert_calls[0][1]), 5)
 
     def test_create_assignment_db_insert_returning_includes_created_by(self):
         class FakePool:
@@ -61,12 +70,15 @@ class AssignmentDbPathTests(unittest.TestCase):
 
             async def fetchrow(self, query, *args):
                 self.calls.append((query, args))
+                if "FROM public.departments" in query:
+                    return {"created_by": _TEACHER_ID}
                 if "FROM public.courses" in query:
                     return {
                         "id": _COURSE_ID,
                         "name": "Python Programlama",
                         "code": "PRO101",
                         "class_year": 3,
+                        "created_by": _TEACHER_ID,
                     }
                 return {
                     "id": _ASSIGNMENT_ID,
@@ -88,7 +100,8 @@ class AssignmentDbPathTests(unittest.TestCase):
                                 course_id=_COURSE_ID,
                                 name="Dosya Analizi",
                                 description="Sayilari oku.",
-                            )
+                            ),
+                            principal=_TEACHER_PRINCIPAL,
                         )
 
         asyncio.run(run_case())
@@ -104,6 +117,8 @@ class AssignmentDbPathTests(unittest.TestCase):
 
             async def fetchrow(self, query, *args):
                 self.calls.append((query, args))
+                if "FROM public.departments" in query:
+                    return {"created_by": _TEACHER_ID}
                 if "INSERT INTO public.courses" in query:
                     return {
                         "id": _COURSE_ID,
@@ -132,14 +147,15 @@ class AssignmentDbPathTests(unittest.TestCase):
                                 code="BLM201",
                                 class_year=2,
                                 department_id=_DEPARTMENT_ID,
-                            )
+                            ),
+                            principal=_TEACHER_PRINCIPAL,
                         )
 
         asyncio.run(run_case())
 
         insert_calls = [call for call in pool.calls if "INSERT INTO public.courses" in call[0]]
         self.assertEqual(len(insert_calls), 1)
-        self.assertEqual(len(insert_calls[0][1]), 4)
+        self.assertEqual(len(insert_calls[0][1]), 5)
         self.assertIn("created_by", insert_calls[0][0])
 
     def test_ensure_db_schema_includes_created_by_columns_and_indexes(self):

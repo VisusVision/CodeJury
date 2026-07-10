@@ -20,7 +20,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 from fastapi.testclient import TestClient
 
-from backend.auth.dependencies import get_auth_session_store
+from backend.auth.dependencies import CSRF_HEADER, get_auth_session_store
 from backend.auth.sessions import SessionStore
 from frontend.backend import main
 
@@ -127,6 +127,17 @@ class ApiEndpointTests(unittest.TestCase):
     def tearDown(self):
         main._DEMO_STORE.clear()
         main._DEMO_STORE.update(copy.deepcopy(self._store_snapshot))
+
+    def _login_teacher(self) -> str:
+        resp = self.client.post(
+            "/api/teacher/login",
+            json={"email": _DEMO_TEACHER_EMAIL, "password": _DEMO_TEACHER_PASSWORD},
+        )
+        self.assertEqual(resp.status_code, 200)
+        return self.client.cookies.get("agentgrade_csrf")
+
+    def _csrf_headers(self, csrf: str) -> dict[str, str]:
+        return {CSRF_HEADER: csrf}
 
     # ── Health ────────────────────────────────────────────────────────────────
     def test_health_returns_demo_mode_true(self):
@@ -318,32 +329,48 @@ class ApiEndpointTests(unittest.TestCase):
 
     # ── Departments ────────────────────────────────────────────────────────────
     def test_list_departments(self):
+        self._login_teacher()
         resp = self.client.get("/api/departments")
         self.assertEqual(resp.status_code, 200)
         self.assertIsInstance(resp.json(), list)
 
     def test_create_department_valid(self):
-        resp = self.client.post("/api/departments", json={"name": "Yeni Bolum"})
+        csrf = self._login_teacher()
+        resp = self.client.post(
+            "/api/departments",
+            json={"name": "Yeni Bolum"},
+            headers=self._csrf_headers(csrf),
+        )
         self.assertEqual(resp.status_code, 200)
         self.assertIn("id", resp.json())
 
     def test_create_department_duplicate_returns_409(self):
+        csrf = self._login_teacher()
         resp = self.client.post(
-            "/api/departments", json={"name": "Bilgisayar Muhendisligi"}
+            "/api/departments",
+            json={"name": "Bilgisayar Muhendisligi"},
+            headers=self._csrf_headers(csrf),
         )
         self.assertEqual(resp.status_code, 409)
 
     def test_create_department_invalid_json_returns_422(self):
-        resp = self.client.post("/api/departments", content="duz metin")
+        csrf = self._login_teacher()
+        resp = self.client.post(
+            "/api/departments",
+            content="duz metin",
+            headers=self._csrf_headers(csrf),
+        )
         self.assertEqual(resp.status_code, 422)
 
     # ── Courses ────────────────────────────────────────────────────────────────
     def test_list_courses(self):
+        self._login_teacher()
         resp = self.client.get("/api/courses")
         self.assertEqual(resp.status_code, 200)
         self.assertIsInstance(resp.json(), list)
 
     def test_create_course_valid(self):
+        csrf = self._login_teacher()
         resp = self.client.post(
             "/api/courses",
             json={
@@ -352,17 +379,20 @@ class ApiEndpointTests(unittest.TestCase):
                 "class_year": 2,
                 "department_id": _DEMO_DEPARTMENT_ID,
             },
+            headers=self._csrf_headers(csrf),
         )
         self.assertEqual(resp.status_code, 200)
         self.assertEqual(resp.json()["code"], "YD101")
 
     # ── Assignments ────────────────────────────────────────────────────────────
     def test_list_assignments(self):
+        self._login_teacher()
         resp = self.client.get("/api/assignments")
         self.assertEqual(resp.status_code, 200)
         self.assertIsInstance(resp.json(), list)
 
     def test_create_assignment_valid(self):
+        csrf = self._login_teacher()
         # Odev guvenlik gecidi LLM'e bagli olabilir; deterministik kalmak icin patch'le.
         with patch.object(main, "_ensure_assignment_safety", new=AsyncMock(return_value=None)):
             resp = self.client.post(
@@ -372,20 +402,24 @@ class ApiEndpointTests(unittest.TestCase):
                     "name": "Dizi Toplama Odevi",
                     "description": "Bir diziyi okuyup toplamini yazdirin.",
                 },
+                headers=self._csrf_headers(csrf),
             )
         self.assertEqual(resp.status_code, 200)
         self.assertEqual(resp.json()["name"], "Dizi Toplama Odevi")
 
     def test_create_assignment_invalid_course_returns_400(self):
+        csrf = self._login_teacher()
         with patch.object(main, "_ensure_assignment_safety", new=AsyncMock(return_value=None)):
             resp = self.client.post(
                 "/api/assignments",
                 json={"course_id": "yok-boyle-ders", "name": "Test"},
+                headers=self._csrf_headers(csrf),
             )
         self.assertEqual(resp.status_code, 400)
 
     # ── Rubrics ────────────────────────────────────────────────────────────────
     def test_assignment_test_cases_can_be_replaced_and_listed(self):
+        csrf = self._login_teacher()
         payload = {
             "test_cases": [
                 {
@@ -409,6 +443,7 @@ class ApiEndpointTests(unittest.TestCase):
         put_resp = self.client.put(
             f"/api/assignments/{_DEMO_ASSIGNMENT_ID}/test-cases",
             json=payload,
+            headers=self._csrf_headers(csrf),
         )
         self.assertEqual(put_resp.status_code, 200)
 
@@ -464,7 +499,11 @@ class ApiEndpointTests(unittest.TestCase):
         self.assertEqual(request["test_cases"][0]["expected_stdout"], "49\n")
 
     def test_assignment_test_case_suggestions_are_ai_source_and_not_persisted(self):
-        resp = self.client.post(f"/api/assignments/{_DEMO_ASSIGNMENT_ID}/test-cases/suggest")
+        csrf = self._login_teacher()
+        resp = self.client.post(
+            f"/api/assignments/{_DEMO_ASSIGNMENT_ID}/test-cases/suggest",
+            headers=self._csrf_headers(csrf),
+        )
 
         self.assertEqual(resp.status_code, 200)
         suggestions = resp.json()["suggestions"]
@@ -476,6 +515,7 @@ class ApiEndpointTests(unittest.TestCase):
         self.assertEqual(saved_resp.json(), [])
 
     def test_list_rubrics(self):
+        self._login_teacher()
         resp = self.client.get("/api/rubrics")
         self.assertEqual(resp.status_code, 200)
         self.assertIsInstance(resp.json(), list)
@@ -494,6 +534,7 @@ class ApiEndpointTests(unittest.TestCase):
         ]
 
     def test_upsert_rubric_updates_existing(self):
+        csrf = self._login_teacher()
         resp = self.client.post(
             "/api/rubrics/upsert",
             json={
@@ -501,6 +542,7 @@ class ApiEndpointTests(unittest.TestCase):
                 "criteria": self._valid_rubric_criteria(),
                 "status": "draft",
             },
+            headers=self._csrf_headers(csrf),
         )
         self.assertEqual(resp.status_code, 200)
         data = resp.json()
@@ -508,6 +550,7 @@ class ApiEndpointTests(unittest.TestCase):
         self.assertEqual(data["status"], "draft")
 
     def test_upsert_rubric_invalid_status_returns_400(self):
+        csrf = self._login_teacher()
         resp = self.client.post(
             "/api/rubrics/upsert",
             json={
@@ -515,10 +558,12 @@ class ApiEndpointTests(unittest.TestCase):
                 "criteria": self._valid_rubric_criteria(),
                 "status": "gecersiz",
             },
+            headers=self._csrf_headers(csrf),
         )
         self.assertEqual(resp.status_code, 400)
 
     def test_upsert_rubric_too_few_criteria_returns_400(self):
+        csrf = self._login_teacher()
         resp = self.client.post(
             "/api/rubrics/upsert",
             json={
@@ -526,13 +571,16 @@ class ApiEndpointTests(unittest.TestCase):
                 "criteria": [{"name": "Tek", "description": "D", "max_score": 100}],
                 "status": "draft",
             },
+            headers=self._csrf_headers(csrf),
         )
         self.assertEqual(resp.status_code, 400)
 
     def test_update_rubric_status(self):
+        csrf = self._login_teacher()
         resp = self.client.patch(
             f"/api/rubrics/by-assignment/{_DEMO_ASSIGNMENT_ID}",
             json={"status": "approved"},
+            headers=self._csrf_headers(csrf),
         )
         self.assertEqual(resp.status_code, 200)
         self.assertEqual(resp.json()["status"], "approved")
