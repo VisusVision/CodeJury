@@ -16,7 +16,7 @@ import unittest
 from unittest.mock import MagicMock, patch
 
 from backend.sandbox.executor import _FALLBACK, _LANG_MAP, _simulate_sandbox, run_in_sandbox
-from backend.sandbox.pool import ContainerSlot, SandboxPool
+from backend.sandbox.pool import ContainerSlot, PoolState, SandboxPool
 
 
 _GET_POOL = "backend.sandbox.pool_manager.get_pool"
@@ -409,6 +409,46 @@ class SandboxPoolTests(unittest.TestCase):
         with patch("backend.sandbox.pool._requests") as mock_requests:
             mock_requests.get.return_value = resp
             self.assertTrue(pool._is_healthy(self._make_slot()))
+
+
+def test_pool_snapshot_reports_unavailable_before_initialization():
+    pool = SandboxPool(image="test-image", pool_size=3, base_port=19000, owner_id="worker-a")
+    assert pool.snapshot() == {
+        "state": "unavailable",
+        "pool_ready": False,
+        "container_count": 0,
+        "available_count": 0,
+        "target_size": 3,
+        "last_error_code": None,
+    }
+
+
+def test_pool_snapshot_reports_degraded_with_partial_capacity():
+    pool = SandboxPool(image="test-image", pool_size=3, base_port=19000, owner_id="worker-a")
+    pool._slots.append(ContainerSlot(container=MagicMock(), url="http://localhost:19000", port=19000))
+    pool._available.put(pool._slots[0])
+    pool._state = PoolState.DEGRADED
+    assert pool.wait_until_ready(0.01) is True
+    assert pool.snapshot()["state"] == "degraded"
+    assert pool.snapshot()["pool_ready"] is True
+
+
+def test_pool_wait_returns_false_after_terminal_unavailable():
+    pool = SandboxPool(image="test-image", pool_size=1, base_port=19000, owner_id="worker-a")
+    pool._set_state(PoolState.UNAVAILABLE, error_code="docker_unavailable")
+    assert pool.wait_until_ready(0.01) is False
+    assert pool.snapshot()["last_error_code"] == "docker_unavailable"
+
+
+def test_cleanup_only_removes_current_owner_containers():
+    pool = SandboxPool(image="test-image", pool_size=1, base_port=19000, owner_id="worker-a")
+    pool._client = MagicMock()
+    pool._client.containers.list.return_value = []
+    pool._cleanup_existing()
+    pool._client.containers.list.assert_called_once_with(
+        all=True,
+        filters={"label": "agentgrade.pool_owner=worker-a"},
+    )
 
 
 if __name__ == "__main__":

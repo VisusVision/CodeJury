@@ -9,6 +9,7 @@ import queue
 import threading
 import time
 from dataclasses import dataclass
+from enum import Enum
 
 try:
     import requests as _requests
@@ -23,6 +24,14 @@ except ModuleNotFoundError:
 
 def _log(msg: str) -> None:
     print(f"[pool] {msg}", flush=True)
+
+
+class PoolState(str, Enum):
+    STARTING = "starting"
+    READY = "ready"
+    DEGRADED = "degraded"
+    UNAVAILABLE = "unavailable"
+    STOPPING = "stopping"
 
 
 @dataclass
@@ -55,27 +64,72 @@ class SandboxPool:
         pool_size: int = 10,
         base_port: int = 8181,
         acquire_timeout: float = 30.0,
+        owner_id: str = "default-worker",
     ):
         self.image = image
         self.pool_size = pool_size
         self.base_port = base_port
         self.acquire_timeout = acquire_timeout
+        self.owner_id = owner_id
 
         self._available: queue.Queue = queue.Queue()
         self._slots: list[ContainerSlot] = []
         self._client = None
         self._initialized = False
         self._lock = threading.Lock()
+        self._state_condition = threading.Condition(self._lock)
+        self._state = PoolState.UNAVAILABLE
+        self._last_error_code: str | None = None
+
+    def _set_state(self, state: PoolState, *, error_code: str | None = None) -> None:
+        with self._state_condition:
+            self._state = state
+            self._last_error_code = error_code
+            self._state_condition.notify_all()
+
+    def wait_until_ready(self, timeout_s: float) -> bool:
+        deadline = time.monotonic() + max(0.0, timeout_s)
+        with self._state_condition:
+            while self._state not in {
+                PoolState.READY,
+                PoolState.DEGRADED,
+                PoolState.UNAVAILABLE,
+                PoolState.STOPPING,
+            }:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                self._state_condition.wait(remaining)
+            ready = self._state in {PoolState.READY, PoolState.DEGRADED} and len(self._slots) > 0
+            return ready
+
+    def snapshot(self) -> dict[str, object]:
+        with self._lock:
+            state = self._state.value
+            count = len(self._slots)
+            error_code = self._last_error_code
+            return {
+                "state": state,
+                "pool_ready": state in {"ready", "degraded"} and count > 0,
+                "container_count": count,
+                "available_count": self._available.qsize(),
+                "target_size": self.pool_size,
+                "last_error_code": error_code,
+            }
 
     # ── Initialization ────────────────────────────────────────────────────────
 
     def initialize(self) -> None:
         """Start all containers in parallel."""
+        self._set_state(PoolState.STARTING)
+
         if _docker is None:
             _log("'docker' paketi bulunamadi — sandbox devre disi")
+            self._set_state(PoolState.UNAVAILABLE, error_code="dependency_missing")
             return
         if _requests is None:
             _log("'requests' paketi bulunamadi — sandbox devre disi")
+            self._set_state(PoolState.UNAVAILABLE, error_code="dependency_missing")
             return
 
         try:
@@ -83,6 +137,7 @@ class SandboxPool:
             self._client.ping()
         except Exception as e:
             _log(f"Docker baglantisi kurulamadi: {e} — sandbox devre disi")
+            self._set_state(PoolState.UNAVAILABLE, error_code="docker_unavailable")
             return
 
         self._cleanup_existing()
@@ -117,12 +172,19 @@ class SandboxPool:
             f"(port {self.base_port}-{self.base_port + self.pool_size - 1})"
         )
 
+        if len(self._slots) == 0:
+            self._set_state(PoolState.UNAVAILABLE, error_code="no_healthy_containers")
+        elif len(self._slots) == self.pool_size:
+            self._set_state(PoolState.READY)
+        else:
+            self._set_state(PoolState.DEGRADED)
+
     def _cleanup_existing(self) -> None:
         """Remove leftover containers from a previous run."""
         try:
             existing = self._client.containers.list(
                 all=True,
-                filters={"name": "agentgrade-pool-"}
+                filters={"label": f"agentgrade.pool_owner={self.owner_id}"},
             )
             for c in existing:
                 try:
@@ -135,11 +197,13 @@ class SandboxPool:
 
     def _create_slot(self, port: int) -> ContainerSlot:
         """Start a container and return a slot after it passes the health check."""
+        safe_owner = "".join(ch if ch.isalnum() or ch in "-_" else "-" for ch in self.owner_id)[:40]
         container = self._client.containers.run(
             image=self.image,
-            name=f"agentgrade-pool-{port}",
+            name=f"agentgrade-pool-{safe_owner}-{port}",
+            labels={"agentgrade.pool_owner": self.owner_id},
             detach=True,
-            ports={"8080/tcp": port},
+            ports={"8080/tcp": ("127.0.0.1", port)},
             read_only=True,
             tmpfs={"/tmp": "size=50m,exec", "/run": "size=10m"},
             security_opt=["no-new-privileges:true"],
@@ -153,7 +217,7 @@ class SandboxPool:
             remove=False,
         )
 
-        url = f"http://localhost:{port}"
+        url = f"http://127.0.0.1:{port}"
         self._wait_healthy(url, timeout=45.0)
         _log(f"Container hazir -> {url}")
         return ContainerSlot(container=container, url=url, port=port)
@@ -234,6 +298,7 @@ class SandboxPool:
 
     def shutdown(self) -> None:
         """Stop and remove all containers."""
+        self._set_state(PoolState.STOPPING)
         count = 0
         for slot in self._slots:
             try:
@@ -249,6 +314,7 @@ class SandboxPool:
             except queue.Empty:
                 break
         _log(f"{count} container kapatildi")
+        self._set_state(PoolState.UNAVAILABLE)
 
     # ── Status ────────────────────────────────────────────────────────────────
 
