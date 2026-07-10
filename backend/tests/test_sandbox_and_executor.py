@@ -548,5 +548,46 @@ def test_replace_slot_succeeds_and_stays_ready():
     assert snapshot["pool_ready"] is True
 
 
+def test_replace_slot_discards_new_container_when_shutdown_races_ahead():
+    pool = SandboxPool(image="test-image", pool_size=1, base_port=19000, owner_id="worker-a")
+    slot_a = ContainerSlot(container=MagicMock(), url="http://localhost:19000", port=19000)
+    pool._slots.append(slot_a)
+    pool._set_state(PoolState.READY)
+
+    new_container = MagicMock()
+    new_slot = ContainerSlot(container=new_container, url="http://localhost:19000", port=19000)
+
+    def fake_create_slot(port):
+        # Simulate shutdown() completing concurrently while _create_slot() is in flight.
+        pool._slots.clear()
+        pool._set_state(PoolState.STOPPING)
+        return new_slot
+
+    with patch.object(pool, "_create_slot", side_effect=fake_create_slot):
+        pool._replace_slot(slot_a)
+
+    new_container.stop.assert_called_once()
+    new_container.remove.assert_called_once_with(force=True)
+    assert pool._available.qsize() == 0
+    assert len(pool._slots) == 0
+
+
+def test_replace_slot_discards_new_container_when_state_already_stopping():
+    pool = SandboxPool(image="test-image", pool_size=1, base_port=19000, owner_id="worker-a")
+    slot_a = ContainerSlot(container=MagicMock(), url="http://localhost:19000", port=19000)
+    pool._slots.append(slot_a)
+    pool._set_state(PoolState.STOPPING)
+
+    new_container = MagicMock()
+    new_slot = ContainerSlot(container=new_container, url="http://localhost:19000", port=19000)
+
+    with patch.object(pool, "_create_slot", return_value=new_slot):
+        pool._replace_slot(slot_a)
+
+    new_container.stop.assert_called_once()
+    new_container.remove.assert_called_once_with(force=True)
+    assert pool._available.qsize() == 0
+
+
 if __name__ == "__main__":
     unittest.main()
