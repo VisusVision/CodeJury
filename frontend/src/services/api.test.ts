@@ -59,7 +59,11 @@ describe("analyzeCode", () => {
     expect(result.totalScore).toBe(93);
     expect(result.summary).toBe("Genel olarak basarili.");
     expect(result.taskAlignment?.factor).toBe(0.95);
-    expect(fetchMock).toHaveBeenNthCalledWith(2, "/api/analyze/jobs/job-123", { cache: "no-store" });
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      2,
+      "/api/analyze/jobs/job-123",
+      expect.objectContaining({ cache: "no-store", credentials: "include" }),
+    );
   });
 
   test("emits partial analysis results before report generation finishes", async () => {
@@ -163,7 +167,10 @@ describe("assignment test cases", () => {
     const rows = await getAssignmentTestCases("assignment-1");
 
     expect(rows[0].name).toBe("public");
-    expect(fetchMock).toHaveBeenCalledWith("/api/assignments/assignment-1/test-cases");
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/assignments/assignment-1/test-cases",
+      expect.objectContaining({ credentials: "include" }),
+    );
   });
 
   test("replaces assignment test cases", async () => {
@@ -177,15 +184,19 @@ describe("assignment test cases", () => {
       { name: "hidden", stdin: "0\n", expected_stdout: "0\n", visibility: "hidden", source: "manual" },
     ]);
 
-    expect(fetchMock).toHaveBeenCalledWith("/api/assignments/assignment-1/test-cases", {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        test_cases: [
-          { name: "hidden", stdin: "0\n", expected_stdout: "0\n", visibility: "hidden", source: "manual" },
-        ],
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/assignments/assignment-1/test-cases",
+      expect.objectContaining({
+        method: "PUT",
+        credentials: "include",
+        headers: expect.any(Headers),
+        body: JSON.stringify({
+          test_cases: [
+            { name: "hidden", stdin: "0\n", expected_stdout: "0\n", visibility: "hidden", source: "manual" },
+          ],
+        }),
       }),
-    });
+    );
   });
 
   test("fetches AI test case suggestions without persisting them", async () => {
@@ -198,7 +209,10 @@ describe("assignment test cases", () => {
     const rows = await suggestAssignmentTestCases("assignment-1");
 
     expect(rows[0].source).toBe("ai");
-    expect(fetchMock).toHaveBeenCalledWith("/api/assignments/assignment-1/test-cases/suggest", { method: "POST" });
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/assignments/assignment-1/test-cases/suggest",
+      expect.objectContaining({ method: "POST", credentials: "include" }),
+    );
   });
 });
 
@@ -224,7 +238,10 @@ describe("fetchHealth", () => {
 
     const health = await fetchHealth();
 
-    expect(fetchMock).toHaveBeenCalledWith("/api/health");
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/health",
+      expect.objectContaining({ credentials: "include" }),
+    );
     expect(health?.llm?.general_model).toBe("llama3");
     expect(health?.sandbox?.mode).toBe("pool");
     expect(health?.sandbox?.available_count).toBe(2);

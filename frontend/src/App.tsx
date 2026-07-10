@@ -4,6 +4,7 @@ import { Toaster as Sonner } from "@/components/ui/sonner";
 import { Toaster } from "@/components/ui/toaster";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { LanguageProvider } from "@/i18n/LanguageContext";
+import { AuthProvider } from "./auth/AuthContext";
 import Login from "./pages/Login.tsx";
 import Courses from "./pages/Courses.tsx";
 import Assignments from "./pages/Assignments.tsx";
@@ -16,24 +17,26 @@ const queryClient = new QueryClient();
 
 const App = () => (
   <LanguageProvider>
-    <QueryClientProvider client={queryClient}>
-      <TooltipProvider>
-        <Toaster />
-        <Sonner />
-        <BrowserRouter>
-          <Routes>
-            <Route path="/" element={<Navigate to="/login" replace />} />
-            <Route path="/login" element={<Login />} />
-            <Route path="/courses" element={<Courses />} />
-            <Route path="/courses/:courseId/assignments" element={<Assignments />} />
-            <Route path="/courses/:courseId/assignments/:assignmentId" element={<AssignmentWorkspace />} />
-            <Route path="/faculty/dashboard" element={<FacultyDashboard />} />
-            <Route path="/faculty/rubric/:assignmentId" element={<RubricEditor />} />
-            <Route path="*" element={<NotFound />} />
-          </Routes>
-        </BrowserRouter>
-      </TooltipProvider>
-    </QueryClientProvider>
+    <AuthProvider>
+      <QueryClientProvider client={queryClient}>
+        <TooltipProvider>
+          <Toaster />
+          <Sonner />
+          <BrowserRouter>
+            <Routes>
+              <Route path="/" element={<Navigate to="/login" replace />} />
+              <Route path="/login" element={<Login />} />
+              <Route path="/courses" element={<Courses />} />
+              <Route path="/courses/:courseId/assignments" element={<Assignments />} />
+              <Route path="/courses/:courseId/assignments/:assignmentId" element={<AssignmentWorkspace />} />
+              <Route path="/faculty/dashboard" element={<FacultyDashboard />} />
+              <Route path="/faculty/rubric/:assignmentId" element={<RubricEditor />} />
+              <Route path="*" element={<NotFound />} />
+            </Routes>
+          </BrowserRouter>
+        </TooltipProvider>
+      </QueryClientProvider>
+    </AuthProvider>
   </LanguageProvider>
 );
 

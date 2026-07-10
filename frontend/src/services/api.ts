@@ -1,3 +1,5 @@
+import { apiFetch } from "./http";
+
 /** Gelistirmede bos string = ayni origin (/api -> Vite proxy -> FastAPI). Uzak cihazdan UI acilinca gerekli. */
 const API_BASE_URL =
   import.meta.env.VITE_API_BASE_URL ??
@@ -351,7 +353,7 @@ async function fetchWithTimeout(
   const controller = new AbortController();
   const timer = window.setTimeout(() => controller.abort(), timeoutMs);
   try {
-    return await fetch(url, { ...init, signal: controller.signal });
+    return await apiFetch(url, { ...init, signal: controller.signal });
   } catch (error) {
     if (error instanceof DOMException && error.name === "AbortError") {
       throw new Error(`İstek zaman aşımına uğradı (${Math.round(timeoutMs / 1000)} sn).`);
@@ -380,7 +382,7 @@ async function pollAnalysisJob(
     if (attempt > 0) {
       await sleep(ANALYSIS_POLL_INTERVAL_MS);
     }
-    const response = await fetch(`${API_BASE_URL}/api/analyze/jobs/${encodeURIComponent(jobId)}`, {
+    const response = await apiFetch(`${API_BASE_URL}/api/analyze/jobs/${encodeURIComponent(jobId)}`, {
       cache: "no-store",
       signal,
     });
@@ -432,7 +434,7 @@ export async function analyzeCode(
 ): Promise<ApiAnalysisResult> {
   let response: Response;
   try {
-    response = await fetch(`${API_BASE_URL}/api/analyze`, {
+    response = await apiFetch(`${API_BASE_URL}/api/analyze`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -493,7 +495,7 @@ export interface ApiHealthResponse {
 
 export async function checkHealth(): Promise<boolean> {
   try {
-    const response = await fetch(`${API_BASE_URL}/api/health`);
+    const response = await apiFetch(`${API_BASE_URL}/api/health`);
     return response.ok;
   } catch {
     return false;
@@ -502,7 +504,7 @@ export async function checkHealth(): Promise<boolean> {
 
 export async function fetchHealth(): Promise<ApiHealthResponse | null> {
   try {
-    const response = await fetch(`${API_BASE_URL}/api/health`);
+    const response = await apiFetch(`${API_BASE_URL}/api/health`);
     if (!response.ok) return null;
     return (await response.json()) as ApiHealthResponse;
   } catch {
@@ -511,7 +513,7 @@ export async function fetchHealth(): Promise<ApiHealthResponse | null> {
 }
 
 export async function loginStudent(studentNo: string, password: string): Promise<Student | null> {
-  const response = await fetch(`${API_BASE_URL}/api/student/login`, {
+  const response = await apiFetch(`${API_BASE_URL}/api/student/login`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ student_no: studentNo, password }),
@@ -528,7 +530,7 @@ export async function loginStudent(studentNo: string, password: string): Promise
 }
 
 export async function getStudents(): Promise<Student[]> {
-  const response = await fetch(`${API_BASE_URL}/api/students`);
+  const response = await apiFetch(`${API_BASE_URL}/api/students`);
   if (!response.ok) {
     const errorText = await response.text();
     throw new Error(`Öğrenci listesi hatası (${response.status}): ${errorText}`);
@@ -544,7 +546,7 @@ export async function createStudent(payload: {
   department_id: string;
   class_year?: number | null;
 }): Promise<Student> {
-  const response = await fetch(`${API_BASE_URL}/api/students`, {
+  const response = await apiFetch(`${API_BASE_URL}/api/students`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
@@ -564,7 +566,7 @@ export async function updateStudent(studentId: string, payload: {
   class_year?: number | null;
   department_id: string;
 }): Promise<Student> {
-  const response = await fetch(`${API_BASE_URL}/api/students/${studentId}`, {
+  const response = await apiFetch(`${API_BASE_URL}/api/students/${studentId}`, {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
@@ -577,7 +579,7 @@ export async function updateStudent(studentId: string, payload: {
 }
 
 export async function deleteStudent(studentId: string): Promise<void> {
-  const response = await fetch(`${API_BASE_URL}/api/students/${studentId}`, { method: "DELETE" });
+  const response = await apiFetch(`${API_BASE_URL}/api/students/${studentId}`, { method: "DELETE" });
   if (!response.ok) {
     const errorText = await response.text();
     throw new Error(`Öğrenci silme hatası (${response.status}): ${errorText}`);
@@ -588,7 +590,7 @@ export async function importStudentsCsv(file: File): Promise<StudentImportRespon
   const formData = new FormData();
   formData.append("file", file);
 
-  const response = await fetch(`${API_BASE_URL}/api/students/import-csv`, {
+  const response = await apiFetch(`${API_BASE_URL}/api/students/import-csv`, {
     method: "POST",
     body: formData,
   });
@@ -600,7 +602,7 @@ export async function importStudentsCsv(file: File): Promise<StudentImportRespon
 }
 
 export async function getStudentCourses(studentId: string): Promise<Course[]> {
-  const response = await fetch(`${API_BASE_URL}/api/student/${studentId}/courses`);
+  const response = await apiFetch(`${API_BASE_URL}/api/student/${studentId}/courses`);
   if (!response.ok) {
     const errorText = await response.text();
     throw new Error(`Ders listesi hatası (${response.status}): ${errorText}`);
@@ -609,7 +611,7 @@ export async function getStudentCourses(studentId: string): Promise<Course[]> {
 }
 
 export async function getCourse(courseId: string): Promise<Course> {
-  const response = await fetch(`${API_BASE_URL}/api/courses/${courseId}`);
+  const response = await apiFetch(`${API_BASE_URL}/api/courses/${courseId}`);
   if (!response.ok) {
     const errorText = await response.text();
     throw new Error(`Ders detayı hatası (${response.status}): ${errorText}`);
@@ -618,7 +620,7 @@ export async function getCourse(courseId: string): Promise<Course> {
 }
 
 export async function getCourseAssignments(courseId: string): Promise<Assignment[]> {
-  const response = await fetch(`${API_BASE_URL}/api/courses/${courseId}/assignments`);
+  const response = await apiFetch(`${API_BASE_URL}/api/courses/${courseId}/assignments`);
   if (!response.ok) {
     const errorText = await response.text();
     throw new Error(`Ödev listesi hatası (${response.status}): ${errorText}`);
@@ -627,7 +629,7 @@ export async function getCourseAssignments(courseId: string): Promise<Assignment
 }
 
 export async function getAssignment(assignmentId: string): Promise<Assignment> {
-  const response = await fetch(`${API_BASE_URL}/api/assignments/${assignmentId}`);
+  const response = await apiFetch(`${API_BASE_URL}/api/assignments/${assignmentId}`);
   if (!response.ok) {
     const errorText = await response.text();
     throw new Error(`Ödev detayı hatası (${response.status}): ${errorText}`);
@@ -644,7 +646,7 @@ export async function createUploadHistoryRecord(payload: {
   score?: number;
   has_error?: boolean;
 }): Promise<void> {
-  const response = await fetch(`${API_BASE_URL}/api/upload-history`, {
+  const response = await apiFetch(`${API_BASE_URL}/api/upload-history`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
@@ -672,7 +674,7 @@ export async function getUploadHistoryRecords(studentNo: string, assignmentId?: 
     url.searchParams.set("assignment_id", assignmentId);
   }
 
-  const response = await fetch(url.toString());
+  const response = await apiFetch(url.toString());
   if (!response.ok) {
     const errorText = await response.text();
     throw new Error(`Yükleme geçmişi listeleme hatası (${response.status}): ${errorText}`);
@@ -705,7 +707,7 @@ export async function getCurrentEvaluation(studentNo: string, assignmentId?: str
   if (assignmentId) {
     url.searchParams.set("assignment_id", assignmentId);
   }
-  const response = await fetch(url.toString());
+  const response = await apiFetch(url.toString());
   if (!response.ok) {
     const errorText = await response.text();
     throw new Error(`Değerlendirme durumu hatası (${response.status}): ${errorText}`);
@@ -714,7 +716,7 @@ export async function getCurrentEvaluation(studentNo: string, assignmentId?: str
 }
 
 export async function getEvaluations(): Promise<EvaluationRecord[]> {
-  const response = await fetch(`${API_BASE_URL}/api/evaluations`);
+  const response = await apiFetch(`${API_BASE_URL}/api/evaluations`);
   if (!response.ok) {
     const errorText = await response.text();
     throw new Error(`Değerlendirme listesi hatası (${response.status}): ${errorText}`);
@@ -731,7 +733,7 @@ export async function submitEvaluation(payload: {
   clarity: number;
   comment: string;
 }): Promise<EvaluationRecord> {
-  const response = await fetch(`${API_BASE_URL}/api/evaluations`, {
+  const response = await apiFetch(`${API_BASE_URL}/api/evaluations`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
@@ -751,7 +753,7 @@ export async function registerTeacher(payload: {
   email: string;
   password: string;
 }): Promise<Teacher> {
-  const response = await fetch(`${API_BASE_URL}/api/teacher/register`, {
+  const response = await apiFetch(`${API_BASE_URL}/api/teacher/register`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
@@ -766,7 +768,7 @@ export async function registerTeacher(payload: {
 }
 
 export async function loginTeacher(email: string, password: string): Promise<Teacher> {
-  const response = await fetch(`${API_BASE_URL}/api/teacher/login`, {
+  const response = await apiFetch(`${API_BASE_URL}/api/teacher/login`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ email, password }),
@@ -781,7 +783,7 @@ export async function loginTeacher(email: string, password: string): Promise<Tea
 }
 
 export async function getDepartments(): Promise<Department[]> {
-  const response = await fetch(`${API_BASE_URL}/api/departments`);
+  const response = await apiFetch(`${API_BASE_URL}/api/departments`);
   if (!response.ok) {
     const errorText = await response.text();
     throw new Error(`Bölüm listesi hatası (${response.status}): ${errorText}`);
@@ -790,7 +792,7 @@ export async function getDepartments(): Promise<Department[]> {
 }
 
 export async function createDepartment(payload: { name: string; created_by?: string | null }): Promise<Department> {
-  const response = await fetch(`${API_BASE_URL}/api/departments`, {
+  const response = await apiFetch(`${API_BASE_URL}/api/departments`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
@@ -803,7 +805,7 @@ export async function createDepartment(payload: { name: string; created_by?: str
 }
 
 export async function deleteDepartment(departmentId: string): Promise<void> {
-  const response = await fetch(`${API_BASE_URL}/api/departments/${departmentId}`, { method: "DELETE" });
+  const response = await apiFetch(`${API_BASE_URL}/api/departments/${departmentId}`, { method: "DELETE" });
   if (!response.ok) {
     const errorText = await response.text();
     throw new Error(`Bölüm silme hatası (${response.status}): ${errorText}`);
@@ -811,7 +813,7 @@ export async function deleteDepartment(departmentId: string): Promise<void> {
 }
 
 export async function getCourses(): Promise<Course[]> {
-  const response = await fetch(`${API_BASE_URL}/api/courses`);
+  const response = await apiFetch(`${API_BASE_URL}/api/courses`);
   if (!response.ok) {
     const errorText = await response.text();
     throw new Error(`Ders listesi hatası (${response.status}): ${errorText}`);
@@ -820,7 +822,7 @@ export async function getCourses(): Promise<Course[]> {
 }
 
 export async function createCourse(payload: { name: string; code: string; department_id?: string | null; class_year?: number | null }): Promise<Course> {
-  const response = await fetch(`${API_BASE_URL}/api/courses`, {
+  const response = await apiFetch(`${API_BASE_URL}/api/courses`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
@@ -833,7 +835,7 @@ export async function createCourse(payload: { name: string; code: string; depart
 }
 
 export async function deleteCourse(courseId: string): Promise<void> {
-  const response = await fetch(`${API_BASE_URL}/api/courses/${courseId}`, { method: "DELETE" });
+  const response = await apiFetch(`${API_BASE_URL}/api/courses/${courseId}`, { method: "DELETE" });
   if (!response.ok) {
     const errorText = await response.text();
     throw new Error(`Ders silme hatası (${response.status}): ${errorText}`);
@@ -841,7 +843,7 @@ export async function deleteCourse(courseId: string): Promise<void> {
 }
 
 export async function getAssignments(): Promise<Assignment[]> {
-  const response = await fetch(`${API_BASE_URL}/api/assignments`);
+  const response = await apiFetch(`${API_BASE_URL}/api/assignments`);
   if (!response.ok) {
     const errorText = await response.text();
     throw new Error(`Ödev listesi hatası (${response.status}): ${errorText}`);
@@ -855,7 +857,7 @@ export async function createAssignment(payload: {
   description?: string | null;
   due_date?: string | null;
 }): Promise<Assignment> {
-  const response = await fetch(`${API_BASE_URL}/api/assignments`, {
+  const response = await apiFetch(`${API_BASE_URL}/api/assignments`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
@@ -868,7 +870,7 @@ export async function createAssignment(payload: {
 }
 
 export async function deleteAssignment(assignmentId: string): Promise<void> {
-  const response = await fetch(`${API_BASE_URL}/api/assignments/${assignmentId}`, { method: "DELETE" });
+  const response = await apiFetch(`${API_BASE_URL}/api/assignments/${assignmentId}`, { method: "DELETE" });
   if (!response.ok) {
     const errorText = await response.text();
     throw new Error(`Ödev silme hatası (${response.status}): ${errorText}`);
@@ -876,7 +878,7 @@ export async function deleteAssignment(assignmentId: string): Promise<void> {
 }
 
 export async function getAssignmentTestCases(assignmentId: string): Promise<AssignmentTestCase[]> {
-  const response = await fetch(`${API_BASE_URL}/api/assignments/${assignmentId}/test-cases`);
+  const response = await apiFetch(`${API_BASE_URL}/api/assignments/${assignmentId}/test-cases`);
   if (!response.ok) {
     const errorText = await response.text();
     throw new Error(`Test listesi hatasi (${response.status}): ${errorText}`);
@@ -889,7 +891,7 @@ export async function replaceAssignmentTestCases(
   assignmentId: string,
   testCases: AssignmentTestCase[],
 ): Promise<AssignmentTestCase[]> {
-  const response = await fetch(`${API_BASE_URL}/api/assignments/${assignmentId}/test-cases`, {
+  const response = await apiFetch(`${API_BASE_URL}/api/assignments/${assignmentId}/test-cases`, {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ test_cases: testCases }),
@@ -903,7 +905,7 @@ export async function replaceAssignmentTestCases(
 }
 
 export async function suggestAssignmentTestCases(assignmentId: string): Promise<AssignmentTestCase[]> {
-  const response = await fetch(`${API_BASE_URL}/api/assignments/${assignmentId}/test-cases/suggest`, {
+  const response = await apiFetch(`${API_BASE_URL}/api/assignments/${assignmentId}/test-cases/suggest`, {
     method: "POST",
   });
   if (!response.ok) {
@@ -915,7 +917,7 @@ export async function suggestAssignmentTestCases(assignmentId: string): Promise<
 }
 
 export async function getRubrics(): Promise<Rubric[]> {
-  const response = await fetch(`${API_BASE_URL}/api/rubrics`);
+  const response = await apiFetch(`${API_BASE_URL}/api/rubrics`);
   if (!response.ok) {
     const errorText = await response.text();
     throw new Error(`Rubrik listesi hatası (${response.status}): ${errorText}`);
@@ -925,7 +927,7 @@ export async function getRubrics(): Promise<Rubric[]> {
 }
 
 export async function getRubricByAssignment(assignmentId: string): Promise<Rubric | null> {
-  const response = await fetch(`${API_BASE_URL}/api/rubrics/by-assignment/${assignmentId}`);
+  const response = await apiFetch(`${API_BASE_URL}/api/rubrics/by-assignment/${assignmentId}`);
   if (!response.ok) {
     const errorText = await response.text();
     throw new Error(`Rubrik detayı hatası (${response.status}): ${errorText}`);
@@ -941,7 +943,7 @@ export async function upsertRubric(payload: {
   status: "draft" | "approved";
   created_by?: string | null;
 }): Promise<Rubric> {
-  const response = await fetch(`${API_BASE_URL}/api/rubrics/upsert`, {
+  const response = await apiFetch(`${API_BASE_URL}/api/rubrics/upsert`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
@@ -955,7 +957,7 @@ export async function upsertRubric(payload: {
 }
 
 export async function updateRubricStatusByAssignment(assignmentId: string, status: "draft" | "approved"): Promise<Rubric> {
-  const response = await fetch(`${API_BASE_URL}/api/rubrics/by-assignment/${assignmentId}`, {
+  const response = await apiFetch(`${API_BASE_URL}/api/rubrics/by-assignment/${assignmentId}`, {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ status }),
@@ -1053,7 +1055,7 @@ export async function generateAssignmentExample(payload: {
 }
 
 export async function getQuestions(): Promise<QuestionItem[]> {
-  const response = await fetch(`${API_BASE_URL}/api/questions`);
+  const response = await apiFetch(`${API_BASE_URL}/api/questions`);
   if (!response.ok) {
     const errorText = await response.text();
     throw new Error(`Sorular listesi hatası (${response.status}): ${errorText}`);
@@ -1065,7 +1067,7 @@ export async function createQuestion(payload: {
   content: string;
   color: "blue" | "green" | "pink" | "yellow";
 }): Promise<QuestionItem> {
-  const response = await fetch(`${API_BASE_URL}/api/questions`, {
+  const response = await apiFetch(`${API_BASE_URL}/api/questions`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
@@ -1078,7 +1080,7 @@ export async function createQuestion(payload: {
 }
 
 export async function deleteQuestion(questionId: string): Promise<void> {
-  const response = await fetch(`${API_BASE_URL}/api/questions/${questionId}`, { method: "DELETE" });
+  const response = await apiFetch(`${API_BASE_URL}/api/questions/${questionId}`, { method: "DELETE" });
   if (!response.ok) {
     const errorText = await response.text();
     throw new Error(`Soru silme hatası (${response.status}): ${errorText}`);
@@ -1086,7 +1088,7 @@ export async function deleteQuestion(questionId: string): Promise<void> {
 }
 
 export async function getAssignmentQuestions(assignmentId: string): Promise<QuestionItem[]> {
-  const response = await fetch(`${API_BASE_URL}/api/assignments/${assignmentId}/questions`);
+  const response = await apiFetch(`${API_BASE_URL}/api/assignments/${assignmentId}/questions`);
   if (!response.ok) {
     const errorText = await response.text();
     throw new Error(`Atanan sorular hatası (${response.status}): ${errorText}`);
@@ -1098,7 +1100,7 @@ export async function updateAssignmentQuestions(payload: {
   assignment_id: string;
   question_ids: string[];
 }): Promise<void> {
-  const response = await fetch(`${API_BASE_URL}/api/assignment-questions/update`, {
+  const response = await apiFetch(`${API_BASE_URL}/api/assignment-questions/update`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
@@ -1110,7 +1112,7 @@ export async function updateAssignmentQuestions(payload: {
 }
 
 export async function updateTeacherEmail(teacherId: string, email: string): Promise<Teacher> {
-  const response = await fetch(`${API_BASE_URL}/api/teacher/${teacherId}/email`, {
+  const response = await apiFetch(`${API_BASE_URL}/api/teacher/${teacherId}/email`, {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ email }),
@@ -1125,7 +1127,7 @@ export async function updateTeacherPassword(
   teacherId: string,
   payload: { current_password?: string; new_password: string },
 ): Promise<void> {
-  const response = await fetch(`${API_BASE_URL}/api/teacher/${teacherId}/password`, {
+  const response = await apiFetch(`${API_BASE_URL}/api/teacher/${teacherId}/password`, {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
