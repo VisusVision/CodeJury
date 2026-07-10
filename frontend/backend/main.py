@@ -2,7 +2,6 @@
 FastAPI backend -- Gercek multi-agent code review pipeline.
 """
 
-import ast
 import csv
 import asyncio
 import hashlib
@@ -13,7 +12,6 @@ import logging
 import os
 import re
 import secrets
-import subprocess
 import sys
 import time
 import traceback
@@ -3772,48 +3770,6 @@ def _parse_optional_datetime(value: str | None) -> datetime | None:
         return datetime.fromisoformat(text)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail="Gecersiz tarih formatı") from exc
-
-
-# ---- Sandbox simulation ----
-
-def _simulate_sandbox(source_code: str) -> dict:
-    """AST parse + subprocess ile basit sandbox simulasyonu."""
-    result = {
-        "stdout": "",
-        "stderr": "",
-        "exit_code": 0,
-        "execution_time_ms": 0,
-        "peak_memory_mb": 0.0,
-        "compilation_success": False,
-    }
-
-    try:
-        ast.parse(source_code)
-        result["compilation_success"] = True
-    except SyntaxError as e:
-        result["stderr"] = f"SyntaxError: {e.msg} (line {e.lineno})"
-        result["exit_code"] = 1
-        return result
-
-    try:
-        proc = subprocess.run(
-            [sys.executable, "-c", source_code],
-            capture_output=True,
-            text=True,
-            timeout=10,
-            cwd=os.path.dirname(__file__) or ".",
-        )
-        result["stdout"] = proc.stdout
-        result["stderr"] = proc.stderr
-        result["exit_code"] = proc.returncode
-    except subprocess.TimeoutExpired:
-        result["stderr"] = "TimeoutError: Kod 10 saniye icinde tamamlanamadi"
-        result["exit_code"] = 1
-    except Exception as e:
-        result["stderr"] = str(e)
-        result["exit_code"] = 1
-
-    return result
 
 
 # ---- Ana pipeline ----

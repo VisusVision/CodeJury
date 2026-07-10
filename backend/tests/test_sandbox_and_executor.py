@@ -13,14 +13,17 @@ Onemli patch hedefleri (gercek import yapisina gore):
 """
 
 import unittest
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, call, patch
+import requests
 
+from backend.sandbox.errors import SandboxUnavailableError
 from backend.sandbox.executor import _FALLBACK, _LANG_MAP, _simulate_sandbox, run_in_sandbox
 from backend.sandbox.pool import ContainerSlot, PoolState, SandboxPool
 
 
 _GET_POOL = "backend.sandbox.pool_manager.get_pool"
 _REQUESTS_POST = "requests.post"
+_WAIT_FOR_POOL_READY = "backend.sandbox.pool_manager.wait_for_pool_ready"
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -131,20 +134,29 @@ class RunInSandboxTests(unittest.TestCase):
         }
         self.assertTrue(required.issubset(set(_FALLBACK.keys())))
 
-    def test_pool_none_falls_back_to_simulation(self):
-        with patch(_GET_POOL, return_value=None):
-            result = run_in_sandbox("print('hello')\n", "python")
-        self.assertEqual(result["exit_code"], 0)
-        self.assertIn("hello", result["stdout"])
-        self.assertEqual(result.get("execution_backend"), "simulation")
+    def test_pool_none_raises_without_running_host_subprocess(self):
+        with (
+            patch(_GET_POOL, return_value=None),
+            patch(_WAIT_FOR_POOL_READY, return_value=None),
+            patch("subprocess.run") as host_run,
+        ):
+            with self.assertRaises(SandboxUnavailableError) as ctx:
+                run_in_sandbox("print('hello')\n", "python")
+        self.assertEqual(ctx.exception.code, "pool_not_ready")
+        host_run.assert_not_called()
 
-    def test_pool_not_ready_falls_back_to_simulation(self):
+    def test_pool_not_ready_raises_without_calling_simulation(self):
         pool = MagicMock()
         pool.is_ready = False
-        with patch(_GET_POOL, return_value=pool):
-            result = run_in_sandbox("print('hi')\n", "python")
-        self.assertEqual(result["exit_code"], 0)
-        self.assertIn("hi", result["stdout"])
+        with (
+            patch(_GET_POOL, return_value=pool),
+            patch(_WAIT_FOR_POOL_READY, return_value=None),
+            patch("backend.sandbox.executor._simulate_sandbox") as simulation,
+        ):
+            with self.assertRaises(SandboxUnavailableError) as ctx:
+                run_in_sandbox("print('hi')\n", "python")
+        self.assertEqual(ctx.exception.code, "pool_not_ready")
+        simulation.assert_not_called()
 
     def test_pool_available_sends_http_request(self):
         pool, slot = self._ready_pool_with_slot()
@@ -157,6 +169,7 @@ class RunInSandboxTests(unittest.TestCase):
         })
         with (
             patch(_GET_POOL, return_value=pool),
+            patch(_WAIT_FOR_POOL_READY, return_value=pool),
             patch(_REQUESTS_POST, return_value=resp) as mock_post,
         ):
             result = run_in_sandbox("print(2+3)\n", "python")
@@ -170,58 +183,75 @@ class RunInSandboxTests(unittest.TestCase):
         self.assertEqual(result.get("execution_backend"), "pool")
         pool.release.assert_called_once_with(slot, ok=True)
 
-    def test_http_error_returns_fallback_and_releases_slot(self):
+    def test_invalid_response_raises_after_one_retry_and_releases_slot(self):
         pool, slot = self._ready_pool_with_slot()
         with (
             patch(_GET_POOL, return_value=pool),
+            patch(_WAIT_FOR_POOL_READY, return_value=pool),
             patch(_REQUESTS_POST, side_effect=Exception("Connection refused")),
         ):
-            result = run_in_sandbox("print(1)\n", "python")
+            with self.assertRaises(SandboxUnavailableError) as ctx:
+                run_in_sandbox("print(1)\n", "python")
+        self.assertEqual(ctx.exception.code, "invalid_response")
+        self.assertEqual(pool.acquire.call_count, 2)
+        pool.release.assert_has_calls([call(slot, ok=False), call(slot, ok=False)])
 
-        self.assertIn("Sandbox error", result["stderr"])
-        self.assertEqual(result["exit_code"], -1)
-        pool.release.assert_called_once_with(slot, ok=False)
-
-    def test_connection_error_falls_back_to_simulation_and_marks_slot_unhealthy(self):
-        import requests
-
-        pool, slot = self._ready_pool_with_slot()
-        files = [{"name": "sayilar.txt", "content": "1\n2\n3\n"}]
+    def test_connection_error_retries_once_on_new_slot_then_raises(self):
+        pool, first_slot = self._ready_pool_with_slot()
+        second_slot = MagicMock(url="http://127.0.0.1:8182")
+        pool.acquire.side_effect = [first_slot, second_slot]
         with (
             patch(_GET_POOL, return_value=pool),
+            patch(_WAIT_FOR_POOL_READY, return_value=pool),
             patch(_REQUESTS_POST, side_effect=requests.exceptions.ConnectionError("refused")),
         ):
-            result = run_in_sandbox(
-                "from pathlib import Path\nprint(Path('sayilar.txt').read_text())\n",
-                "python",
-                files=files,
-            )
+            with self.assertRaises(SandboxUnavailableError) as ctx:
+                run_in_sandbox("print(1)\n", "python")
+        self.assertEqual(ctx.exception.code, "container_unreachable")
+        self.assertEqual(pool.acquire.call_count, 2)
+        self.assertEqual(pool.release.call_args_list, [
+            call(first_slot, ok=False),
+            call(second_slot, ok=False),
+        ])
 
-        self.assertEqual(result["exit_code"], 0)
-        self.assertIn("1", result["stdout"])
-        self.assertTrue(result["fixtures_provided"])
-        pool.release.assert_called_once_with(slot, ok=False)
+    def test_invalid_container_report_raises_invalid_response(self):
+        pool, slot = self._ready_pool_with_slot()
+        response = MagicMock()
+        response.raise_for_status.return_value = None
+        response.json.return_value = {"report": {"execution": "not-an-object"}}
+        with (
+            patch(_GET_POOL, return_value=pool),
+            patch(_WAIT_FOR_POOL_READY, return_value=pool),
+            patch(_REQUESTS_POST, return_value=response),
+        ):
+            with self.assertRaises(SandboxUnavailableError) as ctx:
+                run_in_sandbox("print(1)\n", "python")
+        self.assertEqual(ctx.exception.code, "invalid_response")
 
-    def test_acquire_timeout_returns_fallback(self):
+    def test_acquire_timeout_raises_pool_exhausted(self):
         pool = MagicMock()
         pool.is_ready = True
         pool.acquire.side_effect = TimeoutError("All busy")
-        with patch(_GET_POOL, return_value=pool):
-            result = run_in_sandbox("print(1)\n", "python")
-
-        self.assertIn("timeout", result["stderr"].lower())
-        self.assertEqual(result["exit_code"], -1)
-        pool.release.assert_not_called()  # slot hic alinamadi
+        with (
+            patch(_GET_POOL, return_value=pool),
+            patch(_WAIT_FOR_POOL_READY, return_value=pool),
+        ):
+            with self.assertRaises(SandboxUnavailableError) as ctx:
+                run_in_sandbox("print(1)\n", "python")
+        self.assertEqual(ctx.exception.code, "pool_exhausted")
+        pool.release.assert_not_called()
 
     def test_test_cases_included_in_payload(self):
         pool, _ = self._ready_pool_with_slot()
         resp = self._ok_response({
-            "execution": {}, "test_results": [], "static_analysis": {},
+            "execution": {"exit_code": 0, "compile_success": True},
+            "test_results": [], "static_analysis": {},
             "code_metrics": {}, "summary": {},
         })
         test_cases = [{"name": "tc1", "stdin": "5", "expected_stdout": "25"}]
         with (
             patch(_GET_POOL, return_value=pool),
+            patch(_WAIT_FOR_POOL_READY, return_value=pool),
             patch(_REQUESTS_POST, return_value=resp) as mock_post,
         ):
             run_in_sandbox("print(int(input())**2)\n", "python", test_cases=test_cases)
@@ -255,6 +285,7 @@ class RunInSandboxTests(unittest.TestCase):
         })
         with (
             patch(_GET_POOL, return_value=pool),
+            patch(_WAIT_FOR_POOL_READY, return_value=pool),
             patch(_REQUESTS_POST, return_value=resp),
         ):
             result = run_in_sandbox(
@@ -293,6 +324,7 @@ class RunInSandboxTests(unittest.TestCase):
         })
         with (
             patch(_GET_POOL, return_value=pool),
+            patch(_WAIT_FOR_POOL_READY, return_value=pool),
             patch(_REQUESTS_POST, return_value=resp),
         ):
             result = run_in_sandbox(
@@ -307,11 +339,12 @@ class RunInSandboxTests(unittest.TestCase):
     def test_stdin_data_added_as_test_case(self):
         pool, _ = self._ready_pool_with_slot()
         resp = self._ok_response({
-            "execution": {}, "test_results": [], "static_analysis": {},
+            "execution": {"exit_code": 0, "compile_success": True}, "test_results": [], "static_analysis": {},
             "code_metrics": {}, "summary": {},
         })
         with (
             patch(_GET_POOL, return_value=pool),
+            patch(_WAIT_FOR_POOL_READY, return_value=pool),
             patch(_REQUESTS_POST, return_value=resp) as mock_post,
         ):
             run_in_sandbox("print(input())\n", "python", stdin_data="merhaba")

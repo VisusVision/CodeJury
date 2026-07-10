@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import unittest
+from unittest.mock import patch
 
+from backend.sandbox.errors import SandboxUnavailableError
 from backend.sandbox.executor import _simulate_sandbox, run_in_sandbox
 from backend.sandbox.fixtures import infer_sandbox_files
 
@@ -125,10 +127,11 @@ class SimulateSandboxFilesTests(unittest.TestCase):
 
 
 class RunInSandboxPayloadTests(unittest.TestCase):
-    def test_run_in_sandbox_accepts_files_kwarg(self):
+    def test_run_in_sandbox_raises_when_pool_unavailable(self):
         files = infer_sandbox_files(assignment_brief="", source_code=_CSV_CODE)
-        result = run_in_sandbox(_CSV_CODE, "python", files=files)
-        self.assertIn("exit_code", result)
+        with patch("backend.sandbox.pool_manager.wait_for_pool_ready", return_value=None):
+            with self.assertRaises(SandboxUnavailableError):
+                run_in_sandbox(_CSV_CODE, "python", files=files)
 
 
 if __name__ == "__main__":

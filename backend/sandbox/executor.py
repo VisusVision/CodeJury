@@ -4,12 +4,18 @@ executor.py — Pool-based Sandbox Executor
 Acquires a container from the sandbox pool, executes code via POST /api/execute,
 normalises the result into a standard dict, and releases the container.
 
+Fail-closed: when the sandbox pool is not ready, or a container response is
+invalid, run_in_sandbox raises SandboxUnavailableError instead of running
+student code on the host. There is no automatic simulation fallback.
+
 Returned dict fields (backward-compatible + enriched):
   stdout, stderr, exit_code, execution_time_ms, peak_memory_mb,
   compilation_success, timed_out, memory_exceeded,
   test_results, static_analysis, code_metrics, summary
 """
 import logging
+
+from backend.sandbox.errors import SandboxUnavailableError
 
 logger = logging.getLogger("sandbox-executor")
 
@@ -38,6 +44,132 @@ _FALLBACK = {
     "execution_backend": "simulation",
 }
 
+_SAFE_SANDBOX_MESSAGE = "Sandbox kullanılamıyor; Docker ve analysis worker pool durumunu kontrol edin."
+
+
+def require_sandbox_pool(timeout_s: float = 15.0):
+    """Block until a usable (ready/degraded) sandbox pool exists, or raise SandboxUnavailableError."""
+    from backend.sandbox.pool_manager import wait_for_pool_ready
+
+    pool = wait_for_pool_ready(timeout_s)
+    if pool is None:
+        raise SandboxUnavailableError(
+            "pool_not_ready",
+            _SAFE_SANDBOX_MESSAGE,
+            detail=f"pool did not become ready within {timeout_s:.1f}s",
+            retryable=True,
+        )
+    return pool
+
+
+def _extract_report(data: object) -> tuple[dict, dict]:
+    if not isinstance(data, dict):
+        raise SandboxUnavailableError(
+            "invalid_response",
+            _SAFE_SANDBOX_MESSAGE,
+            detail="response root is not an object",
+            retryable=True,
+        )
+    report = data.get("report")
+    if not isinstance(report, dict):
+        raise SandboxUnavailableError(
+            "invalid_response",
+            _SAFE_SANDBOX_MESSAGE,
+            detail="report is missing or not an object",
+            retryable=True,
+        )
+    execution = report.get("execution")
+    if not isinstance(execution, dict):
+        raise SandboxUnavailableError(
+            "invalid_response",
+            _SAFE_SANDBOX_MESSAGE,
+            detail="report.execution is missing or not an object",
+            retryable=True,
+        )
+    if "exit_code" not in execution or "compile_success" not in execution:
+        raise SandboxUnavailableError(
+            "invalid_response",
+            _SAFE_SANDBOX_MESSAGE,
+            detail="execution contract lacks exit_code or compile_success",
+            retryable=True,
+        )
+    return report, execution
+
+
+def _build_payload(
+    source_code: str,
+    language: str,
+    stdin_data: str,
+    test_cases: list | None,
+    files: list | None,
+    argv: list | None,
+) -> dict:
+    normalized_files = _normalize_workdir_files(files)
+    test_case_list: list[dict] = []
+    if stdin_data:
+        test_case_list.append({"name": "stdin_run", "stdin": stdin_data})
+    if test_cases:
+        test_case_list.extend(test_cases)
+    api_language = _LANG_MAP.get(language.lower().strip(), language.lower().strip())
+    return {
+        "code": source_code,
+        "language": api_language,
+        "test_cases": test_case_list,
+        "files": normalized_files,
+        "argv": list(argv or []),
+        "fixtures_provided": bool(normalized_files),
+    }
+
+
+def _normalize_pool_result(report: dict, execution: dict, fixtures_provided: bool) -> dict:
+    reported_tests = report.get("test_results", [])
+    if not isinstance(reported_tests, list):
+        reported_tests = []
+    summary = dict(report.get("summary", {}) or {})
+    stdout = str(execution.get("stdout") or "")
+    stderr = str(execution.get("stderr") or "")
+    exit_code = int(execution.get("exit_code", -1))
+
+    if reported_tests:
+        failed_tests = [case for case in reported_tests if not bool(case.get("passed"))]
+        exit_code = 1 if failed_tests else 0
+        if failed_tests:
+            error_parts: list[str] = []
+            for case in failed_tests:
+                error = str(case.get("error") or "").strip()
+                actual_stderr = str(case.get("actual_stderr") or "").strip()
+                if error:
+                    error_parts.append(error)
+                if actual_stderr and actual_stderr not in error:
+                    error_parts.append(actual_stderr)
+            stderr = "\n".join(error_parts)
+        else:
+            stderr = ""
+        passed = len(reported_tests) - len(failed_tests)
+        summary["runtime_success"] = not failed_tests
+        summary["tests"] = {
+            "passed": passed,
+            "total": len(reported_tests),
+            "pass_rate": round((passed / max(len(reported_tests), 1)) * 100, 2),
+        }
+
+    return {
+        "stdout": stdout,
+        "stderr": stderr,
+        "exit_code": exit_code,
+        "execution_time_ms": execution.get("wall_time_ms", 0),
+        "peak_memory_mb": execution.get("peak_memory_mb", 0.0),
+        "compilation_success": bool(execution.get("compile_success")),
+        "timed_out": bool(execution.get("timed_out")),
+        "memory_exceeded": bool(execution.get("memory_exceeded")),
+        "test_results": reported_tests,
+        "static_analysis": report.get("static_analysis", {}),
+        "code_metrics": report.get("code_metrics", {}),
+        "summary": summary,
+        "fixtures_provided": fixtures_provided,
+        "execution_backend": "pool",
+    }
+
 
 def run_in_sandbox(
     source_code: str,
@@ -50,6 +182,11 @@ def run_in_sandbox(
     """
     Execute code through the sandbox pool.
 
+    Fail-closed: raises SandboxUnavailableError when the pool is not ready,
+    a container is unreachable, or a container's response is malformed.
+    Never runs student code via a host subprocess and never calls
+    _simulate_sandbox.
+
     Args:
         source_code : Source code to execute
         language    : 'python', 'cpp', 'c++', or 'java'
@@ -59,137 +196,68 @@ def run_in_sandbox(
         argv        : Optional CLI args passed after the solution script
 
     Returns:
-        Enriched sandbox result dict
+        Enriched sandbox result dict (execution_backend is always "pool" on success).
     """
     try:
         import requests
-    except ModuleNotFoundError:
-        return {**_FALLBACK, "stderr": "'requests' package missing (pip install requests)"}
+    except ModuleNotFoundError as exc:
+        raise SandboxUnavailableError(
+            "dependency_missing",
+            _SAFE_SANDBOX_MESSAGE,
+            detail="requests package is missing",
+            retryable=False,
+        ) from exc
 
-    from backend.sandbox.pool_manager import get_pool
+    pool = require_sandbox_pool(15.0)
+    payload = _build_payload(source_code, language, stdin_data, test_cases, files, argv)
+    last_error: SandboxUnavailableError | None = None
 
-    normalized_files = _normalize_workdir_files(files)
+    for attempt in range(2):
+        slot = None
+        release_ok = True
+        try:
+            slot = pool.acquire()
+            print(f"[executor] Sandbox -> {slot.url} (lang={payload['language']})", flush=True)
+            response = requests.post(f"{slot.url}/api/execute", json=payload, timeout=120.0)
+            response.raise_for_status()
+            report, execution = _extract_report(response.json())
+            return _normalize_pool_result(report, execution, bool(payload["files"]))
+        except TimeoutError as exc:
+            release_ok = False
+            raise SandboxUnavailableError(
+                "pool_exhausted",
+                _SAFE_SANDBOX_MESSAGE,
+                detail=str(exc),
+                retryable=True,
+            ) from exc
+        except requests.exceptions.RequestException as exc:
+            release_ok = False
+            last_error = SandboxUnavailableError(
+                "container_unreachable",
+                _SAFE_SANDBOX_MESSAGE,
+                detail=str(exc),
+                retryable=True,
+            )
+        except SandboxUnavailableError as exc:
+            release_ok = False
+            last_error = exc
+        except Exception as exc:
+            release_ok = False
+            last_error = SandboxUnavailableError(
+                "invalid_response",
+                _SAFE_SANDBOX_MESSAGE,
+                detail=f"{type(exc).__name__}: {exc}",
+                retryable=True,
+            )
+        finally:
+            if slot is not None:
+                pool.release(slot, ok=release_ok)
 
-    pool = get_pool()
-    if pool is None or not pool.is_ready:
-        print("[executor] Pool hazir degil, simulasyon modu kullaniliyor", flush=True)
-        return _simulate_sandbox(
-            source_code,
-            stdin_data=stdin_data,
-            test_cases=test_cases,
-            files=normalized_files,
-            argv=argv,
-        )
+        if last_error is None or not last_error.retryable or attempt == 1:
+            break
 
-    api_lang = _LANG_MAP.get(language.lower().strip(), language.lower().strip())
-
-    # Build test case list
-    tc_list = []
-    if stdin_data:
-        tc_list.append({"name": "stdin_run", "stdin": stdin_data})
-    if test_cases:
-        tc_list.extend(test_cases)
-
-    payload = {
-        "code":       source_code,
-        "language":   api_lang,
-        "test_cases": tc_list,
-        "files":      normalized_files,
-        "argv":       list(argv or []),
-        "fixtures_provided": bool(normalized_files),
-    }
-
-    slot = None
-    release_ok = True
-    try:
-        slot = pool.acquire()
-        print(f"[executor] Sandbox -> {slot.url} (lang={api_lang})", flush=True)
-        resp = requests.post(
-            f"{slot.url}/api/execute",
-            json=payload,
-            timeout=120.0,
-        )
-        resp.raise_for_status()
-        data   = resp.json()
-        report = data.get("report", {})
-        exec_i = report.get("execution", {})
-        reported_tests = report.get("test_results", [])
-        summary = dict(report.get("summary", {}) or {})
-        stdout = exec_i.get("stdout", "")
-        stderr = exec_i.get("stderr", "")
-        exit_code = exec_i.get("exit_code", -1)
-        if tc_list and reported_tests:
-            failed_tests = [tc for tc in reported_tests if not tc.get("passed")]
-            if failed_tests:
-                exit_code = 1
-                stderr_parts = []
-                for tc in failed_tests:
-                    err = str(tc.get("error") or "").strip()
-                    actual_stderr = str(tc.get("actual_stderr") or "").strip()
-                    if err:
-                        stderr_parts.append(err)
-                    if actual_stderr and actual_stderr not in err:
-                        stderr_parts.append(actual_stderr)
-                stderr = "\n".join(part for part in stderr_parts if part)
-            else:
-                exit_code = 0
-                stderr = ""
-            summary["runtime_success"] = not failed_tests
-            summary.setdefault("tests", {})
-            if isinstance(summary["tests"], dict):
-                summary["tests"]["passed"] = len(reported_tests) - len(failed_tests)
-                summary["tests"]["total"] = len(reported_tests)
-                summary["tests"]["pass_rate"] = round(
-                    ((len(reported_tests) - len(failed_tests)) / max(len(reported_tests), 1)) * 100,
-                    2,
-                )
-
-        return {
-            # Legacy fields (backward-compatible)
-            "stdout":              stdout,
-            "stderr":              stderr,
-            "exit_code":           exit_code,
-            "execution_time_ms":   exec_i.get("wall_time_ms", 0),
-            "peak_memory_mb":      exec_i.get("peak_memory_mb", 0.0),
-            "compilation_success": exec_i.get("compile_success", False),
-            # Enriched fields (used by agents)
-            "timed_out":           exec_i.get("timed_out", False),
-            "memory_exceeded":     exec_i.get("memory_exceeded", False),
-            "test_results":        reported_tests,
-            "static_analysis":     report.get("static_analysis", {}),
-            "code_metrics":        report.get("code_metrics", {}),
-            "summary":             summary,
-            "fixtures_provided":   bool(normalized_files),
-            "execution_backend":   "pool",
-        }
-
-    except TimeoutError as e:
-        logger.error(f"[executor] Pool timeout: {e}")
-        release_ok = False
-        return {**_FALLBACK, "stderr": f"Sandbox timeout: {e}"}
-    except requests.exceptions.RequestException as e:
-        logger.error(f"[executor] Container request failed, falling back to simulation: {e}")
-        release_ok = False
-        simulated = _simulate_sandbox(
-            source_code,
-            stdin_data=stdin_data,
-            test_cases=test_cases,
-            files=normalized_files,
-            argv=argv,
-        )
-        simulated["stderr"] = (
-            simulated.get("stderr", "")
-            + ("\n" if simulated.get("stderr") else "")
-            + f"Sandbox container unavailable; simulation fallback used: {e}"
-        )
-        return simulated
-    except Exception as e:
-        logger.error(f"[executor] Error: {e}")
-        release_ok = False
-        return {**_FALLBACK, "stderr": f"Sandbox error: {e}"}
-    finally:
-        if slot is not None:
-            pool.release(slot, ok=release_ok)
+    assert last_error is not None
+    raise last_error
 
 
 def _normalize_workdir_files(files: list | None) -> list[dict[str, str]]:
