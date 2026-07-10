@@ -1,4 +1,5 @@
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
+import { toast } from "sonner";
 import { apiFetch, UNAUTHORIZED_EVENT } from "../services/http";
 
 export type AuthRole = "student" | "teacher";
@@ -11,6 +12,7 @@ export type AuthState =
   | { status: "authenticated"; role: AuthRole; user: Record<string, unknown> };
 
 export interface AuthContextValue extends AuthState {
+  lastAuthError: string | null;
   loginStudent: (studentNo: string, password: string) => Promise<Record<string, unknown>>;
   loginTeacher: (email: string, password: string) => Promise<Record<string, unknown>>;
   logout: () => Promise<void>;
@@ -41,6 +43,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }): JSX.E
     role: null,
     user: null,
   });
+  const [lastAuthError, setLastAuthError] = useState<string | null>(null);
 
   const restoreSession = useCallback(async () => {
     try {
@@ -48,6 +51,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }): JSX.E
       if (response.ok) {
         const body = (await response.json()) as { role?: AuthRole; user?: Record<string, unknown> };
         if (body.role === "student" || body.role === "teacher") {
+          setLastAuthError(null);
           setState({
             status: "authenticated",
             role: body.role,
@@ -55,10 +59,21 @@ export function AuthProvider({ children }: { children: React.ReactNode }): JSX.E
           });
           return;
         }
+      } else if (response.status !== 401) {
+        const detail = await parseErrorDetail(response, "Kimlik doğrulama servisine ulaşılamıyor");
+        setLastAuthError(detail);
+        toast.error(detail);
+        setState({ status: "anonymous", role: null, user: null });
+        return;
       }
-    } catch {
-      // Treat network failures as anonymous.
+    } catch (err) {
+      const detail = err instanceof Error ? err.message : "Kimlik doğrulama servisine ulaşılamıyor";
+      setLastAuthError(detail);
+      toast.error(detail);
+      setState({ status: "anonymous", role: null, user: null });
+      return;
     }
+    setLastAuthError(null);
     setState({ status: "anonymous", role: null, user: null });
   }, []);
 
@@ -114,12 +129,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }): JSX.E
   const value = useMemo<AuthContextValue>(
     () => ({
       ...state,
+      lastAuthError,
       loginStudent,
       loginTeacher,
       logout,
       refreshSession: restoreSession,
     }),
-    [state, loginStudent, loginTeacher, logout, restoreSession],
+    [state, lastAuthError, loginStudent, loginTeacher, logout, restoreSession],
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
