@@ -54,6 +54,10 @@ class Settings(BaseSettings):
     analysis_worker_heartbeat_ttl_seconds: int = 15
     analysis_worker_sandbox_retry_seconds: int = 5
 
+    auth_session_ttl_seconds: int = 28800
+    auth_cookie_secure: bool = False
+    cors_allowed_origins: str = "http://localhost:8080,http://127.0.0.1:8080"
+
     model_config = {"env_file": str(_ENV_FILE), "extra": "ignore"}
 
 
