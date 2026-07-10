@@ -141,6 +141,7 @@ _DEMO_STORE: dict[str, Any] = {
             "code": "BLM201",
             "class_year": 2,
             "department_id": "33333333-3333-4333-8333-333333333333",
+            "created_by": "11111111-1111-4111-8111-111111111111",
             "created_at": datetime.utcnow().isoformat(),
         }
     ],
@@ -151,6 +152,7 @@ _DEMO_STORE: dict[str, Any] = {
             "name": "Ikili Agac Odevi",
             "description": "Temel BST islemleri",
             "due_date": None,
+            "created_by": "11111111-1111-4111-8111-111111111111",
             "created_at": datetime.utcnow().isoformat(),
         }
     ],
@@ -392,6 +394,7 @@ def _ensure_demo_assignment_catalog() -> bool:
                 "code": "BLM201",
                 "class_year": 2,
                 "department_id": department_id,
+                "created_by": teacher_id,
                 "created_at": _demo_now(),
             }
         )
@@ -428,6 +431,7 @@ def _ensure_demo_assignment_catalog() -> bool:
                 "name": seed["name"],
                 "description": seed["description"],
                 "due_date": None,
+                "created_by": teacher_id,
                 "created_at": datetime(2026, 5, 3, 20, 0, index).isoformat(),
             }
             assignments.append(assignment)
@@ -437,6 +441,9 @@ def _ensure_demo_assignment_catalog() -> bool:
         else:
             if not assignment.get("course_id"):
                 assignment["course_id"] = course_id
+                changed = True
+            if not assignment.get("created_by"):
+                assignment["created_by"] = teacher_id
                 changed = True
             current_description = str(assignment.get("description") or "").strip()
             if not current_description or current_description == "Temel BST islemleri":
@@ -3546,6 +3553,11 @@ async def _ensure_db_schema(pool: asyncpg.Pool) -> None:
         ALTER TABLE public.courses
             ADD COLUMN IF NOT EXISTS department_id UUID REFERENCES public.departments(id) ON DELETE SET NULL;
 
+        ALTER TABLE public.courses
+            ADD COLUMN IF NOT EXISTS created_by UUID NULL REFERENCES public.teachers(id) ON DELETE SET NULL;
+
+        CREATE INDEX IF NOT EXISTS idx_courses_created_by ON public.courses(created_by);
+
         CREATE TABLE IF NOT EXISTS public.student_courses (
             id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
             student_id UUID NOT NULL REFERENCES public.students(id) ON DELETE CASCADE,
@@ -3563,6 +3575,11 @@ async def _ensure_db_schema(pool: asyncpg.Pool) -> None:
 
         ALTER TABLE public.assignments
             ADD COLUMN IF NOT EXISTS due_date TIMESTAMPTZ NULL;
+
+        ALTER TABLE public.assignments
+            ADD COLUMN IF NOT EXISTS created_by UUID NULL REFERENCES public.teachers(id) ON DELETE SET NULL;
+
+        CREATE INDEX IF NOT EXISTS idx_assignments_created_by ON public.assignments(created_by);
 
         CREATE TABLE IF NOT EXISTS public.rubrics (
             id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -5403,7 +5420,7 @@ async def list_courses():
     pool = await _get_db_pool()
     rows = await pool.fetch(
         """
-        SELECT id, name, code, class_year, department_id, created_at
+        SELECT id, name, code, class_year, department_id, created_by, created_at
         FROM public.courses
         ORDER BY name
         """
@@ -5461,7 +5478,7 @@ async def create_course(req: CourseCreateRequest):
             """
             INSERT INTO public.courses (name, code, class_year, department_id)
             VALUES ($1, $2, $3, $4)
-            RETURNING id, name, code, class_year, department_id, created_at
+            RETURNING id, name, code, class_year, department_id, created_by, created_at
             """,
             name,
             code,
@@ -5516,7 +5533,7 @@ async def list_assignments():
     pool = await _get_db_pool()
     rows = await pool.fetch(
         """
-        SELECT id, course_id, name, description, due_date, created_at
+        SELECT id, course_id, name, description, due_date, created_by, created_at
         FROM public.assignments
         ORDER BY created_at DESC
         """
@@ -5588,7 +5605,7 @@ async def create_assignment(req: AssignmentCreateRequest):
             """
             INSERT INTO public.assignments (course_id, name, description, due_date)
             VALUES ($1, $2, $3, $4)
-            RETURNING id, course_id, name, description, due_date, created_at
+            RETURNING id, course_id, name, description, due_date, created_by, created_at
             """,
             req.course_id,
             name,
@@ -7012,7 +7029,7 @@ async def course_detail(course_id: str):
     pool = await _get_db_pool()
     row = await pool.fetchrow(
         """
-        SELECT id, name, code, class_year, created_at
+        SELECT id, name, code, class_year, created_by, created_at
         FROM public.courses
         WHERE id = $1
         LIMIT 1
@@ -7040,7 +7057,7 @@ async def course_assignments(course_id: str):
     pool = await _get_db_pool()
     rows = await pool.fetch(
         """
-                SELECT a.id, a.course_id, a.name, a.description, a.due_date, a.created_at
+                SELECT a.id, a.course_id, a.name, a.description, a.due_date, a.created_by, a.created_at
                 FROM public.assignments a
                 WHERE a.course_id = $1
                     AND EXISTS (
@@ -7069,7 +7086,7 @@ async def assignment_detail(assignment_id: str):
     pool = await _get_db_pool()
     row = await pool.fetchrow(
         """
-        SELECT id, course_id, name, description, due_date, created_at
+        SELECT id, course_id, name, description, due_date, created_by, created_at
         FROM public.assignments
         WHERE id = $1::uuid
         LIMIT 1
