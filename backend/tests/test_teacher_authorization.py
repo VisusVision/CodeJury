@@ -624,6 +624,389 @@ class TeacherAuthorizationTests(unittest.TestCase):
         resp = self.client_a.post("/api/departments", json={"name": "No CSRF Dept"})
         self.assertEqual(resp.status_code, 403)
 
+    def test_teacher_cannot_change_other_teacher_email_or_password(self):
+        csrf_a = self._login_teacher(self.client_a)
+        teacher_b_id, _ = self._register_teacher_b()
+
+        email_resp = self.client_a.patch(
+            f"/api/teacher/{teacher_b_id}/email",
+            json={"email": "hijack@test.local"},
+            headers=self._csrf_headers(csrf_a),
+        )
+        self.assertEqual(email_resp.status_code, 404)
+
+        password_resp = self.client_a.patch(
+            f"/api/teacher/{teacher_b_id}/password",
+            json={"current_password": _DEMO_TEACHER_PASSWORD, "new_password": "yeni123456"},
+            headers=self._csrf_headers(csrf_a),
+        )
+        self.assertEqual(password_resp.status_code, 404)
+
+    def test_teacher_email_update_ignores_path_identity_and_uses_principal(self):
+        csrf_a = self._login_teacher(self.client_a)
+        new_email = "updated-demo@agentgrade.local"
+
+        resp = self.client_a.patch(
+            f"/api/teacher/{_DEMO_TEACHER_ID}/email",
+            json={"email": new_email},
+            headers=self._csrf_headers(csrf_a),
+        )
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.json()["email"], new_email)
+
+    def test_password_change_revokes_all_teacher_sessions(self):
+        csrf_a = self._login_teacher(self.client_a)
+        client_second = TestClient(main.app)
+        self._login_teacher(client_second)
+
+        resp = self.client_a.patch(
+            f"/api/teacher/{_DEMO_TEACHER_ID}/password",
+            json={"current_password": _DEMO_TEACHER_PASSWORD, "new_password": "yeniparola1"},
+            headers=self._csrf_headers(csrf_a),
+        )
+        self.assertEqual(resp.status_code, 200)
+
+        me_a = self.client_a.get("/api/auth/me")
+        me_second = client_second.get("/api/auth/me")
+        self.assertEqual(me_a.status_code, 401)
+        self.assertEqual(me_second.status_code, 401)
+
+    def test_teacher_lists_students_only_in_owned_or_legacy_departments(self):
+        csrf_a = self._login_teacher(self.client_a)
+        teacher_b_id, csrf_b = self._register_teacher_b()
+
+        dept_a = self.client_a.post(
+            "/api/departments",
+            json={"name": "Dept A Students"},
+            headers=self._csrf_headers(csrf_a),
+        )
+        self.assertEqual(dept_a.status_code, 200)
+        dept_a_id = dept_a.json()["id"]
+
+        student_a = self.client_a.post(
+            "/api/students",
+            json={
+                "student_no": "20251001",
+                "tc_no": "10000000001",
+                "first_name": "Student",
+                "last_name": "A",
+                "class_year": 1,
+                "department_id": dept_a_id,
+            },
+            headers=self._csrf_headers(csrf_a),
+        )
+        self.assertEqual(student_a.status_code, 200)
+        student_a_no = student_a.json()["student_no"]
+
+        dept_b = self.client_b.post(
+            "/api/departments",
+            json={"name": "Dept B Students"},
+            headers=self._csrf_headers(csrf_b),
+        )
+        self.assertEqual(dept_b.status_code, 200)
+        dept_b_id = dept_b.json()["id"]
+
+        student_b = self.client_b.post(
+            "/api/students",
+            json={
+                "student_no": "20251002",
+                "tc_no": "10000000002",
+                "first_name": "Student",
+                "last_name": "B",
+                "class_year": 1,
+                "department_id": dept_b_id,
+            },
+            headers=self._csrf_headers(csrf_b),
+        )
+        self.assertEqual(student_b.status_code, 200)
+        student_b_no = student_b.json()["student_no"]
+
+        legacy_dept_id = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+        legacy_student_id = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+        main._DEMO_STORE["departments"].append(
+            {
+                "id": legacy_dept_id,
+                "name": "Legacy Dept Students",
+                "created_by": None,
+                "created_at": main._demo_now(),
+            }
+        )
+        main._DEMO_STORE["students"].append(
+            {
+                "id": legacy_student_id,
+                "student_no": "20251003",
+                "tc_no": "10000000003",
+                "first_name": "Legacy",
+                "last_name": "Student",
+                "class_year": 1,
+                "department_id": legacy_dept_id,
+                "password_hash": main._hash_password(_DEMO_STUDENT_PASSWORD),
+                "created_at": main._demo_now(),
+            }
+        )
+
+        list_a = self.client_a.get("/api/students")
+        self.assertEqual(list_a.status_code, 200)
+        numbers_a = [s["student_no"] for s in list_a.json()]
+        self.assertIn(student_a_no, numbers_a)
+        self.assertIn("20251003", numbers_a)
+        self.assertNotIn(student_b_no, numbers_a)
+
+        list_b = self.client_b.get("/api/students")
+        self.assertEqual(list_b.status_code, 200)
+        numbers_b = [s["student_no"] for s in list_b.json()]
+        self.assertIn(student_b_no, numbers_b)
+        self.assertIn("20251003", numbers_b)
+        self.assertNotIn(student_a_no, numbers_b)
+
+    def test_teacher_cannot_create_update_delete_student_in_other_or_legacy_department(self):
+        csrf_a = self._login_teacher(self.client_a)
+        _, csrf_b = self._register_teacher_b()
+
+        dept_b = self.client_b.post(
+            "/api/departments",
+            json={"name": "Dept B Mutate"},
+            headers=self._csrf_headers(csrf_b),
+        )
+        self.assertEqual(dept_b.status_code, 200)
+        dept_b_id = dept_b.json()["id"]
+
+        legacy_dept_id = "cccccccc-cccc-4ccc-8ccc-cccccccccccc"
+        main._DEMO_STORE["departments"].append(
+            {
+                "id": legacy_dept_id,
+                "name": "Legacy Dept Mutate",
+                "created_by": None,
+                "created_at": main._demo_now(),
+            }
+        )
+
+        dept_a = self.client_a.post(
+            "/api/departments",
+            json={"name": "Dept A Mutate"},
+            headers=self._csrf_headers(csrf_a),
+        )
+        self.assertEqual(dept_a.status_code, 200)
+        dept_a_id = dept_a.json()["id"]
+
+        cross_create = self.client_a.post(
+            "/api/students",
+            json={
+                "student_no": "20252001",
+                "tc_no": "20000000001",
+                "first_name": "Cross",
+                "last_name": "Create",
+                "class_year": 1,
+                "department_id": dept_b_id,
+            },
+            headers=self._csrf_headers(csrf_a),
+        )
+        self.assertEqual(cross_create.status_code, 404)
+
+        legacy_create = self.client_a.post(
+            "/api/students",
+            json={
+                "student_no": "20252002",
+                "tc_no": "20000000002",
+                "first_name": "Legacy",
+                "last_name": "Create",
+                "class_year": 1,
+                "department_id": legacy_dept_id,
+            },
+            headers=self._csrf_headers(csrf_a),
+        )
+        self.assertEqual(legacy_create.status_code, 403)
+
+        own_create = self.client_a.post(
+            "/api/students",
+            json={
+                "student_no": "20252003",
+                "tc_no": "20000000003",
+                "first_name": "Own",
+                "last_name": "Create",
+                "class_year": 1,
+                "department_id": dept_a_id,
+            },
+            headers=self._csrf_headers(csrf_a),
+        )
+        self.assertEqual(own_create.status_code, 200)
+        own_student_id = own_create.json()["id"]
+
+        move_cross = self.client_a.patch(
+            f"/api/students/{own_student_id}",
+            json={
+                "student_no": "20252003",
+                "tc_no": "20000000003",
+                "first_name": "Own",
+                "last_name": "Create",
+                "class_year": 1,
+                "department_id": dept_b_id,
+            },
+            headers=self._csrf_headers(csrf_a),
+        )
+        self.assertEqual(move_cross.status_code, 404)
+
+        move_legacy = self.client_a.patch(
+            f"/api/students/{own_student_id}",
+            json={
+                "student_no": "20252003",
+                "tc_no": "20000000003",
+                "first_name": "Own",
+                "last_name": "Create",
+                "class_year": 1,
+                "department_id": legacy_dept_id,
+            },
+            headers=self._csrf_headers(csrf_a),
+        )
+        self.assertEqual(move_legacy.status_code, 403)
+
+        legacy_student_id = "dddddddd-dddd-4ddd-8ddd-dddddddddddd"
+        main._DEMO_STORE["students"].append(
+            {
+                "id": legacy_student_id,
+                "student_no": "20252004",
+                "tc_no": "20000000004",
+                "first_name": "Legacy",
+                "last_name": "Direct",
+                "class_year": 1,
+                "department_id": legacy_dept_id,
+                "password_hash": main._hash_password(_DEMO_STUDENT_PASSWORD),
+                "created_at": main._demo_now(),
+            }
+        )
+
+        del_legacy = self.client_a.delete(
+            f"/api/students/{legacy_student_id}",
+            headers=self._csrf_headers(csrf_a),
+        )
+        self.assertEqual(del_legacy.status_code, 403)
+
+        del_own = self.client_a.delete(
+            f"/api/students/{own_student_id}",
+            headers=self._csrf_headers(csrf_a),
+        )
+        self.assertEqual(del_own.status_code, 200)
+
+    def test_csv_import_rejects_rows_for_unowned_department(self):
+        csrf_a = self._login_teacher(self.client_a)
+        _, csrf_b = self._register_teacher_b()
+
+        dept_a = self.client_a.post(
+            "/api/departments",
+            json={"name": "CSV Dept A"},
+            headers=self._csrf_headers(csrf_a),
+        )
+        self.assertEqual(dept_a.status_code, 200)
+        dept_a_name = dept_a.json()["name"]
+
+        dept_b = self.client_b.post(
+            "/api/departments",
+            json={"name": "CSV Dept B"},
+            headers=self._csrf_headers(csrf_b),
+        )
+        self.assertEqual(dept_b.status_code, 200)
+        dept_b_name = dept_b.json()["name"]
+
+        legacy_dept_name = "CSV Legacy Dept"
+        main._DEMO_STORE["departments"].append(
+            {
+                "id": "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee",
+                "name": legacy_dept_name,
+                "created_by": None,
+                "created_at": main._demo_now(),
+            }
+        )
+
+        csv_bytes = (
+            "student_no,tc_no,first_name,last_name,department,class_year\n"
+            f"20253001,30000000001,CSV,Own,{dept_a_name},1\n"
+            f"20253002,30000000002,CSV,Other,{dept_b_name},1\n"
+            f"20253003,30000000003,CSV,Legacy,{legacy_dept_name},1\n"
+        ).encode("utf-8")
+
+        resp = self.client_a.post(
+            "/api/students/import-csv",
+            files={"file": ("students.csv", csv_bytes, "text/csv")},
+            headers=self._csrf_headers(csrf_a),
+        )
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+        created_nos = [s["student_no"] for s in data["created"]]
+        skipped_nos = [s["student_no"] for s in data["skipped"]]
+        self.assertIn("20253001", created_nos)
+        self.assertIn("20253002", skipped_nos)
+        self.assertIn("20253003", skipped_nos)
+
+    def test_teacher_evaluation_list_contains_only_owned_assignments(self):
+        csrf_a = self._login_teacher(self.client_a)
+        _, csrf_b = self._register_teacher_b()
+
+        dept_b = self.client_b.post(
+            "/api/departments",
+            json={"name": "Dept Eval B"},
+            headers=self._csrf_headers(csrf_b),
+        )
+        course_b = self.client_b.post(
+            "/api/courses",
+            json={
+                "name": "Course Eval B",
+                "code": "CEB101",
+                "class_year": 1,
+                "department_id": dept_b.json()["id"],
+            },
+            headers=self._csrf_headers(csrf_b),
+        )
+        with patch.object(main, "_ensure_assignment_safety", new=AsyncMock(return_value=None)):
+            assignment_b = self.client_b.post(
+                "/api/assignments",
+                json={"course_id": course_b.json()["id"], "name": "Assignment Eval B"},
+                headers=self._csrf_headers(csrf_b),
+            )
+        assignment_b_id = assignment_b.json()["id"]
+
+        eval_a_id = "ffffffff-ffff-4fff-8fff-ffffffffffff"
+        eval_b_id = "00000000-0000-4000-8000-000000000001"
+        main._DEMO_STORE["evaluations"] = [
+            {
+                "id": eval_a_id,
+                "student_first_name": "Demo",
+                "student_last_name": "Student",
+                "student_no": _DEMO_STUDENT_NO,
+                "assignment_id": _DEMO_ASSIGNMENT_ID,
+                "uploaded_file_name": "a.py",
+                "score": 80,
+                "usefulness": None,
+                "accuracy": None,
+                "clarity": None,
+                "comment": "",
+                "status": "pending",
+                "created_at": main._demo_now(),
+                "submitted_at": None,
+            },
+            {
+                "id": eval_b_id,
+                "student_first_name": "Other",
+                "student_last_name": "Student",
+                "student_no": "20249999",
+                "assignment_id": assignment_b_id,
+                "uploaded_file_name": "b.py",
+                "score": 70,
+                "usefulness": None,
+                "accuracy": None,
+                "clarity": None,
+                "comment": "",
+                "status": "pending",
+                "created_at": main._demo_now(),
+                "submitted_at": None,
+            },
+        ]
+
+        resp = self.client_a.get("/api/evaluations")
+        self.assertEqual(resp.status_code, 200)
+        eval_ids = [item["id"] for item in resp.json()]
+        self.assertIn(eval_a_id, eval_ids)
+        self.assertNotIn(eval_b_id, eval_ids)
+
 
 if __name__ == "__main__":
     unittest.main()
