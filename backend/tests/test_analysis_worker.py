@@ -181,6 +181,24 @@ class AnalysisWorkerTests(unittest.IsolatedAsyncioTestCase):
         heartbeat = publish.await_args.args[1]
         self.assertEqual(heartbeat["worker_id"], "worker-a")
 
+    async def test_heartbeat_loop_recovers_after_transient_publish_failure(self):
+        stop = asyncio.Event()
+        calls: list[int] = []
+
+        async def flaky_publish(*args, **kwargs):
+            calls.append(1)
+            if len(calls) == 1:
+                raise ConnectionError("redis down")
+            stop.set()
+
+        with (
+            patch.object(analysis_worker, "publish_worker_heartbeat", new=AsyncMock(side_effect=flaky_publish)),
+            patch.object(analysis_worker.asyncio, "wait_for", new=AsyncMock(side_effect=asyncio.TimeoutError)),
+        ):
+            await analysis_worker.worker_heartbeat_loop(self.redis, "worker-a", stop)
+
+        self.assertEqual(len(calls), 2)
+
 
 if __name__ == "__main__":
     unittest.main()
