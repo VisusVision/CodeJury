@@ -24,7 +24,7 @@ from typing import Any, Awaitable, Callable, Optional
 from urllib.parse import urlparse, urlunparse
 
 import asyncpg
-from fastapi import FastAPI, HTTPException, Response, UploadFile, File
+from fastapi import Depends, FastAPI, HTTPException, Request, Response, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
@@ -50,6 +50,16 @@ from backend.ops.runtime_diagnostics import (
     get_llm_config_snapshot,
 )
 from backend.ops.worker_readiness import get_worker_readiness
+from backend.auth.dependencies import (
+    CSRF_HEADER,
+    SESSION_COOKIE,
+    clear_auth_cookies,
+    get_auth_session_store,
+    require_authenticated,
+    set_auth_cookies,
+)
+from backend.auth.models import AuthPrincipal
+from backend.auth.sessions import hash_token
 from backend.queue.analysis_jobs import (
     AnalysisJobNotFound,
     AnalysisJobStore,
@@ -530,9 +540,16 @@ async def _shutdown_redis() -> None:
         _ANALYSIS_JOB_STORE = None
 
 
+def _cors_allowed_origins() -> list[str]:
+    origins = [item.strip() for item in settings.cors_allowed_origins.split(",") if item.strip()]
+    if "*" in origins:
+        raise RuntimeError("CORS_ALLOWED_ORIGINS cannot contain * when credentials are enabled")
+    return origins
+
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=_cors_allowed_origins(),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -5043,7 +5060,7 @@ async def get_analysis_job_status(job_id: str):
 
 
 @app.post("/api/student/login")
-async def student_login(req: StudentLoginRequest):
+async def student_login(req: StudentLoginRequest, request: Request, response: Response):
     student_no = req.student_no.strip()
     password = req.password.strip()
     if not student_no or not password:
@@ -5054,7 +5071,15 @@ async def student_login(req: StudentLoginRequest):
             _save_demo_store_to_disk()
         for student in _DEMO_STORE["students"]:
             if student["student_no"] == student_no and _verify_password(password, str(student.get("password_hash") or "")):
-                return _demo_student_record(student)
+                profile = _demo_student_record(student)
+                store = await get_auth_session_store(request)
+                try:
+                    issued = await store.create_session(str(student["id"]), "student")
+                except Exception as exc:
+                    clear_auth_cookies(response)
+                    raise HTTPException(status_code=503, detail="Oturum servisine ulaşılamıyor") from exc
+                set_auth_cookies(response, issued, secure=settings.auth_cookie_secure)
+                return profile
         raise HTTPException(status_code=401, detail="Ogrenci no veya sifre hatali")
 
     pool = await _get_db_pool()
@@ -5075,6 +5100,13 @@ async def student_login(req: StudentLoginRequest):
     await _sync_student_to_all_courses(pool, str(row["id"]))
     payload = dict(row)
     payload.pop("password_hash", None)
+    store = await get_auth_session_store(request)
+    try:
+        issued = await store.create_session(str(row["id"]), "student")
+    except Exception as exc:
+        clear_auth_cookies(response)
+        raise HTTPException(status_code=503, detail="Oturum servisine ulaşılamıyor") from exc
+    set_auth_cookies(response, issued, secure=settings.auth_cookie_secure)
     return payload
 
 
@@ -5142,7 +5174,7 @@ async def teacher_register(req: TeacherRegisterRequest):
 
 
 @app.post("/api/teacher/login")
-async def teacher_login(req: TeacherLoginRequest):
+async def teacher_login(req: TeacherLoginRequest, request: Request, response: Response):
     email = req.email.strip().lower()
     password = req.password.strip()
     if not email or not password:
@@ -5151,13 +5183,21 @@ async def teacher_login(req: TeacherLoginRequest):
     if _DEMO_MODE:
         for teacher in _DEMO_STORE["teachers"]:
             if teacher["email"].lower() == email and _verify_password(password, teacher["password_hash"]):
-                return {
+                profile = {
                     "id": teacher["id"],
                     "first_name": teacher["first_name"],
                     "last_name": teacher["last_name"],
                     "email": teacher["email"],
                     "created_at": teacher["created_at"],
                 }
+                store = await get_auth_session_store(request)
+                try:
+                    issued = await store.create_session(str(teacher["id"]), "teacher")
+                except Exception as exc:
+                    clear_auth_cookies(response)
+                    raise HTTPException(status_code=503, detail="Oturum servisine ulaşılamıyor") from exc
+                set_auth_cookies(response, issued, secure=settings.auth_cookie_secure)
+                return profile
         raise HTTPException(status_code=401, detail="E-posta veya sifre hatali")
 
     pool = await _get_db_pool()
@@ -5173,13 +5213,104 @@ async def teacher_login(req: TeacherLoginRequest):
     if row is None or not _verify_password(password, row["password_hash"]):
         raise HTTPException(status_code=401, detail="E-posta veya sifre hatali")
 
-    return {
+    profile = {
         "id": str(row["id"]),
         "first_name": row["first_name"],
         "last_name": row["last_name"],
         "email": row["email"],
         "created_at": row["created_at"],
     }
+    store = await get_auth_session_store(request)
+    try:
+        issued = await store.create_session(str(row["id"]), "teacher")
+    except Exception as exc:
+        clear_auth_cookies(response)
+        raise HTTPException(status_code=503, detail="Oturum servisine ulaşılamıyor") from exc
+    set_auth_cookies(response, issued, secure=settings.auth_cookie_secure)
+    return profile
+
+
+@app.get("/api/auth/me")
+async def auth_me(principal: AuthPrincipal = Depends(require_authenticated)):
+    if principal.role == "student":
+        if _DEMO_MODE:
+            student = next(
+                (item for item in _DEMO_STORE["students"] if item["id"] == principal.user_id),
+                None,
+            )
+            if student is None:
+                raise HTTPException(status_code=401, detail="Oturum geçersiz veya süresi dolmuş")
+            return {"role": "student", "user": _demo_student_record(student)}
+
+        pool = await _get_db_pool()
+        row = await _fetch_student_row(pool, principal.user_id)
+        if row is None:
+            raise HTTPException(status_code=401, detail="Oturum geçersiz veya süresi dolmuş")
+        return {"role": "student", "user": dict(row)}
+
+    if _DEMO_MODE:
+        teacher = next(
+            (item for item in _DEMO_STORE["teachers"] if item["id"] == principal.user_id),
+            None,
+        )
+        if teacher is None:
+            raise HTTPException(status_code=401, detail="Oturum geçersiz veya süresi dolmuş")
+        return {
+            "role": "teacher",
+            "user": {
+                "id": teacher["id"],
+                "first_name": teacher["first_name"],
+                "last_name": teacher["last_name"],
+                "email": teacher["email"],
+                "created_at": teacher["created_at"],
+            },
+        }
+
+    pool = await _get_db_pool()
+    row = await pool.fetchrow(
+        """
+        SELECT id, first_name, last_name, email, created_at
+        FROM public.teachers
+        WHERE id = $1
+        LIMIT 1
+        """,
+        principal.user_id,
+    )
+    if row is None:
+        raise HTTPException(status_code=401, detail="Oturum geçersiz veya süresi dolmuş")
+    return {
+        "role": "teacher",
+        "user": {
+            "id": str(row["id"]),
+            "first_name": row["first_name"],
+            "last_name": row["last_name"],
+            "email": row["email"],
+            "created_at": row["created_at"],
+        },
+    }
+
+
+@app.post("/api/auth/logout", status_code=204)
+async def auth_logout(request: Request, response: Response):
+    store = await get_auth_session_store(request)
+    raw = request.cookies.get(SESSION_COOKIE, "")
+    if not raw:
+        clear_auth_cookies(response)
+        return
+    try:
+        principal = await store.read_session(raw)
+    except Exception:
+        clear_auth_cookies(response)
+        return
+    if principal is None:
+        clear_auth_cookies(response)
+        return
+    supplied = request.headers.get(CSRF_HEADER, "")
+    if not supplied or not hmac.compare_digest(hash_token(supplied), principal.csrf_hash):
+        raise HTTPException(status_code=403, detail="CSRF doğrulaması başarısız")
+    await store.revoke_session(raw)
+    clear_auth_cookies(response)
+    return
 
 
 @app.get("/api/departments")

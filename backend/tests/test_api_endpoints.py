@@ -20,6 +20,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 from fastapi.testclient import TestClient
 
+from backend.auth.dependencies import get_auth_session_store
+from backend.auth.sessions import SessionStore
 from frontend.backend import main
 
 
@@ -34,6 +36,50 @@ _EMRETEST_STUDENT_NO = "230501013"
 _EMRETEST_STUDENT_PASSWORD = "emre123"
 _DEMO_TEACHER_EMAIL = "demo@agentgrade.local"
 _DEMO_TEACHER_PASSWORD = "demo123"
+
+
+class _FakeSessionRedis:
+    """In-memory Redis stand-in so login tests don't require a real Redis server."""
+
+    def __init__(self) -> None:
+        self.values: dict[str, str] = {}
+        self.sets: dict[str, set[str]] = {}
+        self.expirations: dict[str, int] = {}
+
+    def reset(self) -> None:
+        self.values.clear()
+        self.sets.clear()
+        self.expirations.clear()
+
+    async def set(self, key: str, value: str, ex: int | None = None) -> None:
+        self.values[key] = value
+        if ex is not None:
+            self.expirations[key] = ex
+
+    async def get(self, key: str) -> str | None:
+        return self.values.get(key)
+
+    async def delete(self, key: str) -> None:
+        self.values.pop(key, None)
+        self.sets.pop(key, None)
+        self.expirations.pop(key, None)
+
+    async def sadd(self, key: str, *values: str) -> None:
+        bucket = self.sets.setdefault(key, set())
+        bucket.update(values)
+
+    async def smembers(self, key: str) -> set[str]:
+        return set(self.sets.get(key, set()))
+
+    async def srem(self, key: str, *values: str) -> None:
+        bucket = self.sets.get(key)
+        if bucket is None:
+            return
+        for value in values:
+            bucket.discard(value)
+
+    async def expire(self, key: str, seconds: int) -> None:
+        self.expirations[key] = seconds
 
 
 class ApiEndpointTests(unittest.TestCase):
@@ -52,15 +98,31 @@ class ApiEndpointTests(unittest.TestCase):
         # Disk yazimini engelle (gercek .demo_store.json'a dokunma).
         cls._save_patcher = patch.object(main, "_save_demo_store_to_disk", lambda: None)
         cls._save_patcher.start()
+
+        # Login testleri gercek Redis gerektirmesin diye bellek ici SessionStore
+        # devreye alinir; ayni desen backend/tests/test_auth_api.py'de kullanilir.
+        cls._fake_redis = _FakeSessionRedis()
+        cls._session_store = SessionStore(cls._fake_redis, ttl_seconds=28800)
+
+        async def _override_store():
+            return cls._session_store
+
+        main.app.dependency_overrides[get_auth_session_store] = _override_store
+
         cls.client = TestClient(main.app)
 
     @classmethod
     def tearDownClass(cls):
+        main.app.dependency_overrides.pop(get_auth_session_store, None)
+        if hasattr(main.app.state, "auth_session_store"):
+            delattr(main.app.state, "auth_session_store")
         cls._save_patcher.stop()
         main._DEMO_MODE = cls._orig_demo_mode
 
     def setUp(self):
         self._store_snapshot = copy.deepcopy(main._DEMO_STORE)
+        self._fake_redis.reset()
+        main.app.state.auth_session_store = type(self)._session_store
 
     def tearDown(self):
         main._DEMO_STORE.clear()
