@@ -5258,7 +5258,9 @@ async def student_login(req: StudentLoginRequest, request: Request, response: Re
                 profile = _demo_student_record(candidate)
                 lock.check()
                 try:
-                    issued = await store.create_session(str(candidate["id"]), "student")
+                    issued = await store.create_session_if_lock_held(
+                        str(candidate["id"]), "student", lock.token
+                    )
                 except Exception as exc:
                     clear_auth_cookies(response)
                     raise HTTPException(status_code=503, detail="Oturum servisine ulaşılamıyor") from exc
@@ -5281,18 +5283,25 @@ async def student_login(req: StudentLoginRequest, request: Request, response: Re
     store = await get_auth_session_store(request)
     try:
         async with user_lock(store.redis, "student", str(existing["id"])) as lock:
-            row = await pool.fetchrow(
-                """
-                SELECT s.id, s.student_no, s.tc_no, s.first_name, s.last_name, s.class_year, s.department_id,
-                       s.password_hash,
-                       d.name AS department_name, s.created_at
-                FROM public.students s
-                LEFT JOIN public.departments d ON d.id = s.department_id
-                WHERE student_no = $1
-                LIMIT 1
-                """,
-                student_no,
-            )
+            async with pool.acquire() as conn:
+                async with conn.transaction():
+                    await conn.execute(
+                        "SELECT pg_advisory_xact_lock($1, hashtext($2))",
+                        2,
+                        str(existing["id"]),
+                    )
+                    row = await conn.fetchrow(
+                        """
+                        SELECT s.id, s.student_no, s.tc_no, s.first_name, s.last_name, s.class_year, s.department_id,
+                               s.password_hash,
+                               d.name AS department_name, s.created_at
+                        FROM public.students s
+                        LEFT JOIN public.departments d ON d.id = s.department_id
+                        WHERE student_no = $1
+                        LIMIT 1
+                        """,
+                        student_no,
+                    )
             if row is None or not _verify_password(password, str(row["password_hash"] or "")):
                 raise HTTPException(status_code=401, detail="Ogrenci no veya sifre hatali")
             await _sync_student_to_all_courses(pool, str(row["id"]))
@@ -5300,7 +5309,9 @@ async def student_login(req: StudentLoginRequest, request: Request, response: Re
             payload.pop("password_hash", None)
             lock.check()
             try:
-                issued = await store.create_session(str(row["id"]), "student")
+                issued = await store.create_session_if_lock_held(
+                    str(row["id"]), "student", lock.token
+                )
             except Exception as exc:
                 clear_auth_cookies(response)
                 raise HTTPException(status_code=503, detail="Oturum servisine ulaşılamıyor") from exc
@@ -5401,7 +5412,9 @@ async def teacher_login(req: TeacherLoginRequest, request: Request, response: Re
                 }
                 lock.check()
                 try:
-                    issued = await store.create_session(str(candidate["id"]), "teacher")
+                    issued = await store.create_session_if_lock_held(
+                        str(candidate["id"]), "teacher", lock.token
+                    )
                 except Exception as exc:
                     clear_auth_cookies(response)
                     raise HTTPException(status_code=503, detail="Oturum servisine ulaşılamıyor") from exc
@@ -5424,15 +5437,22 @@ async def teacher_login(req: TeacherLoginRequest, request: Request, response: Re
     store = await get_auth_session_store(request)
     try:
         async with user_lock(store.redis, "teacher", str(existing["id"])) as lock:
-            row = await pool.fetchrow(
-                """
-                SELECT id, first_name, last_name, email, password_hash, created_at
-                FROM public.teachers
-                WHERE lower(email) = $1
-                LIMIT 1
-                """,
-                email,
-            )
+            async with pool.acquire() as conn:
+                async with conn.transaction():
+                    await conn.execute(
+                        "SELECT pg_advisory_xact_lock($1, hashtext($2))",
+                        1,
+                        str(existing["id"]),
+                    )
+                    row = await conn.fetchrow(
+                        """
+                        SELECT id, first_name, last_name, email, password_hash, created_at
+                        FROM public.teachers
+                        WHERE lower(email) = $1
+                        LIMIT 1
+                        """,
+                        email,
+                    )
             if row is None or not _verify_password(password, row["password_hash"]):
                 raise HTTPException(status_code=401, detail="E-posta veya sifre hatali")
 
@@ -5445,7 +5465,9 @@ async def teacher_login(req: TeacherLoginRequest, request: Request, response: Re
             }
             lock.check()
             try:
-                issued = await store.create_session(str(row["id"]), "teacher")
+                issued = await store.create_session_if_lock_held(
+                    str(row["id"]), "teacher", lock.token
+                )
             except Exception as exc:
                 clear_auth_cookies(response)
                 raise HTTPException(status_code=503, detail="Oturum servisine ulaşılamıyor") from exc
@@ -6949,7 +6971,9 @@ async def update_teacher_password(
                     raise HTTPException(status_code=400, detail="Mevcut şifre hatalı")
                 lock.check()
                 try:
-                    await store.revoke_user_sessions(principal.user_id, "teacher")
+                    await store.revoke_user_sessions_if_lock_held(
+                        principal.user_id, "teacher", lock.token
+                    )
                 except Exception as exc:
                     raise HTTPException(status_code=503, detail="Oturum servisine ulaşılamıyor") from exc
                 teacher["password_hash"] = _hash_password(new_password)
@@ -6962,35 +6986,48 @@ async def update_teacher_password(
     store = await get_auth_session_store(request)
     try:
         async with user_lock(store.redis, "teacher", teacher_id) as lock:
-            row = await pool.fetchrow(
-                """
-                SELECT id, password_hash
-                FROM public.teachers
-                WHERE id = $1
-                LIMIT 1
-                """,
-                teacher_id,
-            )
-            if row is None:
-                raise HTTPException(status_code=404, detail="Ogretmen bulunamadi")
-            if not _verify_password(current_password, row["password_hash"]):
-                raise HTTPException(status_code=400, detail="Mevcut şifre hatalı")
+            # Hold the Postgres advisory lock across the Redis revoke so no concurrent login
+            # can read credentials between session revocation and password_hash update.
+            async with pool.acquire() as conn:
+                async with conn.transaction():
+                    await conn.execute(
+                        "SELECT pg_advisory_xact_lock($1, hashtext($2))",
+                        1,
+                        teacher_id,
+                    )
+                    row = await conn.fetchrow(
+                        """
+                        SELECT id, password_hash
+                        FROM public.teachers
+                        WHERE id = $1
+                        LIMIT 1
+                        """,
+                        teacher_id,
+                    )
+                    if row is None:
+                        raise HTTPException(status_code=404, detail="Ogretmen bulunamadi")
+                    if not _verify_password(current_password, row["password_hash"]):
+                        raise HTTPException(status_code=400, detail="Mevcut şifre hatalı")
 
-            lock.check()
-            try:
-                await store.revoke_user_sessions(principal.user_id, "teacher")
-            except Exception as exc:
-                raise HTTPException(status_code=503, detail="Oturum servisine ulaşılamıyor") from exc
+                    lock.check()
+                    try:
+                        await store.revoke_user_sessions_if_lock_held(
+                            principal.user_id, "teacher", lock.token
+                        )
+                    except Exception as exc:
+                        raise HTTPException(
+                            status_code=503, detail="Oturum servisine ulaşılamıyor"
+                        ) from exc
 
-            await pool.execute(
-                """
-                UPDATE public.teachers
-                SET password_hash = $1
-                WHERE id = $2
-                """,
-                _hash_password(new_password),
-                teacher_id,
-            )
+                    await conn.execute(
+                        """
+                        UPDATE public.teachers
+                        SET password_hash = $1
+                        WHERE id = $2
+                        """,
+                        _hash_password(new_password),
+                        teacher_id,
+                    )
             clear_auth_cookies(response)
             return {"status": "ok"}
     except UserLockUnavailable as exc:

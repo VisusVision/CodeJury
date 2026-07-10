@@ -6,11 +6,13 @@ Runs in DEMO_MODE with in-memory SessionStore override.
 
 from __future__ import annotations
 
+import asyncio
 import copy
 import unittest
 from functools import partial
 from unittest.mock import AsyncMock, patch
 
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
 from backend.auth.dependencies import CSRF_HEADER, get_auth_session_store
@@ -99,6 +101,41 @@ class _FakeSessionRedis:
         self.expirations[key] = seconds
 
     async def eval(self, script: str, numkeys: int, *keys_and_args):
+        if "smembers" in script:
+            lock_key = keys_and_args[0]
+            index_key = keys_and_args[1]
+            token = keys_and_args[2]
+            session_prefix = keys_and_args[3]
+            if self.values.get(lock_key) != token:
+                return -1
+            members = list(self.sets.get(index_key, set()))
+            deleted = 0
+            for member in members:
+                session_key = f"{session_prefix}{member}"
+                if session_key in self.values:
+                    self.values.pop(session_key, None)
+                    deleted += 1
+            self.sets.pop(index_key, None)
+            self.expirations.pop(index_key, None)
+            return deleted
+
+        if "sadd" in script and numkeys >= 3:
+            lock_key = keys_and_args[0]
+            session_key = keys_and_args[1]
+            index_key = keys_and_args[2]
+            token = keys_and_args[3]
+            session_json = keys_and_args[4]
+            ttl_seconds = int(keys_and_args[5])
+            session_hash = keys_and_args[6]
+            if self.values.get(lock_key) != token:
+                return 0
+            self.values[session_key] = session_json
+            self.expirations[session_key] = ttl_seconds
+            bucket = self.sets.setdefault(index_key, set())
+            bucket.add(session_hash)
+            self.expirations[index_key] = ttl_seconds
+            return 1
+
         key = keys_and_args[0]
         token = keys_and_args[1]
         if self.values.get(key) != token:
@@ -110,6 +147,26 @@ class _FakeSessionRedis:
         self.values.pop(key, None)
         self.expirations.pop(key, None)
         return 1
+
+
+class _RaceAtRevokeEvalRedis(_FakeSessionRedis):
+    """Mutates lock ownership at the exact moment the atomic revoke script runs."""
+
+    async def eval(self, script: str, numkeys: int, *keys_and_args):
+        if "smembers" in script:
+            lock_key = keys_and_args[0]
+            self.values[lock_key] = "new-owner-after-lease-loss"
+        return await super().eval(script, numkeys, *keys_and_args)
+
+
+class _RaceAtSessionWriteEvalRedis(_FakeSessionRedis):
+    """Mutates lock ownership at the exact moment the atomic session-write script runs."""
+
+    async def eval(self, script: str, numkeys: int, *keys_and_args):
+        if "sadd" in script and numkeys >= 3:
+            lock_key = keys_and_args[0]
+            self.values[lock_key] = "new-owner-after-lease-loss"
+        return await super().eval(script, numkeys, *keys_and_args)
 
 
 class TeacherAuthorizationTests(unittest.TestCase):
@@ -749,13 +806,66 @@ class TeacherAuthorizationTests(unittest.TestCase):
         )
         self.assertEqual(new_login_resp.status_code, 401)
 
+    def test_password_change_returns_503_when_lock_token_lost_at_atomic_revoke_moment(self):
+        """Atomic revoke must fail closed if lock token mismatches at eval time (post-check race)."""
+        original_hash = main._DEMO_STORE["teachers"][0]["password_hash"]
+        new_password = "yeniparola1"
+
+        race_redis = _RaceAtRevokeEvalRedis()
+        race_store = SessionStore(race_redis, ttl_seconds=28800)
+
+        async def _override_store():
+            return race_store
+
+        main.app.dependency_overrides[get_auth_session_store] = _override_store
+        main.app.state.auth_session_store = race_store
+        try:
+            csrf_a = self._login_teacher(self.client_a)
+            resp = self.client_a.patch(
+                f"/api/teacher/{_DEMO_TEACHER_ID}/password",
+                json={"current_password": _DEMO_TEACHER_PASSWORD, "new_password": new_password},
+                headers=self._csrf_headers(csrf_a),
+            )
+        finally:
+            main.app.dependency_overrides[get_auth_session_store] = lambda: type(self)._session_store
+            main.app.state.auth_session_store = type(self)._session_store
+
+        self.assertEqual(resp.status_code, 503)
+        self.assertEqual(resp.json()["detail"], "Oturum servisine ulaşılamıyor")
+        self.assertEqual(main._DEMO_STORE["teachers"][0]["password_hash"], original_hash)
+
+    def test_login_returns_503_when_lock_token_lost_at_atomic_session_write_moment(self):
+        """Atomic session write must fail closed if lock token mismatches at eval time (post-check race)."""
+        race_redis = _RaceAtSessionWriteEvalRedis()
+        race_store = SessionStore(race_redis, ttl_seconds=28800)
+
+        async def _override_store():
+            return race_store
+
+        main.app.dependency_overrides[get_auth_session_store] = _override_store
+        main.app.state.auth_session_store = race_store
+        try:
+            client = TestClient(main.app)
+            resp = client.post(
+                "/api/teacher/login",
+                json={"email": _DEMO_TEACHER_EMAIL, "password": _DEMO_TEACHER_PASSWORD},
+            )
+        finally:
+            main.app.dependency_overrides[get_auth_session_store] = lambda: type(self)._session_store
+            main.app.state.auth_session_store = type(self)._session_store
+
+        self.assertEqual(resp.status_code, 503)
+        self.assertEqual(resp.json()["detail"], "Oturum servisine ulaşılamıyor")
+        session_keys = [key for key in race_redis.values if key.startswith("auth:session:")]
+        self.assertEqual(session_keys, [])
+
     def test_password_change_returns_503_and_leaves_password_unchanged_when_revoke_fails(self):
         csrf_a = self._login_teacher(self.client_a)
         new_password = "yeniparola1"
 
         with patch.object(
             type(self)._session_store,
-            "revoke_user_sessions",
+            "revoke_user_sessions_if_lock_held",
             new=AsyncMock(side_effect=ConnectionError("redis down")),
         ):
             resp = self.client_a.patch(
@@ -1187,24 +1297,21 @@ class TeacherPgLoginSecurityTests(unittest.TestCase):
         old_hash = main._hash_password(old_password)
         new_hash = main._hash_password(new_password)
 
-        class FakePool:
-            def __init__(self) -> None:
-                self.call_count = 0
+        class _PgLoginConn:
+            def __init__(self, pool: "_PgLoginPool") -> None:
+                self._pool = pool
+
+            @asynccontextmanager
+            async def transaction(self):
+                yield self
+
+            async def execute(self, query, *args):
+                normalized = " ".join(query.split())
+                if "pg_advisory_xact_lock" not in normalized:
+                    raise AssertionError(f"unexpected execute: {normalized}")
 
             async def fetchrow(self, query, *args):
-                self.call_count += 1
-                normalized = " ".join(query.split())
-                if "SELECT id FROM public.teachers" in normalized and "password_hash" not in normalized:
-                    return {"id": teacher_id}
-                if self.call_count == 1 or "password_hash" not in normalized:
-                    return {
-                        "id": teacher_id,
-                        "first_name": "Test",
-                        "last_name": "Teacher",
-                        "email": email,
-                        "password_hash": old_hash,
-                        "created_at": "2026-07-10T12:00:00Z",
-                    }
+                self._pool.call_count += 1
                 return {
                     "id": teacher_id,
                     "first_name": "Test",
@@ -1214,7 +1321,29 @@ class TeacherPgLoginSecurityTests(unittest.TestCase):
                     "created_at": "2026-07-10T12:00:00Z",
                 }
 
-        pool = FakePool()
+        class _PgLoginPool:
+            def __init__(self) -> None:
+                self.call_count = 0
+
+            @asynccontextmanager
+            async def acquire(self):
+                yield _PgLoginConn(self)
+
+            async def fetchrow(self, query, *args):
+                self.call_count += 1
+                normalized = " ".join(query.split())
+                if "SELECT id FROM public.teachers" in normalized and "password_hash" not in normalized:
+                    return {"id": teacher_id}
+                return {
+                    "id": teacher_id,
+                    "first_name": "Test",
+                    "last_name": "Teacher",
+                    "email": email,
+                    "password_hash": old_hash,
+                    "created_at": "2026-07-10T12:00:00Z",
+                }
+
+        pool = _PgLoginPool()
         fake_redis = _FakeSessionRedis()
         session_store = SessionStore(fake_redis, ttl_seconds=28800)
         orig_demo = main._DEMO_MODE
@@ -1240,6 +1369,282 @@ class TeacherPgLoginSecurityTests(unittest.TestCase):
 
         self.assertEqual(resp.status_code, 401)
         self.assertGreaterEqual(pool.call_count, 2)
+
+
+class _FakePgConnection:
+    def __init__(self, pool: "_FakePgPool") -> None:
+        self._pool = pool
+        self._in_transaction = False
+        self._pending_writes: list = []
+        self._active_advisory: tuple[int, str] | None = None
+
+    @asynccontextmanager
+    async def transaction(self):
+        if self._in_transaction:
+            raise RuntimeError("nested transactions are not supported in fake")
+        self._in_transaction = True
+        self._pending_writes = []
+        try:
+            yield self
+            for write in self._pending_writes:
+                write()
+            self._pending_writes.clear()
+        except Exception:
+            self._pending_writes.clear()
+            raise
+        finally:
+            if self._active_advisory is not None:
+                self._pool._release_advisory(self._active_advisory)
+            self._in_transaction = False
+            self._active_advisory = None
+
+    async def execute(self, query: str, *args):
+        normalized = " ".join(query.split())
+        if "pg_advisory_xact_lock" in normalized:
+            namespace = int(args[0])
+            key_text = str(args[1])
+            await self._pool._acquire_advisory(namespace, key_text, pause=self._pool.hold_after_advisory)
+            self._active_advisory = (namespace, key_text)
+            return None
+        if "UPDATE public.teachers" in normalized:
+            new_hash, teacher_id = args[0], str(args[1])
+
+            def _apply() -> None:
+                row = self._pool.teachers.get(teacher_id)
+                if row is not None:
+                    row["password_hash"] = new_hash
+
+            if self._in_transaction:
+                self._pending_writes.append(_apply)
+            else:
+                _apply()
+            return None
+        raise AssertionError(f"unexpected execute query: {normalized}")
+
+    async def fetchrow(self, query: str, *args):
+        normalized = " ".join(query.split())
+        if "SELECT id FROM public.teachers" in normalized and "password_hash" not in normalized:
+            email = str(args[0]).lower()
+            for row in self._pool.teachers.values():
+                if row["email"].lower() == email:
+                    return {"id": row["id"]}
+            return None
+        if "SELECT id, first_name, last_name, email, password_hash, created_at" in normalized:
+            email = str(args[0]).lower()
+            for row in self._pool.teachers.values():
+                if row["email"].lower() == email:
+                    return dict(row)
+            return None
+        if "SELECT id, password_hash" in normalized:
+            teacher_id = str(args[0])
+            row = self._pool.teachers.get(teacher_id)
+            if row is None:
+                return None
+            return {"id": row["id"], "password_hash": row["password_hash"]}
+        raise AssertionError(f"unexpected fetchrow query: {normalized}")
+
+
+class _FakePgPool:
+    def __init__(self, teachers: dict[str, dict]) -> None:
+        self.teachers = teachers
+        self._advisory_locks: dict[tuple[int, str], asyncio.Lock] = {}
+        self.hold_after_advisory = False
+        self.advisory_acquired = asyncio.Event()
+        self.release_advisory_pause = asyncio.Event()
+
+    @asynccontextmanager
+    async def acquire(self):
+        conn = _FakePgConnection(self)
+        try:
+            yield conn
+        finally:
+            pass
+
+    async def _acquire_advisory(self, namespace: int, key_text: str, *, pause: bool) -> None:
+        lock_key = (namespace, key_text)
+        lock = self._advisory_locks.setdefault(lock_key, asyncio.Lock())
+        await lock.acquire()
+        if pause:
+            self.advisory_acquired.set()
+            await self.release_advisory_pause.wait()
+
+    def _release_advisory(self, advisory_key: tuple[int, str] | None) -> None:
+        if advisory_key is None:
+            return
+        lock = self._advisory_locks.get(advisory_key)
+        if lock is not None and lock.locked():
+            lock.release()
+
+    async def fetchrow(self, query: str, *args):
+        conn = _FakePgConnection(self)
+        return await conn.fetchrow(query, *args)
+
+    async def execute(self, query: str, *args):
+        conn = _FakePgConnection(self)
+        return await conn.execute(query, *args)
+
+
+class TeacherPgAdvisoryLockTests(unittest.IsolatedAsyncioTestCase):
+    async def test_pg_login_blocks_until_password_change_transaction_releases_advisory_lock(self):
+        import asyncio
+        from types import SimpleNamespace
+
+        from backend.auth.models import AuthPrincipal
+        from fastapi import Response
+
+        old_password = "oldpass1"
+        new_password = "newpass2"
+        email = "pgadv@test.local"
+        teacher_id = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+        teachers = {
+            teacher_id: {
+                "id": teacher_id,
+                "first_name": "Adv",
+                "last_name": "Teacher",
+                "email": email,
+                "password_hash": main._hash_password(old_password),
+                "created_at": "2026-07-10T12:00:00Z",
+            }
+        }
+        pool = _FakePgPool(teachers)
+        pool.hold_after_advisory = True
+
+        fake_redis = _FakeSessionRedis()
+        session_store = SessionStore(fake_redis, ttl_seconds=28800)
+        orig_demo = main._DEMO_MODE
+
+        async def override_store():
+            return session_store
+
+        main.app.dependency_overrides[get_auth_session_store] = override_store
+        main.app.state.auth_session_store = session_store
+        main._DEMO_MODE = False
+
+        request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(auth_session_store=session_store)))
+        response = Response()
+        principal = AuthPrincipal(
+            user_id=teacher_id,
+            role="teacher",
+            session_hash="hash",
+            csrf_hash="csrf",
+        )
+
+        try:
+            with patch.object(main, "_get_db_pool", new=AsyncMock(return_value=pool)):
+                password_task = asyncio.create_task(
+                    main.update_teacher_password(
+                        teacher_id,
+                        main.TeacherPasswordUpdateRequest(
+                            current_password=old_password,
+                            new_password=new_password,
+                        ),
+                        request,
+                        response,
+                        principal,
+                    )
+                )
+                await asyncio.wait_for(pool.advisory_acquired.wait(), timeout=2.0)
+
+                login_started = asyncio.Event()
+
+                async def _attempt_login() -> None:
+                    login_started.set()
+                    login_response = Response()
+                    with self.assertRaises(HTTPException) as ctx:
+                        await main.teacher_login(
+                            main.TeacherLoginRequest(email=email, password=old_password),
+                            request,
+                            login_response,
+                        )
+                    self.assertEqual(ctx.exception.status_code, 401)
+
+                login_task = asyncio.create_task(_attempt_login())
+                await asyncio.wait_for(login_started.wait(), timeout=2.0)
+                await asyncio.sleep(0.05)
+                self.assertFalse(login_task.done())
+
+                pool.release_advisory_pause.set()
+                await asyncio.wait_for(password_task, timeout=2.0)
+                await asyncio.wait_for(login_task, timeout=2.0)
+
+                self.assertTrue(
+                    main._verify_password(new_password, teachers[teacher_id]["password_hash"])
+                )
+                self.assertFalse(
+                    main._verify_password(old_password, teachers[teacher_id]["password_hash"])
+                )
+        finally:
+            main._DEMO_MODE = orig_demo
+            main.app.dependency_overrides.pop(get_auth_session_store, None)
+            if hasattr(main.app.state, "auth_session_store"):
+                delattr(main.app.state, "auth_session_store")
+
+    async def test_pg_password_change_rolls_back_update_when_atomic_revoke_fails(self):
+        from types import SimpleNamespace
+
+        from backend.auth.models import AuthPrincipal
+        from fastapi import Response
+
+        old_password = "oldpass1"
+        new_password = "newpass2"
+        teacher_id = "cccccccc-cccc-4ccc-8ccc-cccccccccccc"
+        original_hash = main._hash_password(old_password)
+        teachers = {
+            teacher_id: {
+                "id": teacher_id,
+                "first_name": "Rollback",
+                "last_name": "Teacher",
+                "email": "rollback@test.local",
+                "password_hash": original_hash,
+                "created_at": "2026-07-10T12:00:00Z",
+            }
+        }
+        pool = _FakePgPool(teachers)
+        fake_redis = _FakeSessionRedis()
+        session_store = SessionStore(fake_redis, ttl_seconds=28800)
+        orig_demo = main._DEMO_MODE
+
+        async def override_store():
+            return session_store
+
+        main.app.dependency_overrides[get_auth_session_store] = override_store
+        main.app.state.auth_session_store = session_store
+        main._DEMO_MODE = False
+
+        request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(auth_session_store=session_store)))
+        response = Response()
+        principal = AuthPrincipal(
+            user_id=teacher_id,
+            role="teacher",
+            session_hash="hash",
+            csrf_hash="csrf",
+        )
+
+        try:
+            with patch.object(main, "_get_db_pool", new=AsyncMock(return_value=pool)):
+                with patch.object(
+                    session_store,
+                    "revoke_user_sessions_if_lock_held",
+                    new=AsyncMock(side_effect=ConnectionError("redis down")),
+                ):
+                    with self.assertRaises(HTTPException) as ctx:
+                        await main.update_teacher_password(
+                            teacher_id,
+                            main.TeacherPasswordUpdateRequest(
+                                current_password=old_password,
+                                new_password=new_password,
+                            ),
+                            request,
+                            response,
+                            principal,
+                        )
+            self.assertEqual(ctx.exception.status_code, 503)
+            self.assertEqual(teachers[teacher_id]["password_hash"], original_hash)
+        finally:
+            main._DEMO_MODE = orig_demo
+            main.app.dependency_overrides.pop(get_auth_session_store, None)
+            if hasattr(main.app.state, "auth_session_store"):
+                delattr(main.app.state, "auth_session_store")
 
 
 if __name__ == "__main__":

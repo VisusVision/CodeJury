@@ -77,6 +77,48 @@ class FakeSessionRedis:
         self.expirations[key] = seconds
 
     async def eval(self, script: str, numkeys: int, *keys_and_args):
+        if "smembers" in script:
+            lock_key = keys_and_args[0]
+            index_key = keys_and_args[1]
+            token = keys_and_args[2]
+            session_prefix = keys_and_args[3]
+            self._purge_expired(lock_key)
+            if self.values.get(lock_key) != token:
+                return -1
+            members = list(self.sets.get(index_key, set()))
+            deleted = 0
+            for member in members:
+                session_key = f"{session_prefix}{member}"
+                if session_key in self.values:
+                    self.values.pop(session_key, None)
+                    self.expirations.pop(session_key, None)
+                    self._expires_at.pop(session_key, None)
+                    deleted += 1
+            self.sets.pop(index_key, None)
+            self.expirations.pop(index_key, None)
+            self._expires_at.pop(index_key, None)
+            return deleted
+
+        if "sadd" in script and numkeys >= 3:
+            lock_key = keys_and_args[0]
+            session_key = keys_and_args[1]
+            index_key = keys_and_args[2]
+            token = keys_and_args[3]
+            session_json = keys_and_args[4]
+            ttl_seconds = int(keys_and_args[5])
+            session_hash = keys_and_args[6]
+            self._purge_expired(lock_key)
+            if self.values.get(lock_key) != token:
+                return 0
+            self.values[session_key] = session_json
+            self.expirations[session_key] = ttl_seconds
+            self._expires_at[session_key] = time.monotonic() + ttl_seconds
+            bucket = self.sets.setdefault(index_key, set())
+            bucket.add(session_hash)
+            self.expirations[index_key] = ttl_seconds
+            self._expires_at[index_key] = time.monotonic() + ttl_seconds
+            return 1
+
         key = keys_and_args[0]
         self._purge_expired(key)
         token = keys_and_args[1]
@@ -388,6 +430,92 @@ async def test_renewal_stops_and_lock_releases_when_context_manager_exits(
     assert key not in redis.values
     token = await acquire_user_lock(redis, "teacher", "user-release", max_attempts=1)
     await release_user_lock(redis, "teacher", "user-release", token)
+
+
+@pytest.mark.asyncio
+async def test_create_session_if_lock_held_fails_closed_when_token_mismatched(
+    store: SessionStore,
+    redis: FakeSessionRedis,
+) -> None:
+    user_id = "user-lock-mismatch"
+    role = "teacher"
+    lock_key = f"auth:userlock:{role}:{user_id}"
+    redis.values[lock_key] = "actual-owner-token"
+
+    with pytest.raises(LockLost):
+        await store.create_session_if_lock_held(user_id, role, "wrong-token")
+
+    session_keys = [key for key in redis.values if key.startswith("auth:session:")]
+    index_keys = [key for key in redis.sets if key.startswith("auth:user_sessions:")]
+    assert session_keys == []
+    assert index_keys == []
+
+
+@pytest.mark.asyncio
+async def test_revoke_user_sessions_if_lock_held_fails_closed_when_token_mismatched(
+    store: SessionStore,
+    redis: FakeSessionRedis,
+) -> None:
+    user_id = "user-revoke-mismatch"
+    role = "teacher"
+    await store.create_session(user_id, role)
+    await store.create_session(user_id, role)
+    index_key = _user_index_key(user_id, role)
+    session_hashes_before = await redis.smembers(index_key)
+    assert len(session_hashes_before) == 2
+
+    lock_key = f"auth:userlock:{role}:{user_id}"
+    redis.values[lock_key] = "actual-owner-token"
+
+    with pytest.raises(LockLost):
+        await store.revoke_user_sessions_if_lock_held(user_id, role, "wrong-token")
+
+    assert await redis.smembers(index_key) == session_hashes_before
+    for session_hash in session_hashes_before:
+        assert await redis.get(_session_key(session_hash)) is not None
+
+
+@pytest.mark.asyncio
+async def test_create_session_if_lock_held_succeeds_when_token_matches(
+    store: SessionStore,
+    redis: FakeSessionRedis,
+) -> None:
+    user_id = "user-lock-match"
+    role = "student"
+    lock_key = f"auth:userlock:{role}:{user_id}"
+    token = "matching-lock-token"
+    redis.values[lock_key] = token
+
+    issued = await store.create_session_if_lock_held(user_id, role, token)
+
+    session_hash = hash_token(issued.session_token)
+    session_key = _session_key(session_hash)
+    index_key = _user_index_key(user_id, role)
+    assert session_hash in await redis.smembers(index_key)
+    assert await redis.get(session_key) is not None
+    assert await store.read_session(issued.session_token) is not None
+
+
+@pytest.mark.asyncio
+async def test_revoke_user_sessions_if_lock_held_succeeds_when_token_matches(
+    store: SessionStore,
+    redis: FakeSessionRedis,
+) -> None:
+    user_id = "user-revoke-match"
+    role = "teacher"
+    first = await store.create_session(user_id, role)
+    second = await store.create_session(user_id, role)
+
+    lock_key = f"auth:userlock:{role}:{user_id}"
+    token = "matching-revoke-token"
+    redis.values[lock_key] = token
+
+    deleted = await store.revoke_user_sessions_if_lock_held(user_id, role, token)
+
+    assert deleted == 2
+    assert await store.read_session(first.session_token) is None
+    assert await store.read_session(second.session_token) is None
+    assert await redis.smembers(_user_index_key(user_id, role)) == set()
 
 
 @pytest.mark.asyncio
