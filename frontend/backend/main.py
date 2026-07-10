@@ -48,8 +48,8 @@ from backend.llm.ollama_client import chat_json, get_llm_diagnostics_snapshot
 from backend.ops.runtime_diagnostics import (
     build_analysis_runtime_meta,
     get_llm_config_snapshot,
-    get_sandbox_pool_snapshot,
 )
+from backend.ops.worker_readiness import get_worker_readiness
 from backend.queue.analysis_jobs import (
     AnalysisJobNotFound,
     AnalysisJobStore,
@@ -472,29 +472,6 @@ def _startup_log() -> None:
         f"[mentor-api] OK | analysis_engine={_ANALYSIS_ENGINE} | main={_MAIN_FILE}",
         flush=True,
     )
-
-
-@app.on_event("startup")
-def _startup_sandbox_pool() -> None:
-    """Sandbox container havuzunu arka planda başlat."""
-    import threading
-    def _init():
-        try:
-            from backend.sandbox.pool_manager import initialize_pool
-            initialize_pool()
-        except Exception as e:
-            print(f"[mentor-api] Sandbox pool başlatılamadı (Docker açık mı?): {e}", flush=True)
-    threading.Thread(target=_init, daemon=True).start()
-
-
-@app.on_event("shutdown")
-def _shutdown_sandbox_pool() -> None:
-    """Sandbox container'larını kapat."""
-    try:
-        from backend.sandbox.pool_manager import shutdown_pool
-        shutdown_pool()
-    except Exception:
-        pass
 
 
 @app.on_event("startup")
@@ -4064,6 +4041,14 @@ async def _run_analysis_pipeline_body(
     elif file_name.endswith(".java"):
         language = "java"
 
+    from backend.sandbox.executor import require_sandbox_pool
+
+    loop = asyncio.get_running_loop()
+    await loop.run_in_executor(
+        None,
+        lambda: require_sandbox_pool(settings.sandbox_ready_timeout_seconds),
+    )
+
     brief = (assignment_brief or "").strip()
     fac = list(faculty_rubric_criteria) if faculty_rubric_criteria else []
     pipeline_test_cases = _normalize_pipeline_test_cases(test_cases)
@@ -4932,22 +4917,80 @@ def _build_rejected_claims_response(ev: dict) -> list[dict]:
 
 # ---- Endpoints ----
 
+async def _worker_readiness_snapshot() -> dict[str, Any]:
+    try:
+        store = await _get_analysis_job_store()
+        return await get_worker_readiness(store.redis)
+    except Exception:
+        logger.exception("worker readiness could not be read")
+        return {
+            "status": "degraded",
+            "analysis_ready": False,
+            "worker_count": 0,
+            "ready_worker_count": 0,
+            "sandbox": {
+                "mode": "unavailable",
+                "pool_ready": False,
+                "container_count": 0,
+                "available_count": 0,
+                "target_size": 0,
+            },
+        }
+
+
 @app.get("/api/health")
 async def health(response: Response):
     """Eski surec: sadece version 2.0.0 + agents, analysis_engine YOK. O zaman yanlis/eskimi uvicorn calisiyor."""
+    readiness = await _worker_readiness_snapshot()
+    llm = get_llm_config_snapshot()
     response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate"
     response.headers["Pragma"] = "no-cache"
     return {
-        "status": "ok",
+        "status": "ok" if readiness["analysis_ready"] and llm["enabled"] else "degraded",
+        "analysis_ready": readiness["analysis_ready"],
+        "worker_count": readiness["worker_count"],
+        "ready_worker_count": readiness["ready_worker_count"],
         "package": "frontend",
         "version": "2.1.0",
         "agents": 10,
         "analysis_engine": _ANALYSIS_ENGINE,
         "demo_mode": _DEMO_MODE,
         "main_py": str(_MAIN_FILE),
-        "llm": get_llm_config_snapshot(),
-        "sandbox": get_sandbox_pool_snapshot(),
+        "llm": llm,
+        "sandbox": readiness["sandbox"],
     }
+
+
+async def _require_analysis_ready(store: AnalysisJobStore) -> dict[str, Any]:
+    readiness = await get_worker_readiness(store.redis)
+    if not readiness["analysis_ready"]:
+        raise HTTPException(
+            status_code=503,
+            detail="Sandbox kullanılamıyor; Docker ve analysis worker pool durumunu kontrol edip tekrar deneyin.",
+        )
+    return readiness
+
+
+async def _enqueue_analysis_request(req: AnalysisRequest) -> dict[str, Any]:
+    store = await _get_analysis_job_store()
+    await _require_analysis_ready(store)
+    brief = await _fetch_assignment_brief_for_pipeline(req.assignment_id)
+    faculty = await _fetch_faculty_rubric_criteria_for_pipeline(req.assignment_id)
+    saved_test_cases = (
+        await _fetch_assignment_test_cases_for_pipeline(req.assignment_id)
+        if req.test_cases is None
+        else req.test_cases
+    )
+    return await create_analysis_job(store, {
+        "file_name": req.file_name,
+        "file_content": req.file_content,
+        "assignment_id": req.assignment_id,
+        "assignment_brief": brief,
+        "faculty_rubric_criteria": faculty,
+        "test_cases": saved_test_cases or [],
+        "report_language": req.report_language or "tr",
+        "student_no": (req.student_no or "").strip(),
+    })
 
 
 @app.post("/api/analyze")
@@ -4971,26 +5014,7 @@ async def analyze_code(req: AnalysisRequest):
                   )
                   if pending is not None:
                       raise HTTPException(status_code=409, detail="Önce açık değerlendirmeyi tamamlayın")
-        brief = await _fetch_assignment_brief_for_pipeline(req.assignment_id)
-        faculty = await _fetch_faculty_rubric_criteria_for_pipeline(req.assignment_id)
-        saved_test_cases = (
-            await _fetch_assignment_test_cases_for_pipeline(req.assignment_id)
-            if req.test_cases is None
-            else req.test_cases
-        )
-        store = await _get_analysis_job_store()
-        return await create_analysis_job(
-            store,
-            {
-                "file_name": req.file_name,
-                "file_content": req.file_content,
-                "assignment_id": req.assignment_id,
-                "assignment_brief": brief,
-                "faculty_rubric_criteria": faculty,
-                "test_cases": saved_test_cases or [],
-                "report_language": req.report_language or "tr",
-            },
-        )
+        return await _enqueue_analysis_request(req)
     except HTTPException:
         raise
     except Exception as e:
@@ -7299,5 +7323,5 @@ async def upload_file(file: UploadFile = File(...)):
         text_content = content.decode("utf-8")
     except UnicodeDecodeError:
         raise HTTPException(status_code=400, detail="Dosya metin olarak okunamadi.")
-    result = await run_analysis_pipeline(file.filename or "unknown.py", text_content)
-    return result
+    req = AnalysisRequest(file_name=file.filename or "unknown.py", file_content=text_content)
+    return await _enqueue_analysis_request(req)

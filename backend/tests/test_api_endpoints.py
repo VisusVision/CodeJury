@@ -16,7 +16,7 @@ Tasarim notlari:
 
 import copy
 import unittest
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from fastapi.testclient import TestClient
 
@@ -68,7 +68,12 @@ class ApiEndpointTests(unittest.TestCase):
 
     # ── Health ────────────────────────────────────────────────────────────────
     def test_health_returns_demo_mode_true(self):
-        resp = self.client.get("/api/health")
+        with patch.object(main, "_worker_readiness_snapshot", new=AsyncMock(return_value={
+            "status": "ok", "analysis_ready": True,
+            "worker_count": 1, "ready_worker_count": 1,
+            "sandbox": {"mode": "pool", "pool_ready": True, "container_count": 2, "available_count": 2, "target_size": 2},
+        })):
+            resp = self.client.get("/api/health")
         self.assertEqual(resp.status_code, 200)
         data = resp.json()
         self.assertEqual(data["status"], "ok")
@@ -76,7 +81,12 @@ class ApiEndpointTests(unittest.TestCase):
         self.assertTrue(data["demo_mode"])
 
     def test_health_includes_llm_and_sandbox_runtime_config(self):
-        resp = self.client.get("/api/health")
+        with patch.object(main, "_worker_readiness_snapshot", new=AsyncMock(return_value={
+            "status": "degraded", "analysis_ready": False,
+            "worker_count": 0, "ready_worker_count": 0,
+            "sandbox": {"mode": "unavailable", "pool_ready": False, "container_count": 0, "available_count": 0, "target_size": 0},
+        })):
+            resp = self.client.get("/api/health")
         self.assertEqual(resp.status_code, 200)
         data = resp.json()
         llm = data.get("llm")
@@ -88,6 +98,21 @@ class ApiEndpointTests(unittest.TestCase):
         self.assertIn("enabled", llm)
         self.assertIn("mode", sandbox)
         self.assertIn("pool_ready", sandbox)
+        self.assertIn("analysis_ready", data)
+        self.assertIn("worker_count", data)
+
+    def test_upload_endpoint_enqueues_instead_of_running_pipeline(self):
+        with (
+            patch.object(main, "_enqueue_analysis_request", new=AsyncMock(return_value={"job_id": "job-upload", "status": "queued"})),
+            patch.object(main, "run_analysis_pipeline", new=AsyncMock()) as pipeline,
+        ):
+            response = self.client.post(
+                "/api/upload",
+                files={"file": ("main.py", b"print('ok')", "text/x-python")},
+            )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["job_id"], "job-upload")
+        pipeline.assert_not_awaited()
 
     # ── Students ────────────────────────────────────────────────────────────────
     def test_list_students_returns_seeded_student(self):
@@ -352,8 +377,14 @@ class ApiEndpointTests(unittest.TestCase):
         async def fake_create_analysis_job(_store, request):
             return {"job_id": "job-saved-tests", "status": "queued", "request": request}
 
+        store = MagicMock(redis=object())
         with (
-            patch.object(main, "_get_analysis_job_store", new=AsyncMock(return_value=object())),
+            patch.object(main, "_get_analysis_job_store", new=AsyncMock(return_value=store)),
+            patch.object(main, "get_worker_readiness", new=AsyncMock(return_value={
+                "status": "ok", "analysis_ready": True,
+                "worker_count": 1, "ready_worker_count": 1,
+                "sandbox": {"mode": "pool", "pool_ready": True, "container_count": 2, "available_count": 2, "target_size": 2},
+            })),
             patch.object(main, "create_analysis_job", new=AsyncMock(side_effect=fake_create_analysis_job)),
         ):
             resp = self.client.post(
@@ -531,10 +562,16 @@ class ApiEndpointTests(unittest.TestCase):
 
     # ── Analyze (kuyruk patch'li) ────────────────────────────────────────────────
     def test_analyze_enqueues_job(self):
+        store = MagicMock(redis=object())
         with (
             patch.object(main, "_fetch_assignment_brief_for_pipeline", new=AsyncMock(return_value="brief")),
             patch.object(main, "_fetch_faculty_rubric_criteria_for_pipeline", new=AsyncMock(return_value=[])),
-            patch.object(main, "_get_analysis_job_store", new=AsyncMock(return_value=object())),
+            patch.object(main, "_get_analysis_job_store", new=AsyncMock(return_value=store)),
+            patch.object(main, "get_worker_readiness", new=AsyncMock(return_value={
+                "status": "ok", "analysis_ready": True,
+                "worker_count": 1, "ready_worker_count": 1,
+                "sandbox": {"mode": "pool", "pool_ready": True, "container_count": 2, "available_count": 2, "target_size": 2},
+            })),
             patch.object(main, "create_analysis_job", new=AsyncMock(return_value={"job_id": "job-1", "status": "queued"})),
         ):
             resp = self.client.post(
