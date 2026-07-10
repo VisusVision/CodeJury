@@ -45,7 +45,7 @@ class QaPoolSmokeTests(unittest.TestCase):
         shutdown_mock = MagicMock()
 
         with (
-            patch("backend.ops.runtime_diagnostics.try_initialize_sandbox_pool", return_value="simulation"),
+            patch("backend.ops.runtime_diagnostics.try_initialize_sandbox_pool", return_value="unavailable"),
             patch("backend.sandbox.executor.run_in_sandbox") as run_mock,
             patch("backend.sandbox.pool_manager.shutdown_pool", shutdown_mock),
         ):

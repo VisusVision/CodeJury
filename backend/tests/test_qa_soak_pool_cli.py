@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import contextlib
 import importlib.util
+import io
 import sys
 import unittest
 from pathlib import Path
@@ -52,58 +54,41 @@ class QaSoakPoolCliTests(unittest.IsolatedAsyncioTestCase):
         run_mock.assert_awaited_once_with(0, sandbox_mode="pool")
         shutdown_mock.assert_called_once()
 
-    async def test_main_keeps_simulation_mode_without_pool_flag(self):
+    async def test_main_requires_pool_flag_and_never_falls_back_to_simulation(self):
         soak = _load_soak_module()
-        summary = soak.SoakSummary(
-            started_at="t0",
-            ended_at="t1",
-            duration_min=0.0,
-            total_runs=0,
-            passed_runs=0,
-            failed_runs=0,
-            error_runs=0,
-            sandbox_mode="simulation",
-        )
-        run_mock = AsyncMock(return_value=summary)
+        run_mock = AsyncMock()
+        stderr = io.StringIO()
 
         with (
             patch.object(sys, "argv", ["qa_soak_consistency.py", "--minutes", "0"]),
-            patch.object(soak, "_init_sandbox_pool") as init_mock,
             patch.object(soak, "run_soak", run_mock),
             patch("backend.sandbox.pool_manager.shutdown_pool") as shutdown_mock,
+            contextlib.redirect_stderr(stderr),
         ):
             code = await soak.main()
 
-        self.assertEqual(code, 0)
-        init_mock.assert_not_called()
-        run_mock.assert_awaited_once_with(0, sandbox_mode="simulation")
+        self.assertNotEqual(code, 0)
+        self.assertIn("real sandbox pool is required", stderr.getvalue().lower())
+        run_mock.assert_not_awaited()
         shutdown_mock.assert_not_called()
 
-    async def test_main_runs_simulation_when_pool_init_unavailable(self):
+    async def test_main_fails_when_pool_init_does_not_become_ready(self):
         soak = _load_soak_module()
-        summary = soak.SoakSummary(
-            started_at="t0",
-            ended_at="t1",
-            duration_min=0.0,
-            total_runs=0,
-            passed_runs=0,
-            failed_runs=0,
-            error_runs=0,
-            sandbox_mode="simulation",
-        )
-        shutdown_mock = MagicMock()
-        run_mock = AsyncMock(return_value=summary)
+        run_mock = AsyncMock()
+        stderr = io.StringIO()
 
         with (
             patch.object(sys, "argv", ["qa_soak_consistency.py", "--pool", "--minutes", "0"]),
-            patch.object(soak, "_init_sandbox_pool", return_value="simulation"),
+            patch.object(soak, "_init_sandbox_pool", return_value="unavailable"),
             patch.object(soak, "run_soak", run_mock),
-            patch("backend.sandbox.pool_manager.shutdown_pool", shutdown_mock),
+            patch("backend.sandbox.pool_manager.shutdown_pool") as shutdown_mock,
+            contextlib.redirect_stderr(stderr),
         ):
             code = await soak.main()
 
-        self.assertEqual(code, 0)
-        run_mock.assert_awaited_once_with(0, sandbox_mode="simulation")
+        self.assertNotEqual(code, 0)
+        self.assertIn("real sandbox pool is required", stderr.getvalue().lower())
+        run_mock.assert_not_awaited()
         shutdown_mock.assert_called_once()
 
 

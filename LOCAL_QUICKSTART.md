@@ -72,7 +72,26 @@ Uygulama açıkken (`npm run dev:full`):
 cd frontend && npm run verify:health
 ```
 
-Beklenen: `status: ok`, `llm.enabled: true`, isteğe bağlı `sandbox.pool_ready: true`.
+Beklenen:
+
+```json
+{
+  "status": "ok",
+  "analysis_ready": true,
+  "worker_count": 1,
+  "ready_worker_count": 1,
+  "sandbox": {
+    "mode": "pool",
+    "pool_ready": true,
+    "container_count": 3,
+    "available_count": 3
+  }
+}
+```
+
+- `status: degraded` ve `analysis_ready: false` → worker ve Docker'ı başlatın/kontrol edin.
+- `analysis_ready: true` ile birlikte `status: degraded` → kısmi kapasite; analiz yine de kullanılabilir.
+- Aynı makinede birden fazla worker çalıştırırken her birine benzersiz `SANDBOX_POOL_BASE_PORT` aralığı ve farklı bir `SANDBOX_POOL_OWNER` değeri verin.
 
 Arayüzde **Sistem durumu** rozeti (LLM modelleri + sandbox) görünür.
 
@@ -96,7 +115,7 @@ Ollama kapalıysa analiz başlamadan uyarı alırsınız.
 | Docker bulunamadı | Docker Desktop’ı açın veya `setup:demo` kullanın |
 | Ollama yok / model yok | `ollama serve` + `ollama pull qwen2.5-coder:7b` |
 | Port 8080/8001 meşgul | İlgili süreci kapatın |
-| Sandbox simülasyon | Docker + `docker build -t agentgrade-sandbox sandbox-images/agentgrade/` |
+| Sandbox kullanılamıyor / `analysis_ready: false` | Docker Desktop açık mı? `docker build -t agentgrade-sandbox sandbox-images/agentgrade/` çalıştırıldı mı? Worker sürecini kontrol edin. |
 | Çok yavaş | `.env`: `SANDBOX_POOL_SIZE=3`, `OLLAMA_CODER_MODEL=qwen2.5-coder:7b` |
 
 ---

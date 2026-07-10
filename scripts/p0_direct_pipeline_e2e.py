@@ -36,13 +36,22 @@ async def main() -> int:
         rubric_resp.raise_for_status()
         criteria = rubric_resp.json().get("criteria", [])
 
-    report = await run_analysis_pipeline(
-        f"{assignment_id}_uygun.py",
-        _build_uygun_code(),
-        assignment_brief=CSV_BRIEF,
-        faculty_rubric_criteria=criteria,
-        report_language="tr",
-    )
+    import os
+
+    os.environ.setdefault("SANDBOX_POOL_OWNER", "p0-direct-pipeline-e2e")
+    from backend.sandbox.pool_manager import initialize_pool, shutdown_pool
+
+    initialize_pool()
+    try:
+        report = await run_analysis_pipeline(
+            f"{assignment_id}_uygun.py",
+            _build_uygun_code(),
+            assignment_brief=CSV_BRIEF,
+            faculty_rubric_criteria=criteria,
+            report_language="tr",
+        )
+    finally:
+        shutdown_pool()
 
     testing = next((a for a in report.get("agents", []) if a.get("id") == "testing"), {})
     summary = {

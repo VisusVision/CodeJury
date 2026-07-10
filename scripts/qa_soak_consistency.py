@@ -60,7 +60,7 @@ class SoakSummary:
     passed_runs: int
     failed_runs: int
     error_runs: int
-    sandbox_mode: str = "simulation"
+    sandbox_mode: str = "unavailable"
     failures: list[dict[str, Any]] = field(default_factory=list)
 
 
@@ -332,7 +332,7 @@ async def _run_case(case: CaseSpec) -> RunResult:
         )
 
 
-async def run_soak(duration_min: int, *, sandbox_mode: str = "simulation") -> SoakSummary:
+async def run_soak(duration_min: int, *, sandbox_mode: str = "unavailable") -> SoakSummary:
     QA_DIR.mkdir(parents=True, exist_ok=True)
     cases = _build_cases()
     started = datetime.now(timezone.utc)
@@ -408,6 +408,9 @@ async def run_soak(duration_min: int, *, sandbox_mode: str = "simulation") -> So
 
 def _init_sandbox_pool(*, pool_size: int, base_port: int, timeout_s: float) -> str:
     """Start Docker sandbox pool; return mode label for summary."""
+    import os
+
+    os.environ.setdefault("SANDBOX_POOL_OWNER", "qa-soak-consistency")
     from backend.ops.runtime_diagnostics import try_initialize_sandbox_pool
 
     mode = try_initialize_sandbox_pool(
@@ -420,13 +423,14 @@ def _init_sandbox_pool(*, pool_size: int, base_port: int, timeout_s: float) -> s
 
         pool = get_pool()
         if pool is not None:
+            snapshot = pool.snapshot()
             print(
-                f"[soak] sandbox pool ready ({pool.available_count}/{len(pool._slots)} free)",
+                f"[soak] sandbox pool ready ({snapshot['available_count']}/{snapshot['container_count']} free)",
                 flush=True,
             )
         return "pool"
-    print("[soak] sandbox pool unavailable — falling back to simulation", flush=True)
-    return "simulation"
+    print("[soak] sandbox pool unavailable", flush=True)
+    return "unavailable"
 
 
 async def main() -> int:
@@ -435,24 +439,40 @@ async def main() -> int:
     parser.add_argument(
         "--pool",
         action="store_true",
-        help="Docker sandbox pool ile calistir (initialize_pool gerekir).",
+        help="Required: run against a real Docker sandbox pool. Direct pipeline soak never falls back to simulation.",
     )
     parser.add_argument("--pool-size", type=int, default=int(os.getenv("SANDBOX_POOL_SIZE", "3")))
     parser.add_argument("--pool-base-port", type=int, default=int(os.getenv("SANDBOX_POOL_BASE_PORT", "8181")))
     parser.add_argument("--pool-timeout", type=float, default=float(os.getenv("SANDBOX_POOL_TIMEOUT", "30")))
     args = parser.parse_args()
 
-    shutdown_pool = None
-    sandbox_mode = "simulation"
-    if args.pool:
-        sandbox_mode = _init_sandbox_pool(
-            pool_size=args.pool_size,
-            base_port=args.pool_base_port,
-            timeout_s=args.pool_timeout,
+    if not args.pool:
+        print(
+            "A real sandbox pool is required: pass --pool. Direct pipeline soak never falls back to simulation.",
+            file=sys.stderr,
+            flush=True,
         )
-        from backend.sandbox.pool_manager import shutdown_pool as _shutdown_pool
+        return 2
 
-        shutdown_pool = _shutdown_pool
+    sandbox_mode = _init_sandbox_pool(
+        pool_size=args.pool_size,
+        base_port=args.pool_base_port,
+        timeout_s=args.pool_timeout,
+    )
+    if sandbox_mode != "pool":
+        print(
+            "A real sandbox pool is required but did not become ready.",
+            file=sys.stderr,
+            flush=True,
+        )
+        from backend.sandbox.pool_manager import shutdown_pool
+
+        shutdown_pool()
+        return 2
+
+    from backend.sandbox.pool_manager import shutdown_pool as _shutdown_pool
+
+    shutdown_pool = _shutdown_pool
 
     try:
         summary = await run_soak(args.minutes, sandbox_mode=sandbox_mode)
