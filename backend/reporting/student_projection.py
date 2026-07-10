@@ -40,6 +40,7 @@ PUBLIC_TEST_KEYS = frozenset({
 HIDDEN_TEST_KEYS = frozenset({"name", "visibility", "status", "passed"})
 
 SAFE_HIDDEN_METADATA_KEYS = frozenset({"visibility", "status", "passed"})
+SAFE_HIDDEN_STATUS_VALUES = frozenset({"passed", "failed", "error"})
 
 GENERIC_HIDDEN_FAILURE_MESSAGE = "Hidden test basarisiz."
 GENERIC_REDACTED_TEXT = "İçerik gizli test verisi barındırdığı için kaldırıldı."
@@ -65,7 +66,8 @@ def project_student_result(private_result: dict[str, Any]) -> dict[str, Any]:
         if value is None:
             continue
         projected[key] = _sanitize_top_level_value(key, value, hidden_private_fragments)
-    return _deep_redact(projected, hidden_private_fragments)
+    redacted = _deep_redact(projected, hidden_private_fragments)
+    return _restore_synthetic_hidden_test_fields(redacted, projected_agents)
 
 
 def _sanitize_text(value: str, hidden_fragments: list[str]) -> str:
@@ -150,10 +152,31 @@ def _collect_hidden_private_fragments(private_result: dict[str, Any]) -> list[st
             if str(case.get("visibility") or "").strip().lower() != "hidden":
                 continue
             for field_key, field_value in case.items():
-                if field_key in SAFE_HIDDEN_METADATA_KEYS:
+                if (
+                    field_key in SAFE_HIDDEN_METADATA_KEYS
+                    and _is_safe_hidden_metadata_value(field_key, field_value)
+                ):
                     continue
                 _collect_string_leaves(field_value, fragments)
     return fragments
+
+
+def _is_safe_hidden_metadata_value(field_key: str, field_value: Any) -> bool:
+    """Return True only when a metadata field holds an expected safe literal.
+
+    Key name alone must not suppress fragment collection — an unexpected value
+    in visibility/status/passed could leak via substring match elsewhere.
+    """
+    if field_key == "visibility":
+        return field_value == "hidden"
+    if field_key == "status":
+        return isinstance(field_value, str) and field_value in SAFE_HIDDEN_STATUS_VALUES
+    if field_key == "passed":
+        if isinstance(field_value, bool):
+            return True
+        if isinstance(field_value, str):
+            return field_value.strip().lower() in {"true", "false"}
+    return False
 
 
 def _collect_string_leaves(value: Any, out: list[str]) -> None:
@@ -167,7 +190,11 @@ def _collect_string_leaves(value: Any, out: list[str]) -> None:
             out.append(text)
         return
     if isinstance(value, dict):
-        for v in value.values():
+        for k, v in value.items():
+            if isinstance(k, str):
+                key_text = k.strip()
+                if key_text:
+                    out.append(key_text)
             _collect_string_leaves(v, out)
         return
     if isinstance(value, list):
@@ -333,3 +360,36 @@ def _hidden_case_has_error_signal(case: dict[str, Any]) -> bool:
         "crash",
     )
     return any(marker in lowered for marker in error_markers)
+
+
+def _restore_synthetic_hidden_test_fields(
+    redacted: dict[str, Any],
+    pre_redaction_agents: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Restore framework-computed hidden test metadata after blanket redaction.
+
+    Hidden test entries are synthesized with deterministic literals (name,
+    visibility, status, passed). Collected fragments from private hidden-case
+    content can substring-match those literals (e.g. a case named "hidden" makes
+    the fragment "hidden", which would corrupt synthesized visibility="hidden").
+    """
+    redacted_agents = redacted.get("agents")
+    if not isinstance(redacted_agents, list) or not pre_redaction_agents:
+        return redacted
+
+    for redacted_agent, original_agent in zip(redacted_agents, pre_redaction_agents):
+        if not isinstance(redacted_agent, dict) or not isinstance(original_agent, dict):
+            continue
+        redacted_results = redacted_agent.get("testResults")
+        original_results = original_agent.get("testResults")
+        if not isinstance(redacted_results, list) or not isinstance(original_results, list):
+            continue
+        for redacted_case, original_case in zip(redacted_results, original_results):
+            if not isinstance(redacted_case, dict) or not isinstance(original_case, dict):
+                continue
+            if original_case.get("visibility") != "hidden":
+                continue
+            for field in ("name", "visibility", "status", "passed"):
+                if field in original_case:
+                    redacted_case[field] = original_case[field]
+    return redacted

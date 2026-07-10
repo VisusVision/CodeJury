@@ -27,6 +27,11 @@ SENTINEL_DIFF_DETAIL_SNAKE = "SENTINEL_DIFF_DETAIL_SNAKE_7f3a"
 SENTINEL_FUTURE_DEBUG = "SENTINEL_FUTURE_DEBUG_7f3a"
 SENTINEL_TRACEBACK = "SENTINEL_TRACEBACK_7f3a"
 SENTINEL_HIDDEN_NAME_LEAK = "SENTINEL_HIDDEN_NAME_LEAK_7f3a"
+SENTINEL_UNVALIDATED_STATUS = "SENTINEL_UNVALIDATED_STATUS_7f3a"
+SENTINEL_UNVALIDATED_VISIBILITY = "SENTINEL_UNVALIDATED_VISIBILITY_7f3a"
+SENTINEL_UNVALIDATED_PASSED = "SENTINEL_UNVALIDATED_PASSED_7f3a"
+SENTINEL_NESTED_DICT_KEY = "SENTINEL_NESTED_DICT_KEY_7f3a"
+SENTINEL_KITCHEN_SINK = "SENTINEL_KITCHEN_SINK_7f3a"
 
 PUBLIC_NAME = "PUBLIC_KEEP_NAME_7f3a"
 PUBLIC_INPUT = "PUBLIC_KEEP_INPUT_7f3a"
@@ -848,6 +853,200 @@ class StudentResultProjectionTests(unittest.TestCase):
         hidden = private["agents"][0]["testResults"][1]
         hidden["name"] = SENTINEL_HIDDEN_NAME_LEAK
         self._assert_sentinel_absent_from_projection(private, SENTINEL_HIDDEN_NAME_LEAK)
+
+    def _minimal_private_with_hidden_case(self, hidden_case: dict[str, Any]) -> dict[str, Any]:
+        """Minimal private result with a single hidden test case."""
+        return {
+            "totalScore": 42,
+            "maxScore": 100,
+            "rubric": {},
+            "summary": "clean summary",
+            "agents": [
+                {
+                    "id": "testing",
+                    "name": "Test Ajani",
+                    "summary": "testing summary",
+                    "score": 50,
+                    "maxScore": 100,
+                    "testResults": [hidden_case],
+                    "findings": [],
+                },
+            ],
+            "fileName": "solution.py",
+            "executionTimeMs": 100,
+            "memoryUsageMb": 1.0,
+            "peakMemoryMb": 1.0,
+            "analysisEngine": "agentgrade-v1",
+            "strengths": [],
+            "weaknesses": [],
+            "recommendations": [],
+            "taskAlignment": {},
+            "reportStatus": "ready",
+        }
+
+    def test_unvalidated_status_value_is_still_collected_and_redacted(self) -> None:
+        """status key alone must not skip collection when value is non-categorical."""
+        sentinel = SENTINEL_UNVALIDATED_STATUS
+        hidden_case = {
+            "name": "hidden-status-leak",
+            "input": "secret",
+            "passed": False,
+            "visibility": "hidden",
+            "status": sentinel,
+        }
+        private = self._minimal_private_with_hidden_case(hidden_case)
+        private["summary"] = f"Model summary includes {sentinel}"
+        projected = project_student_result(private)
+        serialized = json.dumps(projected, ensure_ascii=False)
+        self.assertNotIn(sentinel, serialized)
+        self.assertEqual(projected["summary"], GENERIC_REDACTED_TEXT)
+
+    def test_unvalidated_visibility_value_is_still_collected_and_redacted(self) -> None:
+        """visibility key must not skip collection when value is not exactly 'hidden'."""
+        # "Hidden" passes the hidden-case gate (strip+lower) but is not exactly "hidden".
+        unvalidated_visibility = "Hidden"
+        hidden_case = {
+            "name": "hidden-visibility-leak",
+            "input": "secret",
+            "passed": False,
+            "visibility": unvalidated_visibility,
+            "status": "failed",
+        }
+        private = self._minimal_private_with_hidden_case(hidden_case)
+        private["summary"] = f"Model summary includes {unvalidated_visibility}"
+        projected = project_student_result(private)
+        self.assertEqual(projected["summary"], GENERIC_REDACTED_TEXT)
+        self.assertNotIn(unvalidated_visibility, projected["summary"])
+
+    def test_unvalidated_passed_value_is_still_collected_and_redacted(self) -> None:
+        """passed key must not skip collection when value is not bool or true/false string."""
+        sentinel = SENTINEL_UNVALIDATED_PASSED
+        hidden_case = {
+            "name": "hidden-passed-leak",
+            "input": "secret",
+            "passed": sentinel,
+            "visibility": "hidden",
+            "status": "failed",
+        }
+        private = self._minimal_private_with_hidden_case(hidden_case)
+        private["summary"] = f"Model summary includes {sentinel}"
+        projected = project_student_result(private)
+        serialized = json.dumps(projected, ensure_ascii=False)
+        self.assertNotIn(sentinel, serialized)
+        self.assertEqual(projected["summary"], GENERIC_REDACTED_TEXT)
+
+    def test_nested_dict_key_within_hidden_case_is_collected_as_fragment(self) -> None:
+        """Nested dict KEYS inside hidden case values must be collected as fragments."""
+        sentinel = SENTINEL_NESTED_DICT_KEY
+        hidden_case = {
+            "name": "nested-key-leak",
+            "input": "secret",
+            "passed": False,
+            "visibility": "hidden",
+            "details": {sentinel: "innocuous nested value"},
+        }
+        private = self._minimal_private_with_hidden_case(hidden_case)
+        private["summary"] = f"Model summary includes {sentinel}"
+        projected = project_student_result(private)
+        serialized = json.dumps(projected, ensure_ascii=False)
+        self.assertNotIn(sentinel, serialized)
+        self.assertEqual(projected["summary"], GENERIC_REDACTED_TEXT)
+
+    def test_hidden_case_named_exactly_hidden_does_not_corrupt_synthetic_visibility_field(
+        self,
+    ) -> None:
+        """Synthetic visibility/status/name must survive substring collision with 'hidden'."""
+        hidden_case = {
+            "name": "hidden",
+            "input": "secret-input",
+            "expected": "secret-expected",
+            "actual": "secret-actual",
+            "passed": False,
+            "visibility": "hidden",
+            "diffDetail": "mismatch",
+        }
+        private = self._minimal_private_with_hidden_case(hidden_case)
+        projected = project_student_result(private)
+        testing = _testing_agent(projected)
+        hidden_cases = [
+            case for case in testing["testResults"] if case.get("visibility") == "hidden"
+        ]
+        self.assertEqual(len(hidden_cases), 1)
+        hidden = hidden_cases[0]
+        self.assertEqual(hidden["name"], "Hidden test #1")
+        self.assertEqual(hidden["visibility"], "hidden")
+        self.assertIn(hidden["status"], {"passed", "failed", "error"})
+        self.assertNotEqual(hidden["visibility"], GENERIC_REDACTED_TEXT)
+        self.assertNotEqual(hidden["status"], GENERIC_REDACTED_TEXT)
+        self.assertNotEqual(hidden["name"], GENERIC_REDACTED_TEXT)
+
+    def test_hidden_case_named_exactly_failed_does_not_corrupt_synthetic_status_field(
+        self,
+    ) -> None:
+        """Synthetic status must survive substring collision with 'failed'."""
+        hidden_case = {
+            "name": "failed",
+            "input": "secret-input",
+            "expected": "secret-expected",
+            "actual": "secret-actual",
+            "passed": False,
+            "visibility": "hidden",
+            "diffDetail": "mismatch",
+        }
+        private = self._minimal_private_with_hidden_case(hidden_case)
+        projected = project_student_result(private)
+        testing = _testing_agent(projected)
+        hidden_cases = [
+            case for case in testing["testResults"] if case.get("visibility") == "hidden"
+        ]
+        self.assertEqual(len(hidden_cases), 1)
+        hidden = hidden_cases[0]
+        self.assertEqual(hidden["name"], "Hidden test #1")
+        self.assertEqual(hidden["visibility"], "hidden")
+        self.assertIn(hidden["status"], {"passed", "failed", "error"})
+        self.assertNotEqual(hidden["status"], GENERIC_REDACTED_TEXT)
+        self.assertNotEqual(hidden["visibility"], GENERIC_REDACTED_TEXT)
+        self.assertNotEqual(hidden["name"], GENERIC_REDACTED_TEXT)
+
+    def test_kitchen_sink_round3_invariants(self) -> None:
+        """Combined round-3 fixes: sentinels absent, synthetic hidden fields intact."""
+        status_sentinel = SENTINEL_UNVALIDATED_STATUS
+        key_sentinel = SENTINEL_NESTED_DICT_KEY
+        kitchen_sentinel = SENTINEL_KITCHEN_SINK
+        hidden_case = {
+            "name": "hidden",
+            "input": kitchen_sentinel,
+            "expected": "secret-expected",
+            "actual": "secret-actual",
+            "passed": False,
+            "visibility": "hidden",
+            "status": status_sentinel,
+            "error": kitchen_sentinel,
+            "diff_detail": kitchen_sentinel,
+            "traceback": kitchen_sentinel,
+            "some_future_debug_field": kitchen_sentinel,
+            "details": {key_sentinel: "nested value"},
+        }
+        private = self._minimal_private_with_hidden_case(hidden_case)
+        private["summary"] = (
+            f"summary {status_sentinel} {key_sentinel} {kitchen_sentinel}"
+        )
+        projected = project_student_result(private)
+        serialized = json.dumps(projected, ensure_ascii=False)
+        for sentinel in (status_sentinel, key_sentinel, kitchen_sentinel):
+            self.assertNotIn(sentinel, serialized)
+        testing = _testing_agent(projected)
+        hidden_cases = [
+            case for case in testing["testResults"] if case.get("visibility") == "hidden"
+        ]
+        self.assertEqual(len(hidden_cases), 1)
+        hidden = hidden_cases[0]
+        self.assertEqual(hidden["name"], "Hidden test #1")
+        self.assertEqual(hidden["visibility"], "hidden")
+        self.assertIn(hidden["status"], {"passed", "failed", "error"})
+        self.assertNotEqual(hidden["visibility"], GENERIC_REDACTED_TEXT)
+        self.assertNotEqual(hidden["status"], GENERIC_REDACTED_TEXT)
+        self.assertNotEqual(hidden["name"], GENERIC_REDACTED_TEXT)
 
     def test_comprehensive_invariant_no_sentinel_survives_in_serialized_output_regardless_of_location(
         self,
