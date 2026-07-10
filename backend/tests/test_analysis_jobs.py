@@ -18,6 +18,7 @@ class FakeRedis:
         self.hashes: dict[str, dict[str, str]] = {}
         self.streams: dict[str, list[tuple[str, dict[str, str]]]] = {}
         self.expirations: dict[str, int] = {}
+        self.values: dict[str, str] = {}
 
     async def hset(self, key, mapping):
         self.hashes.setdefault(key, {}).update(mapping)
@@ -33,6 +34,19 @@ class FakeRedis:
         message_id = f"{len(entries) + 1}-0"
         entries.append((message_id, dict(fields)))
         return message_id
+
+    async def set(self, key, value, ex=None):
+        self.values[key] = value
+        self.expirations[key] = ex
+
+    async def get(self, key):
+        return self.values.get(key)
+
+    async def scan_iter(self, match):
+        prefix = match.removesuffix("*") if match.endswith("*") else match
+        for key in sorted(self.values):
+            if key.startswith(prefix):
+                yield key
 
 
 class AnalysisJobStoreTests(unittest.IsolatedAsyncioTestCase):

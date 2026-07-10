@@ -49,6 +49,10 @@ class Settings(BaseSettings):
     analysis_job_ttl_seconds: int = 86400
     analysis_worker_poll_timeout_seconds: int = 5
     analysis_pipeline_timeout_seconds: int = 300
+    sandbox_ready_timeout_seconds: int = 15
+    analysis_worker_heartbeat_interval_seconds: int = 5
+    analysis_worker_heartbeat_ttl_seconds: int = 15
+    analysis_worker_sandbox_retry_seconds: int = 5
 
     model_config = {"env_file": str(_ENV_FILE), "extra": "ignore"}
 
