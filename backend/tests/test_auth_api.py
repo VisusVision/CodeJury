@@ -69,6 +69,19 @@ class FakeSessionRedis:
     async def expire(self, key: str, seconds: int) -> None:
         self.expirations[key] = seconds
 
+    async def eval(self, script: str, numkeys: int, *keys_and_args):
+        key = keys_and_args[0]
+        token = keys_and_args[1]
+        if self.values.get(key) != token:
+            return 0
+        if "expire" in script:
+            ttl_seconds = float(keys_and_args[2])
+            self.expirations[key] = ttl_seconds
+            return 1
+        self.values.pop(key, None)
+        self.expirations.pop(key, None)
+        return 1
+
 
 def _set_cookie_headers(response) -> list[str]:
     if hasattr(response.headers, "get_list"):

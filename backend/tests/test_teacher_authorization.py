@@ -96,6 +96,19 @@ class _FakeSessionRedis:
     async def expire(self, key: str, seconds: int) -> None:
         self.expirations[key] = seconds
 
+    async def eval(self, script: str, numkeys: int, *keys_and_args):
+        key = keys_and_args[0]
+        token = keys_and_args[1]
+        if self.values.get(key) != token:
+            return 0
+        if "expire" in script:
+            ttl_seconds = float(keys_and_args[2])
+            self.expirations[key] = ttl_seconds
+            return 1
+        self.values.pop(key, None)
+        self.expirations.pop(key, None)
+        return 1
+
 
 class TeacherAuthorizationTests(unittest.TestCase):
     @classmethod
@@ -1132,6 +1145,70 @@ class TeacherAuthorizationTests(unittest.TestCase):
         eval_ids = [item["id"] for item in resp.json()]
         self.assertIn(eval_a_id, eval_ids)
         self.assertNotIn(eval_b_id, eval_ids)
+
+
+class TeacherPgLoginSecurityTests(unittest.TestCase):
+    def test_pg_login_verifies_against_freshly_fetched_password_not_a_pre_lock_snapshot(self):
+        old_password = "oldpass1"
+        new_password = "newpass2"
+        email = "pgteacher@test.local"
+        teacher_id = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+        old_hash = main._hash_password(old_password)
+        new_hash = main._hash_password(new_password)
+
+        class FakePool:
+            def __init__(self) -> None:
+                self.call_count = 0
+
+            async def fetchrow(self, query, *args):
+                self.call_count += 1
+                normalized = " ".join(query.split())
+                if "SELECT id FROM public.teachers" in normalized and "password_hash" not in normalized:
+                    return {"id": teacher_id}
+                if self.call_count == 1 or "password_hash" not in normalized:
+                    return {
+                        "id": teacher_id,
+                        "first_name": "Test",
+                        "last_name": "Teacher",
+                        "email": email,
+                        "password_hash": old_hash,
+                        "created_at": "2026-07-10T12:00:00Z",
+                    }
+                return {
+                    "id": teacher_id,
+                    "first_name": "Test",
+                    "last_name": "Teacher",
+                    "email": email,
+                    "password_hash": new_hash,
+                    "created_at": "2026-07-10T12:00:00Z",
+                }
+
+        pool = FakePool()
+        fake_redis = _FakeSessionRedis()
+        session_store = SessionStore(fake_redis, ttl_seconds=28800)
+        orig_demo = main._DEMO_MODE
+
+        async def override_store():
+            return session_store
+
+        main.app.dependency_overrides[get_auth_session_store] = override_store
+        main.app.state.auth_session_store = session_store
+        main._DEMO_MODE = False
+        try:
+            with patch.object(main, "_get_db_pool", new=AsyncMock(return_value=pool)):
+                client = TestClient(main.app)
+                resp = client.post(
+                    "/api/teacher/login",
+                    json={"email": email, "password": old_password},
+                )
+        finally:
+            main._DEMO_MODE = orig_demo
+            main.app.dependency_overrides.pop(get_auth_session_store, None)
+            if hasattr(main.app.state, "auth_session_store"):
+                delattr(main.app.state, "auth_session_store")
+
+        self.assertEqual(resp.status_code, 401)
+        self.assertGreaterEqual(pool.call_count, 2)
 
 
 if __name__ == "__main__":
