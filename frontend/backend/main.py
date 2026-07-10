@@ -5267,24 +5267,32 @@ async def student_login(req: StudentLoginRequest, request: Request, response: Re
             raise HTTPException(status_code=503, detail="Oturum servisine ulaşılamıyor") from exc
 
     pool = await _get_db_pool()
-    row = await pool.fetchrow(
+    existing = await pool.fetchrow(
         """
-        SELECT s.id, s.student_no, s.tc_no, s.first_name, s.last_name, s.class_year, s.department_id,
-               s.password_hash,
-               d.name AS department_name, s.created_at
-        FROM public.students s
-        LEFT JOIN public.departments d ON d.id = s.department_id
+        SELECT id FROM public.students
         WHERE student_no = $1
         LIMIT 1
         """,
         student_no,
     )
-    if row is None:
+    if existing is None:
         raise HTTPException(status_code=401, detail="Ogrenci no veya sifre hatali")
     store = await get_auth_session_store(request)
     try:
-        async with user_lock(store.redis, "student", str(row["id"])):
-            if not _verify_password(password, str(row["password_hash"] or "")):
+        async with user_lock(store.redis, "student", str(existing["id"])):
+            row = await pool.fetchrow(
+                """
+                SELECT s.id, s.student_no, s.tc_no, s.first_name, s.last_name, s.class_year, s.department_id,
+                       s.password_hash,
+                       d.name AS department_name, s.created_at
+                FROM public.students s
+                LEFT JOIN public.departments d ON d.id = s.department_id
+                WHERE student_no = $1
+                LIMIT 1
+                """,
+                student_no,
+            )
+            if row is None or not _verify_password(password, str(row["password_hash"] or "")):
                 raise HTTPException(status_code=401, detail="Ogrenci no veya sifre hatali")
             await _sync_student_to_all_courses(pool, str(row["id"]))
             payload = dict(row)
@@ -5400,21 +5408,29 @@ async def teacher_login(req: TeacherLoginRequest, request: Request, response: Re
             raise HTTPException(status_code=503, detail="Oturum servisine ulaşılamıyor") from exc
 
     pool = await _get_db_pool()
-    row = await pool.fetchrow(
+    existing = await pool.fetchrow(
         """
-        SELECT id, first_name, last_name, email, password_hash, created_at
-        FROM public.teachers
+        SELECT id FROM public.teachers
         WHERE lower(email) = $1
         LIMIT 1
         """,
         email,
     )
-    if row is None:
+    if existing is None:
         raise HTTPException(status_code=401, detail="E-posta veya sifre hatali")
     store = await get_auth_session_store(request)
     try:
-        async with user_lock(store.redis, "teacher", str(row["id"])):
-            if not _verify_password(password, row["password_hash"]):
+        async with user_lock(store.redis, "teacher", str(existing["id"])):
+            row = await pool.fetchrow(
+                """
+                SELECT id, first_name, last_name, email, password_hash, created_at
+                FROM public.teachers
+                WHERE lower(email) = $1
+                LIMIT 1
+                """,
+                email,
+            )
+            if row is None or not _verify_password(password, row["password_hash"]):
                 raise HTTPException(status_code=401, detail="E-posta veya sifre hatali")
 
             profile = {
@@ -6938,21 +6954,20 @@ async def update_teacher_password(
             raise HTTPException(status_code=503, detail="Oturum servisine ulaşılamıyor") from exc
 
     pool = await _get_db_pool()
-    row = await pool.fetchrow(
-        """
-        SELECT id, password_hash
-        FROM public.teachers
-        WHERE id = $1
-        LIMIT 1
-        """,
-        teacher_id,
-    )
-    if row is None:
-        raise HTTPException(status_code=404, detail="Ogretmen bulunamadi")
-
     store = await get_auth_session_store(request)
     try:
         async with user_lock(store.redis, "teacher", teacher_id):
+            row = await pool.fetchrow(
+                """
+                SELECT id, password_hash
+                FROM public.teachers
+                WHERE id = $1
+                LIMIT 1
+                """,
+                teacher_id,
+            )
+            if row is None:
+                raise HTTPException(status_code=404, detail="Ogretmen bulunamadi")
             if not _verify_password(current_password, row["password_hash"]):
                 raise HTTPException(status_code=400, detail="Mevcut şifre hatalı")
 

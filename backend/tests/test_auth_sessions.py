@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -16,6 +17,7 @@ from backend.auth.sessions import (
     acquire_user_lock,
     hash_token,
     release_user_lock,
+    user_lock,
 )
 from frontend.backend import main
 
@@ -27,16 +29,28 @@ class FakeSessionRedis:
         self.values: dict[str, str] = {}
         self.sets: dict[str, set[str]] = {}
         self.expirations: dict[str, int] = {}
+        self._expires_at: dict[str, float] = {}
+
+    def _purge_expired(self, key: str) -> None:
+        expires_at = self._expires_at.get(key)
+        if expires_at is not None and time.monotonic() >= expires_at:
+            self.values.pop(key, None)
+            self.sets.pop(key, None)
+            self.expirations.pop(key, None)
+            self._expires_at.pop(key, None)
 
     async def set(self, key: str, value: str, ex: int | None = None, nx: bool = False) -> bool | None:
+        self._purge_expired(key)
         if nx and key in self.values:
             return None
         self.values[key] = value
         if ex is not None:
             self.expirations[key] = ex
+            self._expires_at[key] = time.monotonic() + ex
         return True
 
     async def get(self, key: str) -> str | None:
+        self._purge_expired(key)
         return self.values.get(key)
 
     async def delete(self, key: str) -> None:
@@ -60,6 +74,22 @@ class FakeSessionRedis:
 
     async def expire(self, key: str, seconds: int) -> None:
         self.expirations[key] = seconds
+
+    async def eval(self, script: str, numkeys: int, *keys_and_args):
+        key = keys_and_args[0]
+        self._purge_expired(key)
+        token = keys_and_args[1]
+        if self.values.get(key) != token:
+            return 0
+        if "expire" in script:
+            ttl_seconds = float(keys_and_args[2])
+            self.expirations[key] = ttl_seconds
+            self._expires_at[key] = time.monotonic() + ttl_seconds
+            return 1
+        self.values.pop(key, None)
+        self.expirations.pop(key, None)
+        self._expires_at.pop(key, None)
+        return 1
 
 
 def _session_key(session_hash: str) -> str:
@@ -267,6 +297,48 @@ async def test_acquire_retries_and_eventually_raises_when_contention_never_clear
             retry_delay_seconds=0.01,
         )
     await release_user_lock(redis, "teacher", "user-5", holder_token)
+
+
+@pytest.mark.asyncio
+async def test_release_is_atomic_against_a_new_owner_after_expiry_and_reacquire(
+    redis: FakeSessionRedis,
+) -> None:
+    old_token = await acquire_user_lock(redis, "teacher", "user-race", ttl_seconds=10)
+    key = "auth:userlock:teacher:user-race"
+    redis.values.pop(key, None)
+    redis.expirations.pop(key, None)
+    redis._expires_at.pop(key, None)
+    new_token = await acquire_user_lock(redis, "teacher", "user-race", ttl_seconds=10)
+
+    await release_user_lock(redis, "teacher", "user-race", old_token)
+
+    assert key in redis.values
+    assert redis.values[key] == new_token
+
+
+@pytest.mark.asyncio
+async def test_lock_lease_is_renewed_and_survives_past_the_original_ttl(
+    redis: FakeSessionRedis,
+) -> None:
+    async with user_lock(redis, "teacher", "user-renew", ttl_seconds=0.2):
+        await asyncio.sleep(0.1)
+        with pytest.raises(UserLockUnavailable):
+            await acquire_user_lock(redis, "teacher", "user-renew", max_attempts=1)
+        await asyncio.sleep(0.25)
+        with pytest.raises(UserLockUnavailable):
+            await acquire_user_lock(redis, "teacher", "user-renew", max_attempts=1)
+
+
+@pytest.mark.asyncio
+async def test_renewal_stops_and_lock_releases_when_context_manager_exits(
+    redis: FakeSessionRedis,
+) -> None:
+    key = "auth:userlock:teacher:user-release"
+    async with user_lock(redis, "teacher", "user-release", ttl_seconds=0.2):
+        assert key in redis.values
+    assert key not in redis.values
+    token = await acquire_user_lock(redis, "teacher", "user-release", max_attempts=1)
+    await release_user_lock(redis, "teacher", "user-release", token)
 
 
 @pytest.mark.asyncio

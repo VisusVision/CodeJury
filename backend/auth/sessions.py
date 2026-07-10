@@ -20,6 +20,20 @@ class UserLockUnavailable(Exception):
 
 _USER_LOCK_PREFIX = "auth:userlock:"
 
+_RELEASE_LOCK_SCRIPT = """
+if redis.call("get", KEYS[1]) == ARGV[1] then
+  return redis.call("del", KEYS[1])
+end
+return 0
+"""
+
+_EXTEND_LOCK_SCRIPT = """
+if redis.call("get", KEYS[1]) == ARGV[1] then
+  return redis.call("expire", KEYS[1], ARGV[2])
+end
+return 0
+"""
+
 
 def _user_lock_key(role: str, user_id: str) -> str:
     return f"{_USER_LOCK_PREFIX}{role}:{user_id}"
@@ -54,34 +68,49 @@ async def acquire_user_lock(
 
 
 async def release_user_lock(redis, role: str, user_id: str, token: str) -> None:
-    """Release the lock ONLY if it is still owned by this exact token (best-effort atomic
-    check-then-delete: reads the current value and deletes only on an exact match, so a lock
-    that has already expired and been re-acquired by someone else is never accidentally released).
+    """Release the lock ONLY if it is still owned by this exact token (atomic compare-and-delete
+    via a single Lua EVAL — one Redis command, no TOCTOU window between read and delete).
     Swallows Redis errors here (best-effort on release; the TTL is the ultimate safety net if release
     fails for any reason — do NOT raise from this function, callers rely on it being safe to await
     unconditionally in a `finally` block)."""
     key = _user_lock_key(role, user_id)
     try:
-        current = await redis.get(key)
-    except Exception:
-        return
-    if current is None:
-        return
-    current_str = current.decode() if isinstance(current, bytes) else current
-    if current_str != token:
-        return
-    try:
-        await redis.delete(key)
+        await redis.eval(_RELEASE_LOCK_SCRIPT, 1, key, token)
     except Exception:
         pass
+
+
+async def _renew_user_lock_periodically(
+    redis,
+    key: str,
+    token: str,
+    ttl_seconds: int,
+    interval_seconds: float,
+) -> None:
+    while True:
+        await asyncio.sleep(interval_seconds)
+        try:
+            await redis.eval(_EXTEND_LOCK_SCRIPT, 1, key, token, ttl_seconds)
+        except Exception:
+            return
 
 
 @asynccontextmanager
 async def user_lock(redis, role: str, user_id: str, *, ttl_seconds: int = 10):
     token = await acquire_user_lock(redis, role, user_id, ttl_seconds=ttl_seconds)
+    key = _user_lock_key(role, user_id)
+    renew_interval = max(ttl_seconds / 3, 0.01)
+    renew_task = asyncio.create_task(
+        _renew_user_lock_periodically(redis, key, token, ttl_seconds, renew_interval)
+    )
     try:
         yield
     finally:
+        renew_task.cancel()
+        try:
+            await renew_task
+        except asyncio.CancelledError:
+            pass
         await release_user_lock(redis, role, user_id, token)
 
 
