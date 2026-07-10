@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from decimal import Decimal, InvalidOperation
 from typing import Any
 
 STUDENT_TOP_LEVEL_KEYS = frozenset({
@@ -51,7 +52,17 @@ GENERIC_REDACTED_TEXT = "İçerik gizli test verisi barındırdığı için kald
 @dataclass(frozen=True)
 class HiddenFragments:
     strings: list[str]
-    numbers: list[str]
+    numbers: list[Decimal]
+    has_nan: bool = False
+
+
+_NUMERIC_TOKEN_PATTERN = re.compile(
+    r"(?<![A-Za-z0-9_.])"
+    r"(?:[+-]?(?:\d+\.\d*|\.\d+|\d+)(?:[eE][+-]?\d+)?"
+    r"|[+-]?inf)"
+    r"(?![A-Za-z0-9_.])"
+)
+_NAN_TOKEN_PATTERN = re.compile(r"(?<![A-Za-z0-9_.])nan(?![A-Za-z0-9_.])")
 
 
 def project_student_result(private_result: dict[str, Any]) -> dict[str, Any]:
@@ -151,7 +162,8 @@ def _sanitize_top_level_value(
 
 def _collect_hidden_private_fragments(private_result: dict[str, Any]) -> HiddenFragments:
     string_fragments: list[str] = []
-    numeric_fragments: list[str] = []
+    numeric_fragments: list[Decimal] = []
+    has_nan = False
     for agent in private_result.get("agents", []) or []:
         if not isinstance(agent, dict) or agent.get("id") != "testing":
             continue
@@ -166,8 +178,17 @@ def _collect_hidden_private_fragments(private_result: dict[str, Any]) -> HiddenF
                     and _is_safe_hidden_metadata_value(field_key, field_value)
                 ):
                     continue
-                _collect_hidden_leaves(field_value, string_fragments, numeric_fragments)
-    return HiddenFragments(strings=string_fragments, numbers=numeric_fragments)
+                has_nan = _collect_hidden_leaves(
+                    field_value,
+                    string_fragments,
+                    numeric_fragments,
+                    has_nan,
+                ) or has_nan
+    return HiddenFragments(
+        strings=string_fragments,
+        numbers=numeric_fragments,
+        has_nan=has_nan,
+    )
 
 
 def _is_safe_hidden_metadata_value(field_key: str, field_value: Any) -> bool:
@@ -192,20 +213,38 @@ def _is_numeric_leaf(value: Any) -> bool:
     return isinstance(value, (int, float)) and not isinstance(value, bool)
 
 
+def _numeric_leaf_to_decimal(value: int | float) -> Decimal | None:
+    """Canonicalize a numeric leaf for exact-value comparison.
+
+    Returns None for NaN, which must be handled via standalone-token matching.
+    """
+    if isinstance(value, float) and value != value:
+        return None
+    try:
+        return Decimal(str(value))
+    except InvalidOperation:
+        return None
+
+
 def _collect_hidden_leaves(
     value: Any,
     string_out: list[str],
-    numeric_out: list[str],
-) -> None:
+    numeric_out: list[Decimal],
+    has_nan: bool,
+) -> bool:
     """Recursively collect string and numeric leaves from hidden test case fields."""
     if isinstance(value, str):
         text = value.strip()
         if text:
             string_out.append(text)
-        return
+        return has_nan
     if _is_numeric_leaf(value):
-        numeric_out.append(str(value))
-        return
+        if isinstance(value, float) and value != value:
+            return True
+        decimal_value = _numeric_leaf_to_decimal(value)
+        if decimal_value is not None:
+            numeric_out.append(decimal_value)
+        return has_nan
     if isinstance(value, dict):
         for k, v in value.items():
             if isinstance(k, str):
@@ -213,20 +252,36 @@ def _collect_hidden_leaves(
                 if key_text:
                     string_out.append(key_text)
             elif _is_numeric_leaf(k):
-                numeric_out.append(str(k))
-            _collect_hidden_leaves(v, string_out, numeric_out)
-        return
+                if isinstance(k, float) and k != k:
+                    has_nan = True
+                else:
+                    decimal_key = _numeric_leaf_to_decimal(k)
+                    if decimal_key is not None:
+                        numeric_out.append(decimal_key)
+            has_nan = _collect_hidden_leaves(v, string_out, numeric_out, has_nan) or has_nan
+        return has_nan
     if isinstance(value, list):
         for item in value:
-            _collect_hidden_leaves(item, string_out, numeric_out)
+            has_nan = _collect_hidden_leaves(item, string_out, numeric_out, has_nan) or has_nan
+        return has_nan
+    return has_nan
 
 
-def _message_contains_numeric_token(message: str, numeric_fragment: str) -> bool:
-    """True only if numeric_fragment appears as a complete, standalone numeric token."""
-    if not numeric_fragment:
+def _message_contains_numeric_fragment(message: str, fragments: list[Decimal]) -> bool:
+    if not fragments:
         return False
-    pattern = r"(?<![0-9.])" + re.escape(numeric_fragment) + r"(?![0-9.])"
-    return re.search(pattern, message) is not None
+    for match in _NUMERIC_TOKEN_PATTERN.finditer(message):
+        try:
+            token_value = Decimal(match.group(0))
+        except InvalidOperation:
+            continue
+        if any(token_value == fragment for fragment in fragments):
+            return True
+    return False
+
+
+def _message_contains_standalone_nan(message: str) -> bool:
+    return _NAN_TOKEN_PATTERN.search(message) is not None
 
 
 def _message_leaks_hidden_data(message: str, hidden_fragments: HiddenFragments) -> bool:
@@ -235,9 +290,10 @@ def _message_leaks_hidden_data(message: str, hidden_fragments: HiddenFragments) 
     for fragment in hidden_fragments.strings:
         if fragment and fragment in message:
             return True
-    for fragment in hidden_fragments.numbers:
-        if _message_contains_numeric_token(message, fragment):
-            return True
+    if _message_contains_numeric_fragment(message, hidden_fragments.numbers):
+        return True
+    if hidden_fragments.has_nan and _message_contains_standalone_nan(message):
+        return True
     return False
 
 

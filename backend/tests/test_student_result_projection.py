@@ -34,6 +34,8 @@ SENTINEL_NESTED_DICT_KEY = "SENTINEL_NESTED_DICT_KEY_7f3a"
 SENTINEL_KITCHEN_SINK = "SENTINEL_KITCHEN_SINK_7f3a"
 NUMERIC_HIDDEN_FRAGMENT = 918273645
 NUMERIC_HIDDEN_FRAGMENT_STR = str(NUMERIC_HIDDEN_FRAGMENT)
+SCIENTIFIC_HIDDEN_FRAGMENT = 1e20
+SCIENTIFIC_HIDDEN_FORMS = ("1e20", "1e+20", "100000000000000000000")
 
 PUBLIC_NAME = "PUBLIC_KEEP_NAME_7f3a"
 PUBLIC_INPUT = "PUBLIC_KEEP_INPUT_7f3a"
@@ -1020,7 +1022,7 @@ class StudentResultProjectionTests(unittest.TestCase):
             "name": "hidden",
             "input": kitchen_sentinel,
             "expected": numeric_sentinel,
-            "actual": "secret-actual",
+            "actual": SCIENTIFIC_HIDDEN_FRAGMENT,
             "passed": False,
             "visibility": "hidden",
             "status": status_sentinel,
@@ -1035,11 +1037,17 @@ class StudentResultProjectionTests(unittest.TestCase):
             f"summary {status_sentinel} {key_sentinel} {kitchen_sentinel} "
             f"{NUMERIC_HIDDEN_FRAGMENT_STR}"
         )
+        private["evidence"] = [
+            {"message": f"magnitude {form}"} for form in SCIENTIFIC_HIDDEN_FORMS
+        ]
         projected = project_student_result(private)
         serialized = json.dumps(projected, ensure_ascii=False)
         for sentinel in (status_sentinel, key_sentinel, kitchen_sentinel):
             self.assertNotIn(sentinel, serialized)
         self.assertNotIn(NUMERIC_HIDDEN_FRAGMENT_STR, serialized)
+        for scientific_form in SCIENTIFIC_HIDDEN_FORMS:
+            self.assertNotIn(scientific_form, serialized)
+        self.assertEqual(projected["evidence"], [])
         testing = _testing_agent(projected)
         hidden_cases = [
             case for case in testing["testResults"] if case.get("visibility") == "hidden"
@@ -1189,6 +1197,104 @@ class StudentResultProjectionTests(unittest.TestCase):
         serialized = json.dumps(projected, ensure_ascii=False)
         self.assertNotIn(NUMERIC_HIDDEN_FRAGMENT_STR, serialized)
         self.assertEqual(projected["rubric"]["debug"], GENERIC_REDACTED_TEXT)
+
+    def test_hidden_scientific_notation_value_leaks_via_equivalent_text_forms_are_redacted(
+        self,
+    ) -> None:
+        """Equivalent renderings of 1e20 must all trigger redaction (Bug 1)."""
+        hidden_case = {
+            "name": "scientific-hidden",
+            "input": "secret",
+            "expected": SCIENTIFIC_HIDDEN_FRAGMENT,
+            "actual": "secret-actual",
+            "passed": False,
+            "visibility": "hidden",
+        }
+        for form in SCIENTIFIC_HIDDEN_FORMS:
+            with self.subTest(form=form):
+                private = self._minimal_private_with_numeric_hidden_case(
+                    hidden_case,
+                    summary=f"Scale reference: {form} units.",
+                    evidence=[{"message": f"observed magnitude {form}"}],
+                )
+                projected = project_student_result(private)
+                serialized = json.dumps(projected, ensure_ascii=False)
+                self.assertNotIn(
+                    form,
+                    serialized,
+                    msg=f"equivalent scientific form leaked: {form}",
+                )
+                self.assertEqual(projected["summary"], GENERIC_REDACTED_TEXT)
+                self.assertEqual(projected["evidence"], [])
+
+    def test_hidden_small_integer_does_not_falsely_match_unrelated_scientific_or_identifier_text(
+        self,
+    ) -> None:
+        """Hidden int 1 must not redact unrelated 1e20 or v1 text (Bug 2)."""
+        legitimate_summary = (
+            "For scale refer to 1e20 in the docs; see version v1 of the spec."
+        )
+        hidden_case = {
+            "name": "small-numeric-fp",
+            "input": "secret",
+            "expected": 1,
+            "passed": False,
+            "visibility": "hidden",
+        }
+        private = self._minimal_private_with_numeric_hidden_case(
+            hidden_case,
+            summary=legitimate_summary,
+        )
+        projected = project_student_result(private)
+        self.assertEqual(projected["summary"], legitimate_summary)
+
+    def test_words_information_and_financial_are_never_corrupted_by_inf_or_nan_fragments(
+        self,
+    ) -> None:
+        """inf/nan fragments must not substring-match inside ordinary words (Bug 2)."""
+        legitimate_summary = (
+            "Please read the information section and review the financial report."
+        )
+        hidden_case = {
+            "name": "inf-nan-hidden",
+            "input": "secret",
+            "expected": float("inf"),
+            "actual": float("nan"),
+            "passed": False,
+            "visibility": "hidden",
+        }
+        private = self._minimal_private_with_numeric_hidden_case(
+            hidden_case,
+            summary=legitimate_summary,
+        )
+        projected = project_student_result(private)
+        self.assertEqual(projected["summary"], legitimate_summary)
+
+    def test_standalone_inf_and_nan_tokens_still_get_redacted_when_they_genuinely_leak(
+        self,
+    ) -> None:
+        """Standalone inf/nan tokens must still be redacted when they genuinely leak."""
+        for summary, token, hidden_value in (
+            ("Computation result: inf", "inf", float("inf")),
+            ("Deviation reported: nan", "nan", float("nan")),
+            ("Lower bound was -inf", "-inf", float("-inf")),
+        ):
+            with self.subTest(summary=summary, token=token):
+                hidden_case = {
+                    "name": "inf-nan-leak",
+                    "input": "secret",
+                    "expected": hidden_value,
+                    "passed": False,
+                    "visibility": "hidden",
+                }
+                private = self._minimal_private_with_numeric_hidden_case(
+                    hidden_case,
+                    summary=summary,
+                )
+                projected = project_student_result(private)
+                serialized = json.dumps(projected, ensure_ascii=False)
+                self.assertNotIn(token, serialized)
+                self.assertEqual(projected["summary"], GENERIC_REDACTED_TEXT)
 
     def test_comprehensive_invariant_no_sentinel_survives_in_serialized_output_regardless_of_location(
         self,
