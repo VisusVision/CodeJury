@@ -8,9 +8,10 @@ agents but executes the real sandbox path (simulate or pool).
 from __future__ import annotations
 
 import unittest
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
-from backend.sandbox.executor import run_in_sandbox
+from backend.sandbox.errors import SandboxUnavailableError
+from backend.sandbox.executor import _simulate_sandbox, run_in_sandbox
 from backend.sandbox.fixtures import infer_sandbox_files
 from frontend.backend import main
 
@@ -153,13 +154,13 @@ class P0SandboxChainE2ETests(unittest.TestCase):
         self.assertEqual(len(files), 1)
         self.assertEqual(files[0]["name"], "scores.csv")
 
-        result = run_in_sandbox(_UYGUN_CSV_CODE, "python", files=files)
+        result = _simulate_sandbox(_UYGUN_CSV_CODE, files=files)
         self.assertEqual(result["exit_code"], 0, result.get("stderr"))
         self.assertTrue(result.get("fixtures_provided"))
         self.assertIn("report.csv yazildi", result.get("stdout", ""))
 
     def test_uygun_csv_code_fails_without_fixtures(self):
-        result = run_in_sandbox(_UYGUN_CSV_CODE, "python", files=[])
+        result = _simulate_sandbox(_UYGUN_CSV_CODE, files=[])
         self.assertNotEqual(result["exit_code"], 0)
         self.assertFalse(result.get("fixtures_provided"))
 
@@ -167,6 +168,13 @@ class P0SandboxChainE2ETests(unittest.TestCase):
 class P0PipelineE2ETests(unittest.IsolatedAsyncioTestCase):
     async def test_pipeline_returns_extended_report_fields(self):
         with (
+            patch("backend.sandbox.pool_manager.wait_for_pool_ready", return_value=MagicMock()),
+            patch("backend.sandbox.executor.run_in_sandbox", return_value={
+                "compilation_success": True, "exit_code": 0, "stdout": "report.csv yazildi\n", "stderr": "",
+                "execution_time_ms": 5, "peak_memory_mb": 1.0, "timed_out": False, "memory_exceeded": False,
+                "test_results": [], "static_analysis": {}, "code_metrics": {}, "summary": {},
+                "fixtures_provided": True, "execution_backend": "pool",
+            }),
             patch(
                 "backend.agents.task_relevance.assess_task_relevance_llm",
                 new=AsyncMock(return_value={"factor": 0.92, "llm_off_topic": False, "reasons": []}),
@@ -200,9 +208,15 @@ class P0PipelineE2ETests(unittest.IsolatedAsyncioTestCase):
 
         def _spy_run_in_sandbox(source_code, language, files=None, **kwargs):
             captured["files"] = files
-            return run_in_sandbox(source_code, language, files=files, **kwargs)
+            return {
+                "compilation_success": True, "exit_code": 0, "stdout": "report.csv yazildi\n", "stderr": "",
+                "execution_time_ms": 5, "peak_memory_mb": 1.0, "timed_out": False, "memory_exceeded": False,
+                "test_results": [], "static_analysis": {}, "code_metrics": {}, "summary": {},
+                "fixtures_provided": bool(files), "execution_backend": "pool",
+            }
 
         with (
+            patch("backend.sandbox.pool_manager.wait_for_pool_ready", return_value=MagicMock()),
             patch("backend.sandbox.executor.run_in_sandbox", side_effect=_spy_run_in_sandbox),
             patch(
                 "backend.agents.task_relevance.assess_task_relevance_llm",
@@ -232,6 +246,13 @@ class P0PipelineE2ETests(unittest.IsolatedAsyncioTestCase):
 
     async def test_pipeline_does_not_cap_score_when_sandbox_succeeds_with_fixtures(self):
         with (
+            patch("backend.sandbox.pool_manager.wait_for_pool_ready", return_value=MagicMock()),
+            patch("backend.sandbox.executor.run_in_sandbox", return_value={
+                "compilation_success": True, "exit_code": 0, "stdout": "report.csv yazildi\n", "stderr": "",
+                "execution_time_ms": 5, "peak_memory_mb": 1.0, "timed_out": False, "memory_exceeded": False,
+                "test_results": [], "static_analysis": {}, "code_metrics": {}, "summary": {},
+                "fixtures_provided": True, "execution_backend": "pool",
+            }),
             patch(
                 "backend.agents.task_relevance.assess_task_relevance_llm",
                 new=AsyncMock(return_value={"factor": 0.9, "llm_off_topic": False, "reasons": []}),
@@ -301,6 +322,7 @@ class P0PipelineE2ETests(unittest.IsolatedAsyncioTestCase):
             }
 
         with (
+            patch("backend.sandbox.pool_manager.wait_for_pool_ready", return_value=MagicMock()),
             patch("backend.sandbox.executor.run_in_sandbox", side_effect=_spy_run_in_sandbox),
             patch(
                 "backend.agents.task_relevance.assess_task_relevance_llm",
@@ -330,6 +352,7 @@ class P0PipelineE2ETests(unittest.IsolatedAsyncioTestCase):
 
     async def test_pipeline_reports_algorithm_and_authorship_without_authorship_score_penalty(self):
         with (
+            patch("backend.sandbox.pool_manager.wait_for_pool_ready", return_value=MagicMock()),
             patch("backend.sandbox.executor.run_in_sandbox", return_value={"compilation_success": True, "exit_code": 0, "stdout": "", "stderr": ""}),
             patch(
                 "backend.agents.task_relevance.assess_task_relevance_llm",
@@ -370,6 +393,24 @@ class P0PipelineE2ETests(unittest.IsolatedAsyncioTestCase):
         agent_ids = {agent["id"] for agent in result["agents"]}
         self.assertIn("algorithm", agent_ids)
         self.assertIn("ai_authorship", agent_ids)
+
+    async def test_pipeline_fails_before_agent_work_when_sandbox_pool_unavailable(self):
+        with (
+            patch("backend.sandbox.pool_manager.wait_for_pool_ready", return_value=None),
+            patch.object(main.CodeQualityAgent, "analyze", new=AsyncMock(return_value=_good_agent_payload())) as code_quality,
+            patch.object(main.AlgorithmAgent, "analyze", new=AsyncMock(return_value=_good_algorithm_payload())) as algorithm,
+            patch.object(main.TestAgent, "analyze", new=AsyncMock(return_value=_good_agent_payload())) as test_agent,
+        ):
+            with self.assertRaises(SandboxUnavailableError):
+                await main.run_analysis_pipeline(
+                    "submission.py",
+                    _UYGUN_CSV_CODE,
+                    assignment_brief=_CSV_BRIEF,
+                    report_language="tr",
+                )
+        code_quality.assert_not_called()
+        algorithm.assert_not_called()
+        test_agent.assert_not_called()
 
 
 if __name__ == "__main__":

@@ -21,8 +21,8 @@ def get_llm_config_snapshot() -> dict[str, Any]:
     }
 
 
-def get_sandbox_pool_snapshot() -> dict[str, Any]:
-    """Docker sandbox pool status; simulation when pool is absent or not ready."""
+def get_local_sandbox_pool_snapshot() -> dict[str, Any]:
+    """This process's own local sandbox pool snapshot (diagnostics only)."""
     try:
         from backend.sandbox.pool_manager import get_pool
 
@@ -30,19 +30,22 @@ def get_sandbox_pool_snapshot() -> dict[str, Any]:
     except Exception:
         pool = None
 
-    if pool is None or not pool.is_ready:
+    if pool is None:
         return {
-            "mode": "simulation",
+            "mode": "unavailable",
+            "state": "unavailable",
             "pool_ready": False,
             "container_count": 0,
             "available_count": 0,
         }
 
+    snapshot = pool.snapshot()
     return {
-        "mode": "pool",
-        "pool_ready": True,
-        "container_count": len(pool._slots),
-        "available_count": pool.available_count,
+        "mode": "pool" if snapshot["pool_ready"] else "unavailable",
+        "state": snapshot["state"],
+        "pool_ready": snapshot["pool_ready"],
+        "container_count": snapshot["container_count"],
+        "available_count": snapshot["available_count"],
     }
 
 
@@ -52,10 +55,10 @@ def build_analysis_runtime_meta(
     sandbox_backend: str | None = None,
 ) -> dict[str, Any]:
     """Per-analysis runtime block embedded in agentDiagnostics."""
-    sandbox = get_sandbox_pool_snapshot()
+    sandbox = get_local_sandbox_pool_snapshot()
     execution = str(sandbox_backend or sandbox["mode"]).strip().lower()
-    if execution not in {"pool", "simulation"}:
-        execution = "simulation" if execution in {"", "unknown"} else execution
+    if execution not in {"pool", "unavailable"}:
+        execution = "unavailable" if execution in {"", "unknown", "simulation"} else execution
 
     return {
         "llm": get_llm_config_snapshot(),
@@ -81,6 +84,6 @@ def try_initialize_sandbox_pool(
 
     initialize_pool()
     pool = get_pool()
-    if pool is not None and pool.is_ready:
+    if pool is not None and pool.snapshot()["pool_ready"]:
         return "pool"
-    return "simulation"
+    return "unavailable"
