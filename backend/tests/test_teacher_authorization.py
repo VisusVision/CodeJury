@@ -8,12 +8,13 @@ from __future__ import annotations
 
 import copy
 import unittest
+from functools import partial
 from unittest.mock import AsyncMock, patch
 
 from fastapi.testclient import TestClient
 
 from backend.auth.dependencies import CSRF_HEADER, get_auth_session_store
-from backend.auth.sessions import SessionStore
+from backend.auth.sessions import SessionStore, acquire_user_lock, release_user_lock
 from frontend.backend import main
 
 _DEMO_TEACHER_ID = "11111111-1111-4111-8111-111111111111"
@@ -62,10 +63,13 @@ class _FakeSessionRedis:
         self.sets.clear()
         self.expirations.clear()
 
-    async def set(self, key: str, value: str, ex: int | None = None) -> None:
+    async def set(self, key: str, value: str, ex: int | None = None, nx: bool = False) -> bool | None:
+        if nx and key in self.values:
+            return None
         self.values[key] = value
         if ex is not None:
             self.expirations[key] = ex
+        return True
 
     async def get(self, key: str) -> str | None:
         return self.values.get(key)
@@ -730,6 +734,68 @@ class TeacherAuthorizationTests(unittest.TestCase):
             json={"email": _DEMO_TEACHER_EMAIL, "password": new_password},
         )
         self.assertEqual(new_login_resp.status_code, 401)
+
+    def test_login_and_password_change_use_same_user_lock_key(self):
+        """Deterministic proof that login and password-change share the per-user lock key."""
+        csrf_a = self._login_teacher(self.client_a)
+        calls: list[tuple[str, str]] = []
+
+        async def _spy_acquire(redis, role, user_id, **kwargs):
+            calls.append((role, user_id))
+            return await acquire_user_lock(redis, role, user_id, **kwargs)
+
+        with patch("backend.auth.sessions.acquire_user_lock", side_effect=_spy_acquire):
+            login_resp = TestClient(main.app).post(
+                "/api/teacher/login",
+                json={"email": _DEMO_TEACHER_EMAIL, "password": _DEMO_TEACHER_PASSWORD},
+            )
+            self.assertEqual(login_resp.status_code, 200)
+
+            pwd_resp = self.client_a.patch(
+                f"/api/teacher/{_DEMO_TEACHER_ID}/password",
+                json={"current_password": _DEMO_TEACHER_PASSWORD, "new_password": "yeniparola2"},
+                headers=self._csrf_headers(csrf_a),
+            )
+            self.assertEqual(pwd_resp.status_code, 200)
+
+        teacher_lock_calls = [
+            (role, user_id) for role, user_id in calls if role == "teacher"
+        ]
+        self.assertGreaterEqual(len(teacher_lock_calls), 2)
+        self.assertTrue(
+            all(user_id == _DEMO_TEACHER_ID for _, user_id in teacher_lock_calls),
+            f"Expected all teacher lock calls for {_DEMO_TEACHER_ID}, got {teacher_lock_calls}",
+        )
+
+    def test_login_returns_503_when_user_lock_held_for_entire_retry_budget(self):
+        """While password-change holds the per-user lock, login must fail closed with 503."""
+        import asyncio
+
+        async def _hold_lock():
+            return await acquire_user_lock(
+                type(self)._fake_redis, "teacher", _DEMO_TEACHER_ID
+            )
+
+        token = asyncio.run(_hold_lock())
+        try:
+            fast_acquire = partial(
+                acquire_user_lock,
+                max_attempts=3,
+                retry_delay_seconds=0.01,
+            )
+            with patch("backend.auth.sessions.acquire_user_lock", fast_acquire):
+                resp = TestClient(main.app).post(
+                    "/api/teacher/login",
+                    json={"email": _DEMO_TEACHER_EMAIL, "password": _DEMO_TEACHER_PASSWORD},
+                )
+            self.assertEqual(resp.status_code, 503)
+            self.assertEqual(resp.json()["detail"], "Oturum servisine ulaşılamıyor")
+        finally:
+            asyncio.run(
+                release_user_lock(
+                    type(self)._fake_redis, "teacher", _DEMO_TEACHER_ID, token
+                )
+            )
 
     def test_teacher_lists_students_only_in_owned_or_legacy_departments(self):
         csrf_a = self._login_teacher(self.client_a)

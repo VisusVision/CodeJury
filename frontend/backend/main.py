@@ -62,7 +62,7 @@ from backend.auth.dependencies import (
 )
 from backend.auth.models import AuthPrincipal
 from backend.auth.policies import enforce_teacher_owner
-from backend.auth.sessions import hash_token
+from backend.auth.sessions import UserLockUnavailable, hash_token, user_lock
 from backend.queue.analysis_jobs import (
     AnalysisJobNotFound,
     AnalysisJobOwner,
@@ -5244,18 +5244,27 @@ async def student_login(req: StudentLoginRequest, request: Request, response: Re
     if _DEMO_MODE:
         if _ensure_demo_student_passwords():
             _save_demo_store_to_disk()
-        for student in _DEMO_STORE["students"]:
-            if student["student_no"] == student_no and _verify_password(password, str(student.get("password_hash") or "")):
-                profile = _demo_student_record(student)
-                store = await get_auth_session_store(request)
+        candidate = next(
+            (student for student in _DEMO_STORE["students"] if student["student_no"] == student_no),
+            None,
+        )
+        if candidate is None:
+            raise HTTPException(status_code=401, detail="Ogrenci no veya sifre hatali")
+        store = await get_auth_session_store(request)
+        try:
+            async with user_lock(store.redis, "student", str(candidate["id"])):
+                if not _verify_password(password, str(candidate.get("password_hash") or "")):
+                    raise HTTPException(status_code=401, detail="Ogrenci no veya sifre hatali")
+                profile = _demo_student_record(candidate)
                 try:
-                    issued = await store.create_session(str(student["id"]), "student")
+                    issued = await store.create_session(str(candidate["id"]), "student")
                 except Exception as exc:
                     clear_auth_cookies(response)
                     raise HTTPException(status_code=503, detail="Oturum servisine ulaşılamıyor") from exc
                 set_auth_cookies(response, issued, secure=settings.auth_cookie_secure)
                 return profile
-        raise HTTPException(status_code=401, detail="Ogrenci no veya sifre hatali")
+        except UserLockUnavailable as exc:
+            raise HTTPException(status_code=503, detail="Oturum servisine ulaşılamıyor") from exc
 
     pool = await _get_db_pool()
     row = await pool.fetchrow(
@@ -5270,19 +5279,25 @@ async def student_login(req: StudentLoginRequest, request: Request, response: Re
         """,
         student_no,
     )
-    if row is None or not _verify_password(password, str(row["password_hash"] or "")):
+    if row is None:
         raise HTTPException(status_code=401, detail="Ogrenci no veya sifre hatali")
-    await _sync_student_to_all_courses(pool, str(row["id"]))
-    payload = dict(row)
-    payload.pop("password_hash", None)
     store = await get_auth_session_store(request)
     try:
-        issued = await store.create_session(str(row["id"]), "student")
-    except Exception as exc:
-        clear_auth_cookies(response)
+        async with user_lock(store.redis, "student", str(row["id"])):
+            if not _verify_password(password, str(row["password_hash"] or "")):
+                raise HTTPException(status_code=401, detail="Ogrenci no veya sifre hatali")
+            await _sync_student_to_all_courses(pool, str(row["id"]))
+            payload = dict(row)
+            payload.pop("password_hash", None)
+            try:
+                issued = await store.create_session(str(row["id"]), "student")
+            except Exception as exc:
+                clear_auth_cookies(response)
+                raise HTTPException(status_code=503, detail="Oturum servisine ulaşılamıyor") from exc
+            set_auth_cookies(response, issued, secure=settings.auth_cookie_secure)
+            return payload
+    except UserLockUnavailable as exc:
         raise HTTPException(status_code=503, detail="Oturum servisine ulaşılamıyor") from exc
-    set_auth_cookies(response, issued, secure=settings.auth_cookie_secure)
-    return payload
 
 
 @app.post("/api/teacher/register")
@@ -5356,24 +5371,33 @@ async def teacher_login(req: TeacherLoginRequest, request: Request, response: Re
         raise HTTPException(status_code=400, detail="E-posta ve sifre zorunludur")
 
     if _DEMO_MODE:
-        for teacher in _DEMO_STORE["teachers"]:
-            if teacher["email"].lower() == email and _verify_password(password, teacher["password_hash"]):
+        candidate = next(
+            (teacher for teacher in _DEMO_STORE["teachers"] if teacher["email"].lower() == email),
+            None,
+        )
+        if candidate is None:
+            raise HTTPException(status_code=401, detail="E-posta veya sifre hatali")
+        store = await get_auth_session_store(request)
+        try:
+            async with user_lock(store.redis, "teacher", str(candidate["id"])):
+                if not _verify_password(password, candidate["password_hash"]):
+                    raise HTTPException(status_code=401, detail="E-posta veya sifre hatali")
                 profile = {
-                    "id": teacher["id"],
-                    "first_name": teacher["first_name"],
-                    "last_name": teacher["last_name"],
-                    "email": teacher["email"],
-                    "created_at": teacher["created_at"],
+                    "id": candidate["id"],
+                    "first_name": candidate["first_name"],
+                    "last_name": candidate["last_name"],
+                    "email": candidate["email"],
+                    "created_at": candidate["created_at"],
                 }
-                store = await get_auth_session_store(request)
                 try:
-                    issued = await store.create_session(str(teacher["id"]), "teacher")
+                    issued = await store.create_session(str(candidate["id"]), "teacher")
                 except Exception as exc:
                     clear_auth_cookies(response)
                     raise HTTPException(status_code=503, detail="Oturum servisine ulaşılamıyor") from exc
                 set_auth_cookies(response, issued, secure=settings.auth_cookie_secure)
                 return profile
-        raise HTTPException(status_code=401, detail="E-posta veya sifre hatali")
+        except UserLockUnavailable as exc:
+            raise HTTPException(status_code=503, detail="Oturum servisine ulaşılamıyor") from exc
 
     pool = await _get_db_pool()
     row = await pool.fetchrow(
@@ -5385,24 +5409,30 @@ async def teacher_login(req: TeacherLoginRequest, request: Request, response: Re
         """,
         email,
     )
-    if row is None or not _verify_password(password, row["password_hash"]):
+    if row is None:
         raise HTTPException(status_code=401, detail="E-posta veya sifre hatali")
-
-    profile = {
-        "id": str(row["id"]),
-        "first_name": row["first_name"],
-        "last_name": row["last_name"],
-        "email": row["email"],
-        "created_at": row["created_at"],
-    }
     store = await get_auth_session_store(request)
     try:
-        issued = await store.create_session(str(row["id"]), "teacher")
-    except Exception as exc:
-        clear_auth_cookies(response)
+        async with user_lock(store.redis, "teacher", str(row["id"])):
+            if not _verify_password(password, row["password_hash"]):
+                raise HTTPException(status_code=401, detail="E-posta veya sifre hatali")
+
+            profile = {
+                "id": str(row["id"]),
+                "first_name": row["first_name"],
+                "last_name": row["last_name"],
+                "email": row["email"],
+                "created_at": row["created_at"],
+            }
+            try:
+                issued = await store.create_session(str(row["id"]), "teacher")
+            except Exception as exc:
+                clear_auth_cookies(response)
+                raise HTTPException(status_code=503, detail="Oturum servisine ulaşılamıyor") from exc
+            set_auth_cookies(response, issued, secure=settings.auth_cookie_secure)
+            return profile
+    except UserLockUnavailable as exc:
         raise HTTPException(status_code=503, detail="Oturum servisine ulaşılamıyor") from exc
-    set_auth_cookies(response, issued, secure=settings.auth_cookie_secure)
-    return profile
 
 
 @app.get("/api/auth/me")
@@ -6892,16 +6922,20 @@ async def update_teacher_password(
         teacher = next((t for t in _DEMO_STORE["teachers"] if t["id"] == teacher_id), None)
         if teacher is None:
             raise HTTPException(status_code=404, detail="Ogretmen bulunamadi")
-        if not _verify_password(current_password, teacher["password_hash"]):
-            raise HTTPException(status_code=401, detail="Mevcut şifre hatalı")
         store = await get_auth_session_store(request)
         try:
-            await store.revoke_user_sessions(principal.user_id, "teacher")
-        except Exception as exc:
+            async with user_lock(store.redis, "teacher", teacher_id):
+                if not _verify_password(current_password, teacher["password_hash"]):
+                    raise HTTPException(status_code=400, detail="Mevcut şifre hatalı")
+                try:
+                    await store.revoke_user_sessions(principal.user_id, "teacher")
+                except Exception as exc:
+                    raise HTTPException(status_code=503, detail="Oturum servisine ulaşılamıyor") from exc
+                teacher["password_hash"] = _hash_password(new_password)
+                clear_auth_cookies(response)
+                return {"status": "ok"}
+        except UserLockUnavailable as exc:
             raise HTTPException(status_code=503, detail="Oturum servisine ulaşılamıyor") from exc
-        teacher["password_hash"] = _hash_password(new_password)
-        clear_auth_cookies(response)
-        return {"status": "ok"}
 
     pool = await _get_db_pool()
     row = await pool.fetchrow(
@@ -6916,26 +6950,30 @@ async def update_teacher_password(
     if row is None:
         raise HTTPException(status_code=404, detail="Ogretmen bulunamadi")
 
-    if not _verify_password(current_password, row["password_hash"]):
-        raise HTTPException(status_code=401, detail="Mevcut şifre hatalı")
-
     store = await get_auth_session_store(request)
     try:
-        await store.revoke_user_sessions(principal.user_id, "teacher")
-    except Exception as exc:
-        raise HTTPException(status_code=503, detail="Oturum servisine ulaşılamıyor") from exc
+        async with user_lock(store.redis, "teacher", teacher_id):
+            if not _verify_password(current_password, row["password_hash"]):
+                raise HTTPException(status_code=400, detail="Mevcut şifre hatalı")
 
-    await pool.execute(
-        """
-        UPDATE public.teachers
-        SET password_hash = $1
-        WHERE id = $2
-        """,
-        _hash_password(new_password),
-        teacher_id,
-    )
-    clear_auth_cookies(response)
-    return {"status": "ok"}
+            try:
+                await store.revoke_user_sessions(principal.user_id, "teacher")
+            except Exception as exc:
+                raise HTTPException(status_code=503, detail="Oturum servisine ulaşılamıyor") from exc
+
+            await pool.execute(
+                """
+                UPDATE public.teachers
+                SET password_hash = $1
+                WHERE id = $2
+                """,
+                _hash_password(new_password),
+                teacher_id,
+            )
+            clear_auth_cookies(response)
+            return {"status": "ok"}
+    except UserLockUnavailable as exc:
+        raise HTTPException(status_code=503, detail="Oturum servisine ulaşılamıyor") from exc
 
 
 @app.get("/api/students")
