@@ -1,5 +1,5 @@
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
-import { apiFetch } from "../services/http";
+import { apiFetch, UNAUTHORIZED_EVENT } from "../services/http";
 
 export type AuthRole = "student" | "teacher";
 
@@ -65,6 +65,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }): JSX.E
   useEffect(() => {
     void restoreSession();
   }, [restoreSession]);
+
+  useEffect(() => {
+    const handleUnauthorized = () => {
+      setState({ status: "anonymous", role: null, user: null });
+    };
+    window.addEventListener(UNAUTHORIZED_EVENT, handleUnauthorized);
+    return () => window.removeEventListener(UNAUTHORIZED_EVENT, handleUnauthorized);
+  }, []);
 
   const loginStudent = useCallback(async (studentNo: string, password: string) => {
     const response = await apiFetch("/api/student/login", {
