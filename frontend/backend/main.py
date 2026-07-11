@@ -26,7 +26,7 @@ from urllib.parse import urlparse, urlunparse
 import asyncpg
 from fastapi import Depends, FastAPI, HTTPException, Request, Response, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 _PROJECT_ROOT = str(Path(__file__).resolve().parent.parent.parent)
 if _PROJECT_ROOT not in sys.path:
@@ -646,6 +646,11 @@ class AssignmentDifficultyUpdateRequest(BaseModel):
     difficulty: str
 
 
+class AssignmentTestFixtureIn(BaseModel):
+    name: str
+    content: str
+
+
 class AssignmentTestCaseIn(BaseModel):
     id: str | None = None
     name: str
@@ -654,6 +659,7 @@ class AssignmentTestCaseIn(BaseModel):
     expected_exit_code: int = 0
     visibility: str = "hidden"
     source: str = "manual"
+    files: list[AssignmentTestFixtureIn] = Field(default_factory=list)
     display_order: int | None = None
 
 
@@ -3808,6 +3814,47 @@ async def _ensure_db_schema(pool: asyncpg.Pool) -> None:
             updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
         );
 
+        ALTER TABLE public.assignment_test_cases
+            DROP CONSTRAINT IF EXISTS assignment_test_cases_source_check;
+
+        UPDATE public.assignment_test_cases SET source = 'ai_approved' WHERE source = 'ai';
+
+        ALTER TABLE public.assignment_test_cases
+            ADD COLUMN IF NOT EXISTS files JSONB NOT NULL DEFAULT '[]'::jsonb;
+
+        ALTER TABLE public.assignment_test_cases
+            ADD COLUMN IF NOT EXISTS oracle TEXT NOT NULL DEFAULT 'teacher';
+
+        ALTER TABLE public.assignment_test_cases
+            ADD COLUMN IF NOT EXISTS oracle_validation JSONB NULL;
+
+        ALTER TABLE public.assignment_test_cases
+            ADD COLUMN IF NOT EXISTS generated_set_id UUID NULL;
+
+        DO $$
+        BEGIN
+            IF NOT EXISTS (
+                SELECT 1 FROM pg_constraint
+                WHERE conname = 'assignment_test_cases_source_check'
+                  AND conrelid = 'public.assignment_test_cases'::regclass
+            ) THEN
+                ALTER TABLE public.assignment_test_cases
+                    ADD CONSTRAINT assignment_test_cases_source_check CHECK (source IN ('manual', 'ai_approved'));
+            END IF;
+        END $$;
+
+        DO $$
+        BEGIN
+            IF NOT EXISTS (
+                SELECT 1 FROM pg_constraint
+                WHERE conname = 'assignment_test_cases_oracle_check'
+                  AND conrelid = 'public.assignment_test_cases'::regclass
+            ) THEN
+                ALTER TABLE public.assignment_test_cases
+                    ADD CONSTRAINT assignment_test_cases_oracle_check CHECK (oracle IN ('teacher', 'llm_verified'));
+            END IF;
+        END $$;
+
         CREATE INDEX IF NOT EXISTS idx_assignment_test_cases_assignment_id
             ON public.assignment_test_cases(assignment_id, display_order ASC, created_at ASC);
         """)
@@ -4059,12 +4106,20 @@ def _normalize_pipeline_test_cases(raw: Any) -> list[dict[str, Any]]:
     return out[:50]
 
 
+def _normalize_legacy_test_case_source(value: Any) -> str:
+    source = str(value or "manual").strip().lower()
+    return "ai_approved" if source == "ai" else source
+
+
 def _normalize_assignment_test_case(
     item: AssignmentTestCaseIn | dict[str, Any],
     *,
     assignment_id: str,
     display_order: int,
 ) -> dict[str, Any]:
+    from backend.testing.contracts import TestFixture
+    from backend.testing.fixture_policy import FixturePolicyError, validate_case_fixtures
+
     raw = item.model_dump() if isinstance(item, AssignmentTestCaseIn) else dict(item)
     name = str(raw.get("name") or "").strip()
     if not name:
@@ -4072,9 +4127,6 @@ def _normalize_assignment_test_case(
     visibility = str(raw.get("visibility") or "hidden").strip().lower()
     if visibility not in {"public", "hidden"}:
         raise HTTPException(status_code=400, detail="Test gorunurlugu public veya hidden olmali")
-    source = str(raw.get("source") or "manual").strip().lower()
-    if source not in {"manual", "ai"}:
-        raise HTTPException(status_code=400, detail="Test kaynagi manual veya ai olmali")
     try:
         expected_exit_code = int(raw.get("expected_exit_code", 0) or 0)
     except (TypeError, ValueError) as exc:
@@ -4084,6 +4136,21 @@ def _normalize_assignment_test_case(
         order = int(order_value) if order_value is not None else display_order
     except (TypeError, ValueError):
         order = display_order
+
+    raw_files = raw.get("files") or []
+    fixture_models = [
+        TestFixture(name=str(fixture.get("name") or ""), content=str(fixture.get("content") or ""))
+        for fixture in raw_files
+        if isinstance(fixture, dict)
+    ]
+    try:
+        validated_fixtures = validate_case_fixtures(fixture_models)
+    except FixturePolicyError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    files = [{"name": fixture.name, "content": fixture.content} for fixture in validated_fixtures]
+
+    source = "manual"
+
     return {
         "id": str(raw.get("id") or _demo_uuid()),
         "assignment_id": assignment_id,
@@ -4093,12 +4160,21 @@ def _normalize_assignment_test_case(
         "expected_exit_code": expected_exit_code,
         "visibility": visibility,
         "source": source,
+        "files": files,
+        "oracle": "teacher",
+        "oracle_validation": None,
+        "generated_set_id": None,
         "display_order": max(1, order),
     }
 
 
 def _assignment_test_case_response(row: Any) -> dict[str, Any]:
     record = dict(row)
+    oracle = str(record.get("oracle") or "teacher")
+    if "oracle" in record:
+        source = str(record.get("source") or "manual")
+    else:
+        source = _normalize_legacy_test_case_source(record.get("source"))
     return {
         "id": str(record.get("id") or ""),
         "assignment_id": str(record.get("assignment_id") or ""),
@@ -4107,7 +4183,11 @@ def _assignment_test_case_response(row: Any) -> dict[str, Any]:
         "expected_stdout": str(record.get("expected_stdout") or ""),
         "expected_exit_code": int(record.get("expected_exit_code", 0) or 0),
         "visibility": str(record.get("visibility") or "hidden"),
-        "source": str(record.get("source") or "manual"),
+        "source": source,
+        "files": record.get("files") or [],
+        "oracle": oracle,
+        "oracle_validation": record.get("oracle_validation"),
+        "generated_set_id": str(record["generated_set_id"]) if record.get("generated_set_id") else None,
         "display_order": int(record.get("display_order", 1) or 1),
     }
 
@@ -4134,7 +4214,7 @@ async def _fetch_assignment_test_cases_for_pipeline(assignment_id: str | None) -
     rows = await pool.fetch(
         """
         SELECT id, assignment_id, name, stdin, expected_stdout, expected_exit_code,
-               visibility, source, display_order
+               visibility, source, display_order, files, oracle, oracle_validation, generated_set_id
         FROM public.assignment_test_cases
         WHERE assignment_id = $1::uuid
         ORDER BY display_order ASC, created_at ASC
@@ -6095,7 +6175,7 @@ async def list_assignment_test_cases(assignment_id: str, principal: AuthPrincipa
     rows = await pool.fetch(
         """
         SELECT id, assignment_id, name, stdin, expected_stdout, expected_exit_code,
-               visibility, source, display_order
+               visibility, source, display_order, files, oracle, oracle_validation, generated_set_id
         FROM public.assignment_test_cases
         WHERE assignment_id = $1::uuid
         ORDER BY display_order ASC, created_at ASC
@@ -6152,9 +6232,21 @@ async def suggest_assignment_test_cases(assignment_id: str, principal: AuthPrinc
         },
     ]
     suggestions = [
-        _assignment_test_case_response(
-            _normalize_assignment_test_case(row, assignment_id=aid, display_order=index)
-        )
+        {
+            "id": _demo_uuid(),
+            "assignment_id": aid,
+            "name": str(row.get("name") or "")[:120],
+            "stdin": str(row.get("stdin") or "")[:8000],
+            "expected_stdout": str(row.get("expected_stdout", row.get("expected", "")) or "")[:8000],
+            "expected_exit_code": int(row.get("expected_exit_code", 0) or 0),
+            "visibility": str(row.get("visibility") or "hidden"),
+            "source": "ai",
+            "files": [],
+            "oracle": "teacher",
+            "oracle_validation": None,
+            "generated_set_id": None,
+            "display_order": index,
+        }
         for index, row in enumerate(raw_suggestions, 1)
     ]
     return {"suggestions": suggestions}
@@ -6214,9 +6306,10 @@ async def replace_assignment_test_cases(
                     """
                     INSERT INTO public.assignment_test_cases (
                         id, assignment_id, name, stdin, expected_stdout, expected_exit_code,
-                        visibility, source, display_order
+                        visibility, source, display_order, files, oracle, oracle_validation,
+                        generated_set_id
                     )
-                    VALUES ($1::uuid, $2::uuid, $3, $4, $5, $6, $7, $8, $9)
+                    VALUES ($1::uuid, $2::uuid, $3, $4, $5, $6, $7, $8, $9, $10::jsonb, $11, $12::jsonb, $13::uuid)
                     """,
                     row["id"],
                     uid,
@@ -6227,6 +6320,10 @@ async def replace_assignment_test_cases(
                     row["visibility"],
                     row["source"],
                     row["display_order"],
+                    json.dumps(row["files"]),
+                    row["oracle"],
+                    row["oracle_validation"],
+                    row["generated_set_id"],
                 )
     return await list_assignment_test_cases(aid)
 

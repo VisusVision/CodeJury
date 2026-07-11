@@ -236,6 +236,34 @@ class AssignmentDbPathTests(unittest.TestCase):
         self.assertIn("idx_courses_created_by", pool.sql)
         self.assertIn("idx_assignments_created_by", pool.sql)
 
+    def test_ensure_db_schema_includes_test_case_files_and_provenance_columns(self):
+        class FakePool:
+            def __init__(self):
+                self.sql = None
+
+            async def execute(self, sql, *args):
+                if self.sql is None:
+                    self.sql = sql
+                return "OK"
+
+            async def fetch(self, query, *args):
+                return []
+
+        pool = FakePool()
+
+        async def run_case():
+            await main._ensure_db_schema(pool)
+
+        asyncio.run(run_case())
+
+        self.assertIsNotNone(pool.sql)
+        self.assertIn("assignment_test_cases_source_check", pool.sql)
+        self.assertIn("ai_approved", pool.sql)
+        self.assertIn("files JSONB", pool.sql)
+        self.assertIn("oracle", pool.sql)
+        self.assertIn("oracle_validation", pool.sql)
+        self.assertIn("generated_set_id", pool.sql)
+
 
 if __name__ == "__main__":
     unittest.main()
