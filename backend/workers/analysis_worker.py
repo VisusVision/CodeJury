@@ -102,9 +102,9 @@ async def process_analysis_job(
             pipeline(
                 file_name=str(request.get("file_name") or "unknown.py"),
                 file_content=str(request.get("file_content") or ""),
+                assignment_id=request.get("assignment_id"),
                 assignment_brief=str(request.get("assignment_brief") or ""),
                 faculty_rubric_criteria=request.get("faculty_rubric_criteria") or [],
-                test_cases=request.get("test_cases") or [],
                 report_language=str(request.get("report_language") or "tr"),
                 progress_callback=lambda partial_result: update_analysis_job_result(
                     store,

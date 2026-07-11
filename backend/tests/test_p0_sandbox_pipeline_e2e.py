@@ -13,6 +13,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from backend.sandbox.errors import SandboxUnavailableError
 from backend.sandbox.executor import _simulate_sandbox, run_in_sandbox
 from backend.sandbox.fixtures import infer_sandbox_files
+from backend.testing.contracts import FormalTestCase, TestSelection as PipelineTestSelection
 from frontend.backend import main
 
 _CSV_BRIEF = (
@@ -364,12 +365,29 @@ class P0PipelineE2ETests(unittest.IsolatedAsyncioTestCase):
         test_agent = agents.get("test_agent", {})
         self.assertNotIn("FileNotFound", str(test_agent.get("summary", "")))
 
-    async def test_pipeline_passes_explicit_test_cases_to_sandbox_and_test_agent(self):
+    async def test_pipeline_passes_authoritative_test_cases_to_sandbox_and_test_agent(self):
         captured: dict = {}
         test_cases = [
-            {"name": "normal_case", "stdin": "6\n", "expected_stdout": "36\n"},
-            {"name": "zero_case", "stdin": "0\n", "expected_stdout": "0\n"},
+            {"id": "case-1", "name": "normal_case", "stdin": "6\n", "expected_stdout": "36\n", "expected_exit_code": 0, "visibility": "hidden", "files": [], "source": "manual", "oracle": "teacher"},
+            {"id": "case-2", "name": "zero_case", "stdin": "0\n", "expected_stdout": "0\n", "expected_exit_code": 0, "visibility": "hidden", "files": [], "source": "manual", "oracle": "teacher"},
         ]
+        selection = PipelineTestSelection(
+            cases=tuple(
+                FormalTestCase(
+                    id=case["id"],
+                    name=case["name"],
+                    stdin=case["stdin"],
+                    expected_stdout=case["expected_stdout"],
+                    visibility="hidden",
+                    source="manual",
+                    oracle="teacher",
+                )
+                for case in test_cases
+            ),
+            source="faculty",
+            test_evidence_status="available",
+        )
+        provider = AsyncMock(return_value=selection)
 
         def _spy_run_in_sandbox(source_code, language, files=None, test_cases=None, **kwargs):
             captured["sandbox_test_cases"] = test_cases
@@ -427,8 +445,9 @@ class P0PipelineE2ETests(unittest.IsolatedAsyncioTestCase):
             result = await main.run_analysis_pipeline(
                 "submission.py",
                 "print(int(input()) ** 2)\n",
+                assignment_id="55555555-5555-4555-8555-555555555555",
                 assignment_brief="Girilen sayinin karesini yazdiran Python programi.",
-                test_cases=test_cases,
+                test_selection_provider=provider,
             )
 
         self.assertEqual(captured["sandbox_test_cases"], test_cases)
@@ -436,6 +455,7 @@ class P0PipelineE2ETests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(captured["test_agent_sandbox_results"][0]["actual_stdout"], "36\n")
         testing = next(agent for agent in result["agents"] if agent["id"] == "testing")
         self.assertIn("2 test gecti", testing["summary"])
+        self.assertEqual(result["testSource"], "faculty")
 
     async def test_pipeline_reports_algorithm_and_authorship_without_authorship_score_penalty(self):
         with (

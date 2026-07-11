@@ -63,10 +63,10 @@ from backend.auth.dependencies import (
 from backend.auth.models import AuthPrincipal
 from backend.auth.policies import enforce_teacher_owner
 from backend.testing.cache import AssignmentTestContext
-from backend.testing.contracts import FormalTestCase, GeneratedTestSet
+from backend.testing.contracts import FormalTestCase, GeneratedTestSet, TestSelection
 from backend.testing.difficulty import infer_assignment_difficulty, normalize_difficulty
 from backend.testing.generator import generate_and_verify_once
-from backend.testing.selector import _attempt_is_sufficient
+from backend.testing.selector import _attempt_is_sufficient, select_tests
 from backend.agents.base import LLMInferenceError
 from backend.auth.sessions import UserLockUnavailable, hash_token, user_lock
 from backend.queue.analysis_jobs import (
@@ -588,6 +588,7 @@ class AnalysisRequest(BaseModel):
     assignment_id: Optional[str] = None
     report_language: Optional[str] = None
     student_no: Optional[str] = None
+    # Deprecated: ignored for backward compatibility; never copied to queue or pipeline.
     test_cases: Optional[list[dict[str, Any]]] = None
 
 
@@ -4157,6 +4158,25 @@ def _normalize_pipeline_test_cases(raw: Any) -> list[dict[str, Any]]:
     return out[:50]
 
 
+def _pipeline_test_provenance(test_cases: list[dict[str, Any]]) -> dict[str, Any]:
+    """Infer TestAgent provenance from authoritative pipeline test cases."""
+    if not test_cases:
+        return {"test_evidence_status": "unavailable"}
+    first = test_cases[0]
+    source = str(first.get("source") or "manual").strip().lower()
+    if source not in {"manual", "ai_approved", "auto_generated"}:
+        source = "manual"
+    provenance: dict[str, Any] = {
+        "test_evidence_status": "available",
+        "test_source": source,
+    }
+    if first.get("test_set_id"):
+        provenance["test_set_id"] = str(first.get("test_set_id"))
+    if first.get("cache_version") is not None:
+        provenance["cache_version"] = first.get("cache_version")
+    return provenance
+
+
 def _normalize_legacy_test_case_source(value: Any) -> str:
     source = str(value or "manual").strip().lower()
     return "ai_approved" if source == "ai" else source
@@ -4275,15 +4295,250 @@ async def _fetch_assignment_test_cases_for_pipeline(assignment_id: str | None) -
     return _normalize_pipeline_test_cases([_assignment_test_case_response(row) for row in rows])
 
 
+def _pipeline_language_from_file_name(file_name: str) -> str:
+    if file_name.endswith((".c", ".cpp", ".h")):
+        return "c++"
+    if file_name.endswith(".java"):
+        return "java"
+    return "python"
+
+
+def _assignment_row_to_formal_case(row: dict[str, Any]) -> FormalTestCase:
+    from backend.testing.contracts import TestFixture
+    from backend.testing.fixture_policy import validate_case_fixtures
+
+    source = str(row.get("source") or "manual")
+    if source not in {"manual", "ai_approved", "auto_generated"}:
+        source = "manual"
+    oracle = str(row.get("oracle") or "teacher")
+    if oracle not in {"teacher", "llm_verified"}:
+        oracle = "teacher"
+    visibility = str(row.get("visibility") or "hidden")
+    if visibility not in {"public", "hidden"}:
+        visibility = "hidden"
+
+    fixture_models = [
+        TestFixture(name=str(fixture.get("name") or ""), content=str(fixture.get("content") or ""))
+        for fixture in (row.get("files") or [])
+        if isinstance(fixture, dict)
+    ]
+    validated_fixtures = validate_case_fixtures(fixture_models) if fixture_models else ()
+
+    return FormalTestCase(
+        id=str(row.get("id") or _demo_uuid()),
+        name=str(row.get("name") or "case"),
+        stdin=str(row.get("stdin") or ""),
+        expected_stdout=str(row.get("expected_stdout") or ""),
+        expected_exit_code=int(row.get("expected_exit_code", 0) or 0),
+        visibility=visibility,  # type: ignore[arg-type]
+        files=validated_fixtures,
+        source=source,  # type: ignore[arg-type]
+        oracle=oracle,  # type: ignore[arg-type]
+        oracle_validation=row.get("oracle_validation"),
+    )
+
+
+def _formal_cases_to_sandbox_cases(cases: tuple[FormalTestCase, ...]) -> list[dict[str, Any]]:
+    payload: list[dict[str, Any]] = []
+    for case in cases:
+        payload.append({
+            "id": case.id,
+            "name": case.name,
+            "stdin": case.stdin,
+            "expected_stdout": case.expected_stdout,
+            "expected_exit_code": case.expected_exit_code,
+            "visibility": case.visibility,
+            "files": [{"name": fixture.name, "content": fixture.content} for fixture in case.files],
+            "source": case.source,
+            "oracle": case.oracle,
+        })
+    return payload
+
+
+def _test_selection_provenance(selection: TestSelection) -> dict[str, Any]:
+    return {
+        "testSource": selection.source,
+        "testSetId": selection.test_set_id,
+        "testSetHash": selection.cache_key,
+        "cacheVersion": selection.cache_version,
+        "testEvidenceStatus": selection.test_evidence_status,
+    }
+
+
+async def _fetch_faculty_formal_test_cases(assignment_id: str) -> tuple[FormalTestCase, ...]:
+    if not assignment_id or not str(assignment_id).strip():
+        return ()
+    aid = str(assignment_id).strip()
+    try:
+        uuid.UUID(aid)
+    except (ValueError, AttributeError):
+        return ()
+
+    if _DEMO_MODE:
+        rows = [
+            _assignment_test_case_response(row)
+            for row in _DEMO_STORE.get("assignment_test_cases", [])
+            if isinstance(row, dict) and str(row.get("assignment_id")) == aid
+        ]
+        rows.sort(key=lambda row: (row["display_order"], row["name"]))
+        return tuple(_assignment_row_to_formal_case(row) for row in rows)
+
+    pool = await _get_db_pool()
+    rows = await pool.fetch(
+        """
+        SELECT id, assignment_id, name, stdin, expected_stdout, expected_exit_code,
+               visibility, source, display_order, files, oracle, oracle_validation, generated_set_id
+        FROM public.assignment_test_cases
+        WHERE assignment_id = $1::uuid
+        ORDER BY display_order ASC, created_at ASC
+        """,
+        aid,
+    )
+    return tuple(_assignment_row_to_formal_case(_assignment_test_case_response(row)) for row in rows)
+
+
+async def _build_assignment_test_context(
+    assignment_id: str,
+    *,
+    assignment_brief: str = "",
+    faculty_rubric_criteria: list[dict[str, Any]] | None = None,
+) -> AssignmentTestContext:
+    aid = str(assignment_id).strip()
+    rubric = list(faculty_rubric_criteria or [])
+    if not rubric:
+        rubric = await _fetch_faculty_rubric_criteria_for_pipeline(aid)
+
+    if _DEMO_MODE:
+        assignment = next(
+            (a for a in _DEMO_STORE.get("assignments", []) if str(a.get("id")) == aid),
+            None,
+        )
+        if assignment is None:
+            return AssignmentTestContext(
+                assignment_id=aid,
+                title="",
+                description=(assignment_brief or "").strip(),
+                rubric=rubric,
+                difficulty="medium",
+            )
+        enriched = await _with_assignment_difficulty(dict(assignment))
+        return AssignmentTestContext(
+            assignment_id=aid,
+            title=str(enriched.get("name") or ""),
+            description=str(enriched.get("description") or ""),
+            rubric=rubric,
+            difficulty=normalize_difficulty(enriched.get("difficulty")),
+        )
+
+    pool = await _get_db_pool()
+    row = await pool.fetchrow(
+        """
+        SELECT id, name, description, difficulty, difficulty_source
+        FROM public.assignments
+        WHERE id = $1::uuid
+        LIMIT 1
+        """,
+        _parse_assignment_uuid_param(aid),
+    )
+    if row is None:
+        return AssignmentTestContext(
+            assignment_id=aid,
+            title="",
+            description=(assignment_brief or "").strip(),
+            rubric=rubric,
+            difficulty="medium",
+        )
+    enriched = await _with_assignment_difficulty(dict(row), pool)
+    return AssignmentTestContext(
+        assignment_id=aid,
+        title=str(enriched.get("name") or ""),
+        description=str(enriched.get("description") or ""),
+        rubric=rubric,
+        difficulty=normalize_difficulty(enriched.get("difficulty")),
+    )
+
+
+async def _get_testing_redis_client():
+    global _REDIS_CLIENT
+    if _REDIS_CLIENT is None:
+        _REDIS_CLIENT = create_redis_client(settings.redis_url)
+        await _REDIS_CLIENT.ping()
+    return _REDIS_CLIENT
+
+
+async def _unavailable_test_selection() -> TestSelection:
+    return TestSelection(
+        cases=(),
+        source="none",
+        test_evidence_status="unavailable",
+    )
+
+
+TestSelectionProvider = Callable[..., Awaitable[TestSelection]]
+
+
+async def _default_test_selection_provider(
+    *,
+    assignment_id: str | None,
+    file_name: str,
+    assignment_brief: str = "",
+    faculty_rubric_criteria: list[dict[str, Any]] | None = None,
+) -> TestSelection:
+    if not assignment_id or not str(assignment_id).strip():
+        return await _unavailable_test_selection()
+
+    context = await _build_assignment_test_context(
+        assignment_id,
+        assignment_brief=assignment_brief,
+        faculty_rubric_criteria=faculty_rubric_criteria,
+    )
+    language = _pipeline_language_from_file_name(file_name)
+
+    async def load_faculty() -> tuple[FormalTestCase, ...]:
+        return await _fetch_faculty_formal_test_cases(assignment_id)
+
+    store = await _get_generated_test_set_store()
+    redis = await _get_testing_redis_client()
+    return await select_tests(
+        context,
+        language,
+        load_faculty=load_faculty,
+        store=store,
+        redis=redis,
+        generate_once=generate_and_verify_once,
+    )
+
+
+async def _resolve_pipeline_test_selection(
+    *,
+    assignment_id: str | None,
+    file_name: str,
+    assignment_brief: str = "",
+    faculty_rubric_criteria: list[dict[str, Any]] | None = None,
+    test_selection_provider: TestSelectionProvider | None = None,
+) -> TestSelection:
+    provider = test_selection_provider or _default_test_selection_provider
+    if provider is _default_test_selection_provider and not assignment_id:
+        return await _unavailable_test_selection()
+    return await provider(
+        assignment_id=assignment_id,
+        file_name=file_name,
+        assignment_brief=assignment_brief,
+        faculty_rubric_criteria=faculty_rubric_criteria,
+    )
+
+
 async def run_analysis_pipeline(
     file_name: str,
     file_content: str,
     *,
+    assignment_id: str | None = None,
     assignment_brief: str = "",
     faculty_rubric_criteria: list[dict[str, Any]] | None = None,
     test_cases: list[dict[str, Any]] | None = None,
     report_language: str = "tr",
     progress_callback: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
+    test_selection_provider: TestSelectionProvider | None = None,
 ) -> dict[str, Any]:
     if not tracemalloc.is_tracing():
         tracemalloc.start()
@@ -4291,11 +4546,13 @@ async def run_analysis_pipeline(
         return await _run_analysis_pipeline_body(
             file_name,
             file_content,
+            assignment_id=assignment_id,
             assignment_brief=assignment_brief,
             faculty_rubric_criteria=faculty_rubric_criteria,
             test_cases=test_cases,
             report_language=report_language,
             progress_callback=progress_callback,
+            test_selection_provider=test_selection_provider,
         )
     finally:
         if tracemalloc.is_tracing():
@@ -4306,19 +4563,17 @@ async def _run_analysis_pipeline_body(
     file_name: str,
     file_content: str,
     *,
+    assignment_id: str | None = None,
     assignment_brief: str = "",
     faculty_rubric_criteria: list[dict[str, Any]] | None = None,
     test_cases: list[dict[str, Any]] | None = None,
     report_language: str = "tr",
     progress_callback: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
+    test_selection_provider: TestSelectionProvider | None = None,
 ) -> dict[str, Any]:
     start_time = time.time()
 
-    language = "python"
-    if file_name.endswith((".c", ".cpp", ".h")):
-        language = "c++"
-    elif file_name.endswith(".java"):
-        language = "java"
+    language = _pipeline_language_from_file_name(file_name)
 
     from backend.sandbox.executor import require_sandbox_pool
 
@@ -4330,7 +4585,15 @@ async def _run_analysis_pipeline_body(
 
     brief = (assignment_brief or "").strip()
     fac = list(faculty_rubric_criteria) if faculty_rubric_criteria else []
-    pipeline_test_cases = _normalize_pipeline_test_cases(test_cases)
+    test_selection = await _resolve_pipeline_test_selection(
+        assignment_id=assignment_id,
+        file_name=file_name,
+        assignment_brief=brief,
+        faculty_rubric_criteria=fac,
+        test_selection_provider=test_selection_provider,
+    )
+    pipeline_test_cases = _formal_cases_to_sandbox_cases(test_selection.cases)
+    test_provenance = _test_selection_provenance(test_selection)
     if fac:
         print(f"[pipeline] Ogretmen rubrigi: {len(fac)} kriter", flush=True)
 
@@ -4454,6 +4717,7 @@ async def _run_analysis_pipeline_body(
             "assignment_description": brief,
             "faculty_rubric_criteria": fac,
             "task_alignment": task_alignment,
+            **_pipeline_test_provenance(pipeline_test_cases),
         })
         return sb, ta
 
@@ -4619,6 +4883,7 @@ async def _run_analysis_pipeline_body(
         "relevanceScoreWarning": relevance_score_warning,
         "taskAlignment": task_alignment,
         "reportStatus": "preparing",
+        **test_provenance,
         "agentDiagnostics": _build_agent_diagnostics(
             {
                 "code_quality": cq,
@@ -5284,11 +5549,6 @@ async def _enqueue_analysis_request(req: AnalysisRequest, principal: AuthPrincip
     await _require_analysis_ready(store)
     brief = await _fetch_assignment_brief_for_pipeline(req.assignment_id)
     faculty = await _fetch_faculty_rubric_criteria_for_pipeline(req.assignment_id)
-    saved_test_cases = (
-        await _fetch_assignment_test_cases_for_pipeline(req.assignment_id)
-        if req.test_cases is None
-        else req.test_cases
-    )
     owner = AnalysisJobOwner(
         owner_user_id=principal.user_id,
         owner_role="student",
@@ -5302,7 +5562,6 @@ async def _enqueue_analysis_request(req: AnalysisRequest, principal: AuthPrincip
         "assignment_id": req.assignment_id,
         "assignment_brief": brief,
         "faculty_rubric_criteria": faculty,
-        "test_cases": saved_test_cases or [],
         "report_language": req.report_language or "tr",
         "student_no": (profile.get("student_no") or "").strip(),
     }, owner=owner)
