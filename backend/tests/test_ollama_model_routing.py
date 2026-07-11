@@ -1,3 +1,4 @@
+import asyncio
 import unittest
 from unittest.mock import AsyncMock, patch
 
@@ -469,3 +470,124 @@ class GptOssClientTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNotNone(text_request.await_args)
         payload = text_request.await_args.args[0]
         self.assertEqual(payload["think"], "medium")
+
+
+class ChatJsonMetadataConcurrencyTests(unittest.IsolatedAsyncioTestCase):
+    async def test_chat_json_with_metadata_returns_dataclass_with_provider_and_model(self):
+        from backend.llm.ollama_client import ChatJsonResult, chat_json_with_metadata
+
+        with (
+            patch.object(settings, "llm_provider", "ollama"),
+            patch.object(settings, "llm_coder_provider", "ollama"),
+            patch.object(settings, "llm_general_provider", "ollama"),
+            patch(
+                "backend.llm.ollama_client._do_request",
+                new=AsyncMock(return_value={"value": 42}),
+            ),
+        ):
+            result = await chat_json_with_metadata(
+                system_prompt="sys",
+                user_prompt="usr",
+                model="qwen2.5-coder:7b",
+                use_cache=False,
+            )
+
+        self.assertIsInstance(result, ChatJsonResult)
+        self.assertEqual(result.data, {"value": 42})
+        self.assertEqual(result.provider, "ollama")
+        self.assertEqual(result.model, "qwen2.5-coder:7b")
+        self.assertFalse(result.fallback_used)
+
+    async def test_chat_json_with_metadata_concurrent_calls_do_not_cross_contaminate(self):
+        from backend.llm.ollama_client import ChatJsonResult, chat_json_with_metadata
+
+        ollama_model = settings.ollama_general_model
+        nim_model = "meta/llama-test-nim"
+
+        async def fast_ollama(_payload):
+            return {"route": "ollama"}
+
+        async def slow_nim(_payload):
+            await asyncio.sleep(0.1)
+            return {"route": "nim"}
+
+        with (
+            patch.object(settings, "ollama_enabled", True),
+            patch.object(settings, "llm_provider", "ollama"),
+            patch.object(settings, "llm_general_provider", "ollama"),
+            patch.object(settings, "llm_coder_provider", "ollama"),
+            patch.object(settings, "nvidia_nim_api_key", "secret-key", create=True),
+            patch.object(settings, "nvidia_nim_general_model", nim_model, create=True),
+            patch("backend.llm.ollama_client._do_request", new=fast_ollama),
+            patch(
+                "backend.llm.ollama_client._do_nvidia_nim_request",
+                new=slow_nim,
+                create=True,
+            ),
+        ):
+            result_a, result_b = await asyncio.gather(
+                chat_json_with_metadata(
+                    system_prompt="sys",
+                    user_prompt="ollama",
+                    model=ollama_model,
+                    use_cache=False,
+                ),
+                chat_json_with_metadata(
+                    system_prompt="sys",
+                    user_prompt="nim",
+                    provider_override="nvidia_nim",
+                    model=ollama_model,
+                    use_cache=False,
+                ),
+            )
+
+        self.assertIsInstance(result_a, ChatJsonResult)
+        self.assertIsInstance(result_b, ChatJsonResult)
+        self.assertEqual(result_a.provider, "ollama")
+        self.assertEqual(result_a.model, ollama_model)
+        self.assertFalse(result_a.fallback_used)
+        self.assertEqual(result_b.provider, "nvidia_nim")
+        self.assertEqual(result_b.model, nim_model)
+        self.assertFalse(result_b.fallback_used)
+
+    async def test_chat_json_with_metadata_does_not_mutate_global_diagnostics_snapshot(self):
+        from backend.llm.ollama_client import chat_json_with_metadata
+
+        with (
+            patch.object(settings, "llm_provider", "ollama"),
+            patch.object(settings, "llm_general_provider", "ollama"),
+            patch(
+                "backend.llm.ollama_client._do_request",
+                new=AsyncMock(return_value={"ok": True}),
+            ),
+        ):
+            _ = get_llm_diagnostics_snapshot()
+            before = get_llm_diagnostics_snapshot()
+            await chat_json_with_metadata(
+                system_prompt="sys",
+                user_prompt="usr",
+                use_cache=False,
+            )
+            after = get_llm_diagnostics_snapshot()
+
+        self.assertEqual(before, after)
+
+    async def test_chat_json_still_returns_plain_dict_for_existing_callers(self):
+        with (
+            patch.object(settings, "llm_provider", "ollama"),
+            patch.object(settings, "llm_coder_provider", "ollama"),
+            patch.object(settings, "llm_general_provider", "ollama"),
+            patch(
+                "backend.llm.ollama_client._do_request",
+                new=AsyncMock(return_value={"ok": True}),
+            ),
+        ):
+            result = await chat_json(
+                system_prompt="Return JSON.",
+                user_prompt="{}",
+                model="qwen2.5-coder:7b",
+                use_cache=False,
+            )
+
+        self.assertEqual(result, {"ok": True})
+        self.assertIsInstance(result, dict)
