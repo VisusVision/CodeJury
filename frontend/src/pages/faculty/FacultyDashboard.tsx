@@ -32,7 +32,10 @@ import {
   getEvaluations,
   getRubrics,
   updateRubricStatusByAssignment,
+  updateAssignmentDifficulty,
   type EvaluationRecord,
+  type AssignmentDifficulty,
+  type Assignment as ApiAssignment,
 } from "@/services/api";
 
 interface Teacher {
@@ -61,9 +64,31 @@ interface Assignment {
   description: string | null;
   course_id: string;
   due_date: string | null;
+  difficulty?: AssignmentDifficulty;
+  difficulty_source?: ApiAssignment["difficulty_source"];
 }
 
 type Tab = "departments" | "courses" | "assignments" | "students" | "evaluations" | "settings";
+
+const difficultySourceLabel = (source?: ApiAssignment["difficulty_source"]) => {
+  switch (source) {
+    case "teacher":
+      return "Öğretmen";
+    case "ai_selected":
+      return "AI seçimi";
+    case "inferred":
+      return "Çıkarıldı";
+    case "default":
+    default:
+      return "Varsayılan";
+  }
+};
+
+const difficultyOptions: { value: AssignmentDifficulty; label: string }[] = [
+  { value: "easy", label: "Kolay" },
+  { value: "medium", label: "Orta" },
+  { value: "hard", label: "Zor" },
+];
 
 interface RubricModalState {
   open: boolean;
@@ -104,6 +129,8 @@ const FacultyDashboard = () => {
   const [selectedCourseId, setSelectedCourseId] = useState("");
   const [dueDate, setDueDate] = useState<Date | undefined>(undefined);
   const [dueTime, setDueTime] = useState("23:59");
+  const [manualDifficulty, setManualDifficulty] = useState<AssignmentDifficulty>("medium");
+  const [difficultyUpdatingId, setDifficultyUpdatingId] = useState<string | null>(null);
 
   useEffect(() => {
     if (status === "loading") return;
@@ -289,6 +316,8 @@ const FacultyDashboard = () => {
         description,
         course_id: selectedCourseId,
         due_date: dueDateISO,
+        difficulty: manualDifficulty,
+        creation_mode: "manual",
       });
       toast.success("Ödev eklendi");
       setNewAssignmentName("");
@@ -323,6 +352,29 @@ const FacultyDashboard = () => {
       await fetchAll();
     } catch (err: unknown) {
       toast.error(getErrorMessage(err, "Onaylama başarısız"));
+    }
+  };
+
+  const handleDifficultyUpdate = async (assignmentId: string, difficulty: AssignmentDifficulty) => {
+    setDifficultyUpdatingId(assignmentId);
+    try {
+      const updated = await updateAssignmentDifficulty(assignmentId, difficulty);
+      setAssignments((prev) =>
+        prev.map((assignment) =>
+          assignment.id === assignmentId
+            ? {
+                ...assignment,
+                difficulty: updated.difficulty,
+                difficulty_source: updated.difficulty_source,
+              }
+            : assignment,
+        ),
+      );
+      toast.success("Zorluk guncellendi");
+    } catch (err: unknown) {
+      toast.error(getErrorMessage(err, "Zorluk guncellenemedi"));
+    } finally {
+      setDifficultyUpdatingId(null);
     }
   };
 
@@ -555,6 +607,8 @@ const FacultyDashboard = () => {
                 </div>
                 <div className="flex flex-col gap-3">
                   <select
+                    id="manual-assignment-course"
+                    aria-label="Ders secimi"
                     value={selectedCourseId}
                     onChange={(e) => setSelectedCourseId(e.target.value)}
                     className="px-3 py-2 rounded-lg border border-input bg-background text-foreground text-sm focus:outline-none focus:ring-2 focus:ring-ring"
@@ -578,6 +632,20 @@ const FacultyDashboard = () => {
                     rows={4}
                     className="px-3 py-2 rounded-lg border border-input bg-background text-foreground text-sm placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring resize-none"
                   />
+                  <label className="text-xs font-medium text-muted-foreground" htmlFor="manual-assignment-difficulty">
+                    Zorluk
+                  </label>
+                  <select
+                    id="manual-assignment-difficulty"
+                    aria-label="Zorluk"
+                    value={manualDifficulty}
+                    onChange={(e) => setManualDifficulty(e.target.value as AssignmentDifficulty)}
+                    className="px-3 py-2 rounded-lg border border-input bg-background text-foreground text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                  >
+                    {difficultyOptions.map((option) => (
+                      <option key={option.value} value={option.value}>{option.label}</option>
+                    ))}
+                  </select>
                   <div className="rounded-lg border border-primary/20 bg-primary/5 px-3 py-2">
                     <div className="mb-1.5 flex items-center gap-2">
                       <p className="text-[10px] font-semibold uppercase tracking-wider text-primary">Örnek Çıktı</p>
@@ -720,6 +788,22 @@ const FacultyDashboard = () => {
                                 {course?.name || "—"}{course?.code ? ` (${course.code})` : ""}{course?.class_year ? ` - ${course.class_year}. ${t("courses.classYear")}` : ""}
                                 {a.due_date && ` · ${format(new Date(a.due_date), "dd MMM yyyy HH:mm", { locale: dateLocale })}`}
                               </p>
+                              <div className="mt-1 flex flex-wrap items-center gap-2">
+                                <span className="rounded-full bg-muted px-2 py-0.5 text-[10px] font-semibold text-muted-foreground">
+                                  {difficultySourceLabel(a.difficulty_source)}
+                                </span>
+                                <select
+                                  aria-label={`Zorluk duzenle ${a.name}`}
+                                  value={a.difficulty ?? "medium"}
+                                  disabled={difficultyUpdatingId === a.id}
+                                  onChange={(e) => void handleDifficultyUpdate(a.id, e.target.value as AssignmentDifficulty)}
+                                  className="rounded-md border border-input bg-background px-2 py-1 text-[11px] text-foreground focus:outline-none focus:ring-2 focus:ring-ring disabled:opacity-60"
+                                >
+                                  {difficultyOptions.map((option) => (
+                                    <option key={option.value} value={option.value}>{option.label}</option>
+                                  ))}
+                                </select>
+                              </div>
                             </div>
                           </div>
                           <div className="flex items-center gap-2 shrink-0">

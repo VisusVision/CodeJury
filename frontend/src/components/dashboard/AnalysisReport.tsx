@@ -21,6 +21,11 @@ import {
 
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import ExecutionStats from "./ExecutionStats";
+import FormalTestResults, {
+  type FormalTestProvenance,
+  type FormalTestResult,
+  type FormalTestSummary,
+} from "./FormalTestResults";
 import {
   partitionEvidence,
   type EvidenceItem,
@@ -43,16 +48,7 @@ interface Finding {
   code?: string;
 }
 
-export interface TestResult {
-  name: string;
-  input: string;
-  expected: string;
-  actual: string;
-  passed: boolean;
-  visibility?: "public" | "hidden";
-  matchPct?: number;
-  diffDetail?: string;
-}
+export type TestResult = FormalTestResult;
 
 interface AgentReport {
   id: string;
@@ -106,6 +102,15 @@ export interface ReportData {
   taskAlignment?: TaskAlignment;
   reportStatus?: "preparing" | "ready";
   agentDiagnostics?: import("@/services/api").ApiAgentDiagnostics;
+  testSource?: string;
+  testEvidenceStatus?: "available" | "unavailable";
+  formalPassed?: number;
+  formalTotal?: number;
+  hiddenTestSummary?: FormalTestSummary;
+  testSetId?: string;
+  testSetHash?: string;
+  cacheVersion?: number;
+  audience?: "student" | "teacher";
 }
 
 /* ─── Mock report generator ─── */
@@ -332,52 +337,13 @@ function FindingRow({ f }: { f: Finding }) {
   );
 }
 
-function outputText(value: string) {
-  return value.trim() || "(cikti yok)";
-}
-
-function TestOutputBlock({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="min-w-0">
-      <div className="mb-1 text-[10px] font-semibold uppercase text-muted-foreground">{label}</div>
-      <pre className="max-h-32 overflow-auto rounded-md border border-border bg-background px-3 py-2 font-mono-code text-[11px] leading-relaxed text-foreground whitespace-pre-wrap break-words">
-        {outputText(value)}
-      </pre>
-    </div>
-  );
-}
-
-function TestResultCard({ test }: { test: TestResult }) {
-  const Icon = test.passed ? CheckCircle2 : XCircle;
-  const statusText = test.passed ? "Gecti" : "Basarisiz";
-  return (
-    <div className="rounded-lg border border-border bg-background p-3">
-      <div className="flex flex-wrap items-center gap-2">
-        <Icon className={`h-4 w-4 ${test.passed ? "text-success" : "text-destructive"}`} />
-        <span className="text-xs font-semibold text-foreground">{test.name}</span>
-        <span className={`rounded-full px-2 py-0.5 text-[10px] font-semibold ${test.passed ? "bg-success/10 text-success" : "bg-destructive/10 text-destructive"}`}>
-          {statusText}
-        </span>
-        {test.visibility === "hidden" ? (
-          <span className="rounded-full bg-muted px-2 py-0.5 text-[10px] font-semibold text-muted-foreground">Gizli test</span>
-        ) : null}
-        {typeof test.matchPct === "number" ? (
-          <span className="ml-auto text-[10px] font-medium text-muted-foreground">%{Math.round(test.matchPct)} eslesme</span>
-        ) : null}
-      </div>
-      <div className="mt-3 grid gap-2 lg:grid-cols-3">
-        <TestOutputBlock label="Input" value={test.input} />
-        <TestOutputBlock label="Beklenen Output" value={test.expected} />
-        <TestOutputBlock label="Senin Output'un" value={test.actual} />
-      </div>
-      {test.diffDetail ? (
-        <p className="mt-2 rounded-md bg-destructive/10 px-3 py-2 text-[11px] leading-relaxed text-destructive">{test.diffDetail}</p>
-      ) : null}
-    </div>
-  );
-}
-
-function AgentSection({ agent }: { agent: AgentReport }) {
+function AgentSection({
+  agent,
+  report,
+}: {
+  agent: AgentReport;
+  report: ReportData;
+}) {
   const [open, setOpen] = useState(false);
   const Icon = agent.icon;
   const pct = Math.round((agent.score / agent.maxScore) * 100);
@@ -401,7 +367,24 @@ function AgentSection({ agent }: { agent: AgentReport }) {
                 <FlaskConical className="h-3.5 w-3.5" />
                 Test Case Sonuclari
               </div>
-              {agent.testResults.map((test, i) => <TestResultCard key={`${test.name}-${i}`} test={test} />)}
+              <FormalTestResults
+                audience={report.audience ?? "student"}
+                testResults={agent.testResults}
+                hiddenTestSummary={report.hiddenTestSummary}
+                provenance={
+                  agent.id === "testing"
+                    ? ({
+                        testSource: report.testSource,
+                        testEvidenceStatus: report.testEvidenceStatus,
+                        formalPassed: report.formalPassed,
+                        formalTotal: report.formalTotal,
+                        testSetId: report.testSetId,
+                        testSetHash: report.testSetHash,
+                        cacheVersion: report.cacheVersion,
+                      } satisfies FormalTestProvenance)
+                    : null
+                }
+              />
             </div>
           ) : null}
           {agent.findings.map((f, i) => <FindingRow key={i} f={f} />)}
@@ -682,7 +665,7 @@ const AnalysisReport = ({ report, onClose }: AnalysisReportProps) => {
 
           <TabsContent value="agents" className="space-y-3 mt-4">
             {report.agents.map((agent) => (
-              <AgentSection key={agent.id} agent={agent} />
+              <AgentSection key={agent.id} agent={agent} report={report} />
             ))}
           </TabsContent>
 

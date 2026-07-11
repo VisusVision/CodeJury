@@ -331,6 +331,27 @@ const savePersistedState = (assignmentId: string, studentNo: string, state: Pers
   }
 };
 
+function mapFormalTestResult(raw: import("@/services/api").ApiTestResult): import("./AnalysisReport").TestResult {
+  return {
+    name: raw.name,
+    input: raw.input,
+    expected: raw.expected,
+    actual: raw.actual,
+    passed: raw.passed,
+    visibility: raw.visibility,
+    status: raw.status,
+    source: raw.source,
+    matchPct: raw.matchPct,
+    diffDetail: raw.diffDetail,
+    errorType: raw.errorType,
+    errorMessageTr: raw.errorMessageTr,
+    actualStderr: raw.actualStderr,
+    files: raw.files,
+    oracleValidation: raw.oracleValidation,
+    id: raw.id,
+  };
+}
+
 function buildReportData(result: ApiAnalysisResult, fileContent: string): ReportData {
   return {
     totalScore: result.totalScore,
@@ -339,6 +360,7 @@ function buildReportData(result: ApiAnalysisResult, fileContent: string): Report
     agents: result.agents.map((agent) => ({
       ...agent,
       icon: agentIconMap[agent.id] || FlaskConical,
+      testResults: agent.testResults?.map(mapFormalTestResult),
     })),
     evidence: result.evidence,
     rejectedClaims: result.rejectedClaims ?? [],
@@ -356,6 +378,15 @@ function buildReportData(result: ApiAnalysisResult, fileContent: string): Report
     taskAlignment: result.taskAlignment,
     reportStatus: result.reportStatus ?? "ready",
     agentDiagnostics: result.agentDiagnostics,
+    testSource: result.testSource,
+    testEvidenceStatus: result.testEvidenceStatus,
+    formalPassed: result.formalPassed,
+    formalTotal: result.formalTotal,
+    hiddenTestSummary: result.hiddenTestSummary,
+    testSetId: result.testSetId,
+    testSetHash: result.testSetHash,
+    cacheVersion: result.cacheVersion,
+    audience: "student",
   };
 }
 

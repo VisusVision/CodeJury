@@ -427,6 +427,8 @@ const AssignmentChatbot = ({ open, onClose, courses, teacherId, onCreated }: Pro
         description: descriptionWithExample(description, exampleBody(assignmentExample).trim() || buildAssignmentExample(normalizedTitle, description)),
         course_id: course.id,
         due_date: d.toISOString(),
+        difficulty: difficultyLevel ?? "medium",
+        creation_mode: "ai_assistant",
       });
       toast.success(t("chatbot.createdSuccessShort"));
       addMsg({ from: "bot", text: t("chatbot.createdSuccess") });
