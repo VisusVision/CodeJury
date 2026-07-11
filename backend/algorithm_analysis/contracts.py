@@ -81,6 +81,6 @@ class AlgorithmDetection(StrictFrozenModel):
 
 class GapResult(StrictFrozenModel):
     status: GapStatus
-    steps: int
+    steps: int | None = None
     approach_mismatch: bool
     explanation: str
