@@ -265,6 +265,18 @@ def test_single_direct_recursion_is_not_branching_recursion() -> None:
     assert "branching_recursion" not in detection.names
 
 
+def test_comment_membership_with_dict_is_not_hash_lookup() -> None:
+    source = (
+        "def demo(xs):\n"
+        "    # if x in seen:\n"
+        "    seen = {}\n"
+        "    return seen\n"
+    )
+    detection = _detect(source)
+
+    assert "hash_lookup" not in detection.names
+
+
 def test_list_allocation_without_table_access_is_not_dynamic_programming() -> None:
     source = (
         "def running_total(n):\n"
@@ -337,6 +349,14 @@ def test_high_confidence_evidence_uses_algorithm_evidence_contract() -> None:
     assert entry.line >= 1
     assert entry.detail
     assert 0.0 <= entry.confidence <= 1.0
+
+
+def test_sorting_reports_n_log_n_time_complexity() -> None:
+    source = next(source for family, source in _POSITIVE_EXAMPLES if family == "sorting")
+    detection = _detect(source)
+
+    assert detection.time_complexity is not None
+    assert detection.time_complexity.expression == "O(n log n)"
 
 
 def test_brute_force_nested_scan_reports_quadratic_time_complexity() -> None:

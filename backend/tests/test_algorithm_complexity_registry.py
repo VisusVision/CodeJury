@@ -50,6 +50,27 @@ def test_whitespace_and_case_normalization() -> None:
     assert estimate.rank == 2
 
 
+def test_n_log_n_preserves_internal_whitespace() -> None:
+    estimate = normalize_complexity("O(n log n)", source="python_ast", confidence=0.9)
+    assert estimate.expression == "O(n log n)"
+    assert estimate.family == "single_variable"
+    assert estimate.rank == SINGLE_VARIABLE_ORDER.index("O(n log n)")
+
+
+def test_graph_n_log_v_preserves_internal_whitespace() -> None:
+    estimate = normalize_complexity("O((V+E) log V)", source="python_ast", confidence=0.9)
+    assert estimate.expression == "O((V+E) log V)"
+    assert estimate.family == "graph"
+    assert estimate.rank == GRAPH_ORDER.index("O((V+E) log V)")
+
+
+def test_matrix_rc_log_rc_preserves_internal_whitespace() -> None:
+    estimate = normalize_complexity("O(rc log(rc))", source="python_ast", confidence=0.9)
+    assert estimate.expression == "O(rc log(rc))"
+    assert estimate.family == "matrix"
+    assert estimate.rank == MATRIX_ORDER.index("O(rc log(rc))")
+
+
 def test_matrix_family_has_safe_order() -> None:
     expected = normalize_complexity("O(rc)", source="verified_expectation", confidence=1.0)
     actual = normalize_complexity("O(r^2c^2)", source="python_ast", confidence=0.9)

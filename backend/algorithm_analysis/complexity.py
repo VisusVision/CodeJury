@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import re
+
 from backend.algorithm_analysis.contracts import (
     ComplexityEstimate,
     ComplexityFamily,
@@ -29,7 +31,11 @@ _FAMILY_REGISTRIES: tuple[tuple[ComplexityFamily, tuple[str, ...]], ...] = (
 def _canonicalize(raw: str) -> str:
     text = raw.strip()
     text = text.replace("²", "^2").replace("³", "^3")
-    text = "".join(text.split())
+    text = re.sub(r"\s+", " ", text)
+    text = re.sub(r"\(\s+", "(", text)
+    text = re.sub(r"\s+\)", ")", text)
+    text = re.sub(r"\s*\+\s*", "+", text)
+    text = re.sub(r"\s*\^\s*", "^", text)
     if text.lower().startswith("o("):
         text = "O(" + text[2:]
     return text
