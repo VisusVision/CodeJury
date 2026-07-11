@@ -657,7 +657,154 @@ class ApiEndpointTests(unittest.TestCase):
         self.assertEqual(rows[0]["assignment_id"], _DEMO_ASSIGNMENT_ID)
         self.assertEqual(rows[0]["visibility"], "public")
         self.assertEqual(rows[1]["visibility"], "hidden")
-        self.assertEqual(rows[1]["source"], "ai")
+        self.assertEqual(rows[1]["source"], "manual")
+
+    def test_manual_test_case_save_ignores_client_claimed_ai_provenance(self):
+        csrf = self._login_teacher()
+        case = {
+            "name": "client claims ai_approved",
+            "stdin": "1\n",
+            "expected_stdout": "1\n",
+            "expected_exit_code": 0,
+            "visibility": "hidden",
+            "source": "ai_approved",
+        }
+        put_resp = self.client.put(
+            f"/api/assignments/{_DEMO_ASSIGNMENT_ID}/test-cases",
+            json={"test_cases": [case]},
+            headers=self._csrf_headers(csrf),
+        )
+        self.assertEqual(put_resp.status_code, 200)
+        saved = put_resp.json()[0]
+        self.assertEqual(saved["source"], "manual")
+        self.assertEqual(saved["oracle"], "teacher")
+
+    def test_manual_test_case_save_round_trips_files_and_forces_teacher_provenance(self):
+        csrf = self._login_teacher()
+        case = {
+            "name": "csv case",
+            "stdin": "",
+            "expected_stdout": "3\n",
+            "expected_exit_code": 0,
+            "visibility": "hidden",
+            "source": "ai_approved",  # client tries to lie about provenance
+            "files": [{"name": "data.csv", "content": "1\n2\n"}],
+        }
+        put_resp = self.client.put(
+            f"/api/assignments/{_DEMO_ASSIGNMENT_ID}/test-cases",
+            json={"test_cases": [case]},
+            headers=self._csrf_headers(csrf),
+        )
+        self.assertEqual(put_resp.status_code, 200)
+        saved = put_resp.json()[0]
+        self.assertEqual(saved["files"], case["files"])
+        self.assertEqual(saved["source"], "manual")
+        self.assertEqual(saved["oracle"], "teacher")
+
+        get_resp = self.client.get(f"/api/assignments/{_DEMO_ASSIGNMENT_ID}/test-cases")
+        self.assertEqual(get_resp.status_code, 200)
+        listed = get_resp.json()[0]
+        self.assertEqual(listed["files"], case["files"])
+        self.assertEqual(listed["source"], "manual")
+        self.assertEqual(listed["oracle"], "teacher")
+
+    def test_manual_test_case_save_rejects_unsafe_fixture_path(self):
+        csrf = self._login_teacher()
+        base_case = {
+            "name": "unsafe fixture",
+            "stdin": "",
+            "expected_stdout": "x\n",
+            "expected_exit_code": 0,
+            "visibility": "hidden",
+        }
+
+        traversal_resp = self.client.put(
+            f"/api/assignments/{_DEMO_ASSIGNMENT_ID}/test-cases",
+            json={
+                "test_cases": [
+                    {**base_case, "files": [{"name": "../escape.txt", "content": "x"}]}
+                ]
+            },
+            headers=self._csrf_headers(csrf),
+        )
+        self.assertEqual(traversal_resp.status_code, 400)
+
+        exe_resp = self.client.put(
+            f"/api/assignments/{_DEMO_ASSIGNMENT_ID}/test-cases",
+            json={
+                "test_cases": [
+                    {**base_case, "name": "exe fixture", "files": [{"name": "virus.exe", "content": "x"}]}
+                ]
+            },
+            headers=self._csrf_headers(csrf),
+        )
+        self.assertEqual(exe_resp.status_code, 400)
+
+    def test_manual_test_case_save_rejects_oversized_fixture(self):
+        csrf = self._login_teacher()
+        oversized_content = "x" * (64 * 1024 + 1)
+        resp = self.client.put(
+            f"/api/assignments/{_DEMO_ASSIGNMENT_ID}/test-cases",
+            json={
+                "test_cases": [
+                    {
+                        "name": "oversized fixture",
+                        "stdin": "",
+                        "expected_stdout": "ok\n",
+                        "expected_exit_code": 0,
+                        "visibility": "hidden",
+                        "files": [{"name": "big.txt", "content": oversized_content}],
+                    }
+                ]
+            },
+            headers=self._csrf_headers(csrf),
+        )
+        self.assertEqual(resp.status_code, 400)
+
+    def test_legacy_ai_source_test_case_reads_back_as_ai_approved(self):
+        legacy_id = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+        main._DEMO_STORE.setdefault("assignment_test_cases", []).append(
+            {
+                "id": legacy_id,
+                "assignment_id": _DEMO_ASSIGNMENT_ID,
+                "name": "legacy ai case",
+                "stdin": "1\n",
+                "expected_stdout": "1\n",
+                "expected_exit_code": 0,
+                "visibility": "hidden",
+                "source": "ai",
+                "display_order": 99,
+            }
+        )
+
+        csrf = self._login_teacher()
+        get_resp = self.client.get(
+            f"/api/assignments/{_DEMO_ASSIGNMENT_ID}/test-cases",
+            headers=self._csrf_headers(csrf),
+        )
+        self.assertEqual(get_resp.status_code, 200)
+        legacy_row = next(row for row in get_resp.json() if row["id"] == legacy_id)
+        self.assertEqual(legacy_row["source"], "ai_approved")
+
+    def test_manual_test_case_save_defaults_missing_files_to_empty_list(self):
+        csrf = self._login_teacher()
+        resp = self.client.put(
+            f"/api/assignments/{_DEMO_ASSIGNMENT_ID}/test-cases",
+            json={
+                "test_cases": [
+                    {
+                        "name": "no files key",
+                        "stdin": "",
+                        "expected_stdout": "0\n",
+                        "expected_exit_code": 0,
+                        "visibility": "public",
+                    }
+                ]
+            },
+            headers=self._csrf_headers(csrf),
+        )
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.json()[0]["files"], [])
 
     def test_analyze_uses_saved_assignment_test_cases_when_request_has_no_override(self):
         main._DEMO_STORE.setdefault("assignment_test_cases", []).append(

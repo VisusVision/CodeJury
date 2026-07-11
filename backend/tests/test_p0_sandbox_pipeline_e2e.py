@@ -146,6 +146,36 @@ def _good_algorithm_payload() -> dict:
 
 
 class P0SandboxChainE2ETests(unittest.TestCase):
+    def test_normalize_pipeline_test_cases_strips_provenance_and_files_fields_from_sandbox_payload(self):
+        faculty_case = {
+            "name": "faculty case",
+            "stdin": "2\n",
+            "expected_stdout": "4\n",
+            "expected_exit_code": 0,
+            "visibility": "hidden",
+            "files": [{"name": "data.csv", "content": "1,2\n"}],
+            "source": "manual",
+            "oracle": "teacher",
+            "oracle_validation": {
+                "status": "verified",
+                "provider": "ollama",
+                "model": "qwen",
+                "schema_version": "1",
+                "verified_at": "2026-07-11T00:00:00Z",
+            },
+            "generated_set_id": "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+        }
+        normalized = main._normalize_pipeline_test_cases([faculty_case])
+        self.assertEqual(len(normalized), 1)
+        case = normalized[0]
+        self.assertEqual(
+            set(case.keys()),
+            {"name", "stdin", "expected_stdout", "expected_exit_code", "visibility"},
+        )
+        self.assertEqual(case["name"], "faculty case")
+        self.assertEqual(case["stdin"], "2\n")
+        self.assertEqual(case["expected_stdout"], "4\n")
+
     def test_uygun_csv_code_succeeds_when_fixtures_injected(self):
         files = infer_sandbox_files(
             assignment_brief=_CSV_BRIEF,

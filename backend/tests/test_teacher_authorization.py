@@ -616,6 +616,73 @@ class TeacherAuthorizationTests(unittest.TestCase):
         )
         self.assertEqual(put_legacy.status_code, 403)
 
+    def test_assignment_test_case_provenance_fields_not_settable_by_client_across_owners(self):
+        csrf_a = self._login_teacher(self.client_a)
+        _, csrf_b = self._register_teacher_b()
+
+        dept_b = self.client_b.post(
+            "/api/departments",
+            json={"name": "Dept Prov"},
+            headers=self._csrf_headers(csrf_b),
+        )
+        course_b = self.client_b.post(
+            "/api/courses",
+            json={
+                "name": "Course Prov",
+                "code": "CP101",
+                "class_year": 1,
+                "department_id": dept_b.json()["id"],
+            },
+            headers=self._csrf_headers(csrf_b),
+        )
+        with patch.object(main, "_ensure_assignment_safety", new=AsyncMock(return_value=None)):
+            assignment_b = self.client_b.post(
+                "/api/assignments",
+                json={"course_id": course_b.json()["id"], "name": "Assignment Prov"},
+                headers=self._csrf_headers(csrf_b),
+            )
+        assignment_b_id = assignment_b.json()["id"]
+
+        owner_case = {
+            "name": "owner case",
+            "stdin": "1\n",
+            "expected_stdout": "1\n",
+            "expected_exit_code": 0,
+            "visibility": "hidden",
+            "source": "ai_approved",
+            "oracle": "llm_verified",
+            "files": [{"name": "data.csv", "content": "a,b\n"}],
+        }
+        owner_put = self.client_b.put(
+            f"/api/assignments/{assignment_b_id}/test-cases",
+            json={"test_cases": [owner_case]},
+            headers=self._csrf_headers(csrf_b),
+        )
+        self.assertEqual(owner_put.status_code, 200)
+
+        get_cross = self.client_a.get(f"/api/assignments/{assignment_b_id}/test-cases")
+        self.assertEqual(get_cross.status_code, 404)
+
+        put_cross = self.client_a.put(
+            f"/api/assignments/{assignment_b_id}/test-cases",
+            json={
+                "test_cases": [
+                    {
+                        "name": "cross-owner inject",
+                        "stdin": "",
+                        "expected_stdout": "x\n",
+                        "expected_exit_code": 0,
+                        "visibility": "public",
+                        "source": "ai_approved",
+                        "oracle": "llm_verified",
+                        "files": [{"name": "inject.csv", "content": "x\n"}],
+                    }
+                ]
+            },
+            headers=self._csrf_headers(csrf_a),
+        )
+        self.assertEqual(put_cross.status_code, 404)
+
     def test_rubric_upsert_and_patch_cross_owner_and_legacy(self):
         csrf_a = self._login_teacher(self.client_a)
         _, csrf_b = self._register_teacher_b()
