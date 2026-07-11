@@ -820,5 +820,171 @@ class TestAgentSandboxResultsTests(unittest.TestCase):
         self.assertEqual(result["edge_case_handling"], "poor")
 
 
+class TestAgentFormalScoreContractTests(unittest.TestCase):
+    def _formal_sandbox(self, *, passed: int, total: int) -> tuple[dict, list[dict]]:
+        expected_cases: list[dict] = []
+        sandbox_results: list[dict] = []
+        for index in range(total):
+            name = f"case_{index}"
+            visibility = "public" if index % 2 == 0 else "hidden"
+            expected_stdout = f"out_{index}\n"
+            ok = index < passed
+            expected_cases.append({
+                "name": name,
+                "visibility": visibility,
+                "stdin": f"{index}\n",
+                "expected_stdout": expected_stdout,
+            })
+            sandbox_results.append({
+                "name": name,
+                "visibility": visibility,
+                "stdin": f"{index}\n",
+                "passed": ok,
+                "actual_stdout": expected_stdout if ok else "wrong\n",
+                "expected_stdout": expected_stdout,
+                "actual_exit_code": 0 if ok else 1,
+            })
+        sandbox = {
+            "compilation_success": True,
+            "exit_code": 0 if passed == total else 1,
+            "stdout": "",
+            "stderr": "",
+            "execution_time_ms": 8,
+            "peak_memory_mb": 1.0,
+            "test_results": sandbox_results,
+        }
+        return sandbox, expected_cases
+
+    def test_formal_score_zero_of_four(self):
+        sandbox, expected = self._formal_sandbox(passed=0, total=4)
+        result = TestAgent()._programmatic_analysis(
+            sandbox,
+            expected,
+            "print('x')\n",
+            "python",
+            assignment_description="Formal testler.",
+            task_alignment={"factor": 1.0, "reasons": []},
+        )
+        self.assertEqual(result["formalPassed"], 0)
+        self.assertEqual(result["formalTotal"], 4)
+        self.assertEqual(result["formalScore"], 0)
+        self.assertEqual(result["score"], 0)
+
+    def test_formal_score_four_of_four(self):
+        sandbox, expected = self._formal_sandbox(passed=4, total=4)
+        result = TestAgent()._programmatic_analysis(
+            sandbox,
+            expected,
+            "print('x')\n",
+            "python",
+            assignment_description="Formal testler.",
+            task_alignment={"factor": 1.0, "reasons": []},
+        )
+        self.assertEqual(result["formalPassed"], 4)
+        self.assertEqual(result["formalTotal"], 4)
+        self.assertEqual(result["formalScore"], 100)
+        self.assertEqual(result["score"], 100)
+
+    def test_formal_public_hidden_equal_weight(self):
+        sandbox, expected = self._formal_sandbox(passed=1, total=2)
+        result = TestAgent()._programmatic_analysis(
+            sandbox,
+            expected,
+            "print('x')\n",
+            "python",
+            assignment_description="Formal testler.",
+            task_alignment={"factor": 1.0, "reasons": []},
+        )
+        self.assertEqual(result["formalPassed"], 1)
+        self.assertEqual(result["formalTotal"], 2)
+        self.assertEqual(result["formalScore"], 50)
+        self.assertEqual(result["score"], 50)
+
+    def test_formal_evidence_unavailable_smoke_not_counted_as_formal_pass(self):
+        sandbox = {
+            "compilation_success": True,
+            "exit_code": 0,
+            "stdout": "ok\n",
+            "stderr": "",
+            "execution_time_ms": 5,
+            "peak_memory_mb": 0.5,
+            "test_results": [],
+        }
+        result = TestAgent()._programmatic_analysis(
+            sandbox,
+            [],
+            "print('ok')\n",
+            "python",
+            assignment_description="Basit calisan Python programi.",
+            task_alignment={"factor": 0.9, "reasons": []},
+        )
+        self.assertEqual(result["formalTotal"], 0)
+        self.assertLessEqual(result["score"], 40)
+
+    def test_formal_runtime_error_counts_as_failed(self):
+        built = _programmatic_from_sandbox_tests(
+            [
+                {
+                    "name": "runtime_case",
+                    "visibility": "public",
+                    "stdin": "1\n",
+                    "passed": False,
+                    "actual_stdout": "",
+                    "actual_stderr": "Traceback...\nZeroDivisionError: division by zero",
+                    "expected_stdout": "1\n",
+                    "error": "Exit code: expected=0, actual=1",
+                },
+            ],
+            exit_code=1,
+            exec_time_ms=8,
+            peak_memory_mb=1.0,
+            stderr="",
+            expected_cases=[{"name": "runtime_case", "visibility": "public", "stdin": "1\n", "expected_stdout": "1\n"}],
+        )
+        self.assertIsNotNone(built)
+        assert built is not None
+        self.assertEqual(built["formalPassed"], 0)
+        self.assertEqual(built["formalTotal"], 1)
+        self.assertEqual(built["formalScore"], 0)
+        self.assertEqual(built["score"], 0)
+
+    def test_formal_forgiveness_guard_service_timeout_stays_failed(self):
+        code = (
+            "from http.server import HTTPServer, BaseHTTPRequestHandler\n"
+            "HTTPServer(('127.0.0.1', 8000), BaseHTTPRequestHandler).serve_forever()\n"
+        )
+        sandbox = {
+            "compilation_success": True,
+            "exit_code": 124,
+            "timed_out": True,
+            "execution_time_ms": 30000,
+            "test_results": [
+                {
+                    "name": "service_timeout",
+                    "visibility": "public",
+                    "passed": False,
+                    "actual_stdout": "",
+                    "expected_stdout": "OK\n",
+                    "actual_stderr": "Timeout",
+                    "error": "Timeout",
+                },
+            ],
+        }
+        expected = [{"name": "service_timeout", "visibility": "public", "expected_stdout": "OK\n"}]
+        result = TestAgent()._programmatic_analysis(
+            sandbox,
+            expected,
+            code,
+            "python",
+            assignment_description="HTTP API server endpointleri gelistirin.",
+            task_alignment={"factor": 1.0, "reasons": []},
+        )
+        self.assertFalse(result["runs_successfully"])
+        self.assertEqual(result["formalPassed"], 0)
+        self.assertEqual(result["formalTotal"], 1)
+        self.assertEqual(result["score"], 0)
+        self.assertFalse(result.get("service_runtime_accepted"))
+
+
 if __name__ == "__main__":
     unittest.main()

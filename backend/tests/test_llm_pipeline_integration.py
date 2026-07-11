@@ -17,6 +17,8 @@ from unittest.mock import AsyncMock, patch
 
 from backend.agents.evidence import EvidenceAgent, _normalize_claims
 from backend.agents.master_evaluator import MasterEvaluatorAgent
+from backend.agents.test_agent import TestAgent
+from backend.tests.test_agent_contracts import _formal_sandbox_input
 
 
 _SIMPLE_PYTHON = "def add(a, b):\n    return a + b\n\nprint(add(2, 3))\n"
@@ -311,6 +313,71 @@ class MasterEvaluatorPipelineTests(unittest.IsolatedAsyncioTestCase):
         self.assertLessEqual(result["final_score"], 100)
         # Beklenen agirlikli puan: 80*.4+70*.3+60*.2+90*.1 = 74.0
         self.assertEqual(result["final_score"], 74.0)
+
+
+class TestAgentFormalScorePipelineTests(unittest.IsolatedAsyncioTestCase):
+    async def test_formal_score_provenance_fields_preserved_in_analyze(self):
+        agent = TestAgent()
+        analyze_input, _, llm_payload = _formal_sandbox_input(
+            passed=3,
+            total=4,
+            llm_score=99,
+            test_evidence_status="available",
+            test_source="auto_generated",
+            test_set_id="generated-set-9",
+            cache_version=4,
+        )
+        with patch.object(agent, "_call_llm", new=AsyncMock(return_value=llm_payload)):
+            result = await agent.analyze(analyze_input)
+
+        self.assertEqual(result["score"], 75)
+        self.assertEqual(result["formalScore"], 75)
+        self.assertEqual(result["formalPassed"], 3)
+        self.assertEqual(result["formalTotal"], 4)
+        self.assertEqual(result["testEvidenceStatus"], "available")
+        self.assertEqual(result["testSource"], "auto_generated")
+        self.assertEqual(result["testSetId"], "generated-set-9")
+        self.assertEqual(result["cacheVersion"], 4)
+
+    async def test_formal_evidence_unavailable_caps_score_in_analyze(self):
+        agent = TestAgent()
+        with patch.object(
+            agent,
+            "_call_llm",
+            new=AsyncMock(
+                return_value={
+                    "compilation_success": True,
+                    "runs_successfully": True,
+                    "passed_tests": 1,
+                    "failed_tests": 0,
+                    "test_failures": [],
+                    "runtime_errors": [],
+                    "edge_case_handling": "good",
+                    "edge_cases_observed": ["empty input"],
+                    "performance_notes": "Smoke only.",
+                    "score": 88,
+                }
+            ),
+        ):
+            result = await agent.analyze({
+                "sandbox_result": {
+                    "compilation_success": True,
+                    "exit_code": 0,
+                    "stdout": "ok\n",
+                    "stderr": "",
+                    "execution_time_ms": 10,
+                    "peak_memory_mb": 5,
+                },
+                "expected_output": None,
+                "source_code": "print('ok')\n",
+                "language": "python",
+                "assignment_description": "Basit program.",
+                "test_evidence_status": "unavailable",
+            })
+
+        self.assertEqual(result["testEvidenceStatus"], "unavailable")
+        self.assertEqual(result["formalTotal"], 0)
+        self.assertLessEqual(result["score"], 40)
 
 
 if __name__ == "__main__":

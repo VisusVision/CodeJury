@@ -1487,8 +1487,77 @@ class TestAgentContractTests(unittest.TestCase):
         self.assertGreaterEqual(result["score"], 60)
 
 
+def _formal_sandbox_input(
+    *,
+    passed: int,
+    total: int,
+    llm_score: int = 100,
+    test_evidence_status: str = "available",
+    test_source: str = "manual",
+    test_set_id: str | None = "set-1",
+    cache_version: int | None = 2,
+) -> tuple[dict, list[dict], dict]:
+    """Build sandbox + expected cases with `passed` formal successes out of `total`."""
+    expected_cases: list[dict] = []
+    sandbox_results: list[dict] = []
+    for index in range(total):
+        name = f"case_{index}"
+        visibility = "public" if index % 2 == 0 else "hidden"
+        expected_stdout = f"out_{index}\n"
+        ok = index < passed
+        expected_cases.append({
+            "name": name,
+            "visibility": visibility,
+            "stdin": f"{index}\n",
+            "expected_stdout": expected_stdout,
+        })
+        sandbox_results.append({
+            "name": name,
+            "visibility": visibility,
+            "stdin": f"{index}\n",
+            "passed": ok,
+            "actual_stdout": expected_stdout if ok else "wrong\n",
+            "expected_stdout": expected_stdout,
+            "actual_exit_code": 0 if ok else 1,
+        })
+    sandbox = {
+        "compilation_success": True,
+        "exit_code": 0 if passed == total else 1,
+        "stdout": "",
+        "stderr": "",
+        "execution_time_ms": 12,
+        "peak_memory_mb": 10,
+        "test_results": sandbox_results,
+    }
+    llm_payload = {
+        "compilation_success": True,
+        "runs_successfully": passed == total,
+        "passed_tests": passed,
+        "failed_tests": total - passed,
+        "test_failures": [],
+        "runtime_errors": [],
+        "edge_case_handling": "fair",
+        "edge_cases_observed": [],
+        "performance_notes": "LLM score must not override formal pass rate.",
+        "score": llm_score,
+    }
+    analyze_input = {
+        "sandbox_result": sandbox,
+        "expected_output": expected_cases,
+        "source_code": "print('formal')\n",
+        "language": "python",
+        "assignment_description": "Formal test skoru pass-rate olmalidir.",
+        "task_alignment": {"factor": 0.5, "reasons": []},
+        "test_evidence_status": test_evidence_status,
+        "test_source": test_source,
+        "test_set_id": test_set_id,
+        "cache_version": cache_version,
+    }
+    return analyze_input, expected_cases, llm_payload
+
+
 class TestAgentLLMContractTests(unittest.IsolatedAsyncioTestCase):
-    async def test_passing_aligned_smoke_run_uses_llm_score_when_llm_is_pessimistic(self):
+    async def test_formal_evidence_unavailable_caps_score_when_llm_is_pessimistic(self):
         code = "def add(a, b):\n    return a + b\n\nprint(add(2, 3))\n"
         agent = TestAgent()
 
@@ -1524,60 +1593,52 @@ class TestAgentLLMContractTests(unittest.IsolatedAsyncioTestCase):
                 "language": "python",
                 "assignment_description": "Python ile iki sayiyi toplayan ve sonucu yazdiran basit bir fonksiyon yazin.",
                 "task_alignment": {"factor": 1.0, "reasons": []},
+                "test_evidence_status": "unavailable",
             })
 
-        self.assertEqual(result["score"], 40)
+        self.assertEqual(result["testEvidenceStatus"], "unavailable")
+        self.assertEqual(result["formalTotal"], 0)
+        self.assertLessEqual(result["score"], 40)
 
-    async def test_all_formal_tests_pass_use_llm_score_when_alignment_is_partial(self):
+    async def test_formal_pass_rate_score_ignores_llm_override_when_pessimistic(self):
         agent = TestAgent()
-        test_cases = [
-            {"name": "case_a", "visibility": "public", "stdin": "([])\n", "expected_stdout": "EVET\n"},
-            {"name": "case_b", "visibility": "hidden", "stdin": "())\n", "expected_stdout": "HAYIR\n"},
+        analyze_input, _, llm_payload = _formal_sandbox_input(passed=3, total=4, llm_score=30)
+
+        with patch.object(agent, "_call_llm", new=AsyncMock(return_value=llm_payload)):
+            result = await agent.analyze(analyze_input)
+
+        self.assertEqual(result["score"], 75)
+        self.assertEqual(result["formalScore"], 75)
+        self.assertEqual(result["formalPassed"], 3)
+        self.assertEqual(result["formalTotal"], 4)
+        self.assertEqual(result["testEvidenceStatus"], "available")
+
+    async def test_formal_pass_rate_score_ignores_llm_override_when_optimistic(self):
+        agent = TestAgent()
+        analyze_input, _, llm_payload = _formal_sandbox_input(passed=0, total=4, llm_score=100)
+
+        with patch.object(agent, "_call_llm", new=AsyncMock(return_value=llm_payload)):
+            result = await agent.analyze(analyze_input)
+
+        self.assertEqual(result["score"], 0)
+        self.assertEqual(result["formalScore"], 0)
+        self.assertEqual(result["formalPassed"], 0)
+        self.assertEqual(result["formalTotal"], 4)
+
+    async def test_formal_forgiveness_guard_timeout_stays_failed_when_llm_is_pessimistic(self):
+        code = (
+            "from http.server import HTTPServer, BaseHTTPRequestHandler\n"
+            "HTTPServer(('127.0.0.1', 8000), BaseHTTPRequestHandler).serve_forever()\n"
+        )
+        agent = TestAgent()
+        formal_cases = [
+            {
+                "name": "service_timeout",
+                "visibility": "public",
+                "stdin": "",
+                "expected_stdout": "OK\n",
+            },
         ]
-        with patch.object(
-            agent,
-            "_call_llm",
-            new=AsyncMock(
-                return_value={
-                    "compilation_success": True,
-                    "runs_successfully": True,
-                    "passed_tests": 2,
-                    "failed_tests": 0,
-                    "test_failures": [],
-                    "runtime_errors": [],
-                    "edge_case_handling": "fair",
-                    "edge_cases_observed": [],
-                    "performance_notes": "Calisti.",
-                    "score": 30,
-                }
-            ),
-        ):
-            result = await agent.analyze({
-                "sandbox_result": {
-                    "compilation_success": True,
-                    "exit_code": 0,
-                    "stdout": "",
-                    "stderr": "",
-                    "execution_time_ms": 12,
-                    "peak_memory_mb": 10,
-                    "test_results": [
-                        {"name": "case_a", "passed": True, "expected_stdout": "EVET\n", "actual_stdout": "EVET\n"},
-                        {"name": "case_b", "passed": True, "expected_stdout": "HAYIR\n", "actual_stdout": "HAYIR\n"},
-                    ],
-                },
-                "expected_output": test_cases,
-                "source_code": "stack=[]\nprint('EVET')",
-                "language": "python",
-                "assignment_description": "Parantez dengeleme stack cozumu yazin.",
-                "task_alignment": {"factor": 0.5, "reasons": []},
-            })
-
-        self.assertEqual(result["score"], 30)
-
-    async def test_service_timeout_keeps_programmatic_success_when_llm_is_pessimistic(self):
-        code = "from http.server import HTTPServer, BaseHTTPRequestHandler\nHTTPServer(('127.0.0.1', 8000), BaseHTTPRequestHandler).serve_forever()\n"
-        agent = TestAgent()
-
         with patch.object(
             agent,
             "_call_llm",
@@ -1587,7 +1648,7 @@ class TestAgentLLMContractTests(unittest.IsolatedAsyncioTestCase):
                     "runs_successfully": False,
                     "passed_tests": 0,
                     "failed_tests": 1,
-                    "test_failures": [{"test_name": "timeout", "reason": "timeout"}],
+                    "test_failures": [{"test_name": "service_timeout", "reason": "timeout"}],
                     "runtime_errors": ["Timeout"],
                     "edge_case_handling": "poor",
                     "edge_cases_observed": [],
@@ -1603,17 +1664,33 @@ class TestAgentLLMContractTests(unittest.IsolatedAsyncioTestCase):
                         "exit_code": 124,
                         "timed_out": True,
                         "execution_time_ms": 30000,
+                        "test_results": [
+                            {
+                                "name": "service_timeout",
+                                "visibility": "public",
+                                "passed": False,
+                                "actual_stdout": "",
+                                "expected_stdout": "OK\n",
+                                "actual_stderr": "Timeout",
+                                "error": "Timeout",
+                            },
+                        ],
                     },
-                    "expected_output": None,
+                    "expected_output": formal_cases,
                     "source_code": code,
                     "language": "python",
                     "assignment_description": "HTTP API server endpointleri gelistirin.",
+                    "test_evidence_status": "available",
+                    "test_source": "manual",
                 }
             )
 
-        self.assertTrue(result["runs_successfully"])
-        self.assertEqual(result["failed_tests"], 0)
-        self.assertEqual(result["score"], 25)
+        self.assertFalse(result["runs_successfully"])
+        self.assertEqual(result["failed_tests"], 1)
+        self.assertEqual(result["formalPassed"], 0)
+        self.assertEqual(result["formalTotal"], 1)
+        self.assertEqual(result["score"], 0)
+        self.assertFalse(result.get("service_runtime_accepted"))
 
 
 class MasterEvaluatorContractTests(unittest.TestCase):
