@@ -62,7 +62,12 @@ from backend.auth.dependencies import (
 )
 from backend.auth.models import AuthPrincipal
 from backend.auth.policies import enforce_teacher_owner
+from backend.testing.cache import AssignmentTestContext
+from backend.testing.contracts import FormalTestCase, GeneratedTestSet
 from backend.testing.difficulty import infer_assignment_difficulty, normalize_difficulty
+from backend.testing.generator import generate_and_verify_once
+from backend.testing.selector import _attempt_is_sufficient
+from backend.agents.base import LLMInferenceError
 from backend.auth.sessions import UserLockUnavailable, hash_token, user_lock
 from backend.queue.analysis_jobs import (
     AnalysisJobNotFound,
@@ -666,6 +671,11 @@ class AssignmentTestCaseIn(BaseModel):
 
 class AssignmentTestCaseUpsertRequest(BaseModel):
     test_cases: list[AssignmentTestCaseIn]
+
+
+class PromoteGeneratedTestsRequest(BaseModel):
+    case_ids: list[str]
+    mode: Literal["append", "replace"]
 
 
 class RubricUpsertRequest(BaseModel):
@@ -6018,6 +6028,88 @@ async def _invalidate_generated_test_set(assignment_id: str) -> None:
         )
 
 
+async def _require_assignment_for_teacher(
+    assignment_id: str,
+    principal: AuthPrincipal,
+    *,
+    mutation: bool,
+) -> dict[str, Any]:
+    aid = assignment_id.strip()
+    if _DEMO_MODE:
+        assignment = next(
+            (a for a in _DEMO_STORE.get("assignments", []) if str(a.get("id")) == aid),
+            None,
+        )
+        if assignment is None:
+            raise HTTPException(status_code=404, detail="Odev bulunamadi")
+        enforce_teacher_owner(principal, assignment.get("created_by"), mutation=mutation)
+        return dict(assignment)
+
+    uid = _parse_assignment_uuid_param(aid)
+    pool = await _get_db_pool()
+    row = await pool.fetchrow(
+        """
+        SELECT id, name, description, created_by, difficulty, difficulty_source
+        FROM public.assignments
+        WHERE id = $1::uuid
+        LIMIT 1
+        """,
+        uid,
+    )
+    if row is None:
+        raise HTTPException(status_code=404, detail="Odev bulunamadi")
+    enforce_teacher_owner(principal, row["created_by"], mutation=mutation)
+    return dict(row)
+
+
+def _formal_case_to_suggestion(case: FormalTestCase) -> dict[str, Any]:
+    return case.model_dump()
+
+
+def _generated_test_set_response(test_set: GeneratedTestSet) -> dict[str, Any]:
+    payload = test_set.model_dump()
+    payload["cases"] = [_formal_case_to_suggestion(case) for case in test_set.cases]
+    if test_set.oracle_validation:
+        payload["oracle_validation"] = [item.model_dump() for item in test_set.oracle_validation]
+    return payload
+
+
+def _promoted_assignment_test_case(
+    case: FormalTestCase,
+    *,
+    assignment_id: str,
+    set_id: str,
+    display_order: int,
+) -> dict[str, Any]:
+    from backend.testing.fixture_policy import FixturePolicyError, validate_case_fixtures
+
+    try:
+        validated_fixtures = validate_case_fixtures(case.files)
+    except FixturePolicyError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    oracle_validation = (
+        json.loads(case.oracle_validation.model_dump_json())
+        if case.oracle_validation is not None
+        else None
+    )
+    return {
+        "id": _demo_uuid(),
+        "assignment_id": assignment_id,
+        "name": case.name[:120],
+        "stdin": case.stdin[:8000],
+        "expected_stdout": case.expected_stdout[:8000],
+        "expected_exit_code": case.expected_exit_code,
+        "visibility": case.visibility,
+        "source": "ai_approved",
+        "files": [{"name": fixture.name, "content": fixture.content} for fixture in validated_fixtures],
+        "oracle": "llm_verified",
+        "oracle_validation": oracle_validation,
+        "generated_set_id": set_id,
+        "display_order": display_order,
+    }
+
+
 async def _with_assignment_difficulty(
     assignment: dict[str, Any],
     pool: asyncpg.Pool | None = None,
@@ -6251,68 +6343,201 @@ async def list_assignment_test_cases(assignment_id: str, principal: AuthPrincipa
 @app.post("/api/assignments/{assignment_id}/test-cases/suggest")
 async def suggest_assignment_test_cases(assignment_id: str, principal: AuthPrincipal = Depends(require_teacher)):
     aid = assignment_id.strip()
-    if _DEMO_MODE:
-        assignment = next((a for a in _DEMO_STORE.get("assignments", []) if str(a.get("id")) == aid), None)
-        if assignment is None:
-            raise HTTPException(status_code=404, detail="Odev bulunamadi")
-        enforce_teacher_owner(principal, assignment.get("created_by"), mutation=False)
-    else:
-        uid = _parse_assignment_uuid_param(aid)
-        pool = await _get_db_pool()
-        assignment_row = await pool.fetchrow(
-            "SELECT created_by FROM public.assignments WHERE id = $1::uuid LIMIT 1",
-            uid,
-        )
-        if assignment_row is None:
-            raise HTTPException(status_code=404, detail="Odev bulunamadi")
-        enforce_teacher_owner(principal, assignment_row["created_by"], mutation=False)
-        assignment = await pool.fetchrow(
-            "SELECT id, name, description FROM public.assignments WHERE id = $1::uuid LIMIT 1",
-            uid,
+    assignment = await _require_assignment_for_teacher(aid, principal, mutation=False)
+    assignment = await _with_assignment_difficulty(assignment)
+    rubric_criteria = await _fetch_faculty_rubric_criteria_for_pipeline(aid)
+    difficulty = normalize_difficulty(assignment.get("difficulty"))
+
+    context = AssignmentTestContext(
+        assignment_id=aid,
+        title=str(assignment.get("name") or ""),
+        description=str(assignment.get("description") or ""),
+        rubric=rubric_criteria,
+        difficulty=difficulty,
+    )
+
+    try:
+        result = await generate_and_verify_once(context)
+    except LLMInferenceError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="Test onerisi su an uretilemiyor.",
+        ) from exc
+
+    if not result.success or not _attempt_is_sufficient(result.cases, difficulty):
+        raise HTTPException(
+            status_code=503,
+            detail="Test onerisi su an uretilemiyor.",
         )
 
-    raw_suggestions = [
-        {
-            "name": "public sample",
-            "stdin": "3\n",
-            "expected_stdout": "9\n",
-            "visibility": "public",
-            "source": "ai",
-        },
-        {
-            "name": "hidden zero edge",
-            "stdin": "0\n",
-            "expected_stdout": "0\n",
-            "visibility": "hidden",
-            "source": "ai",
-        },
-        {
-            "name": "hidden larger input",
-            "stdin": "10\n",
-            "expected_stdout": "100\n",
-            "visibility": "hidden",
-            "source": "ai",
-        },
-    ]
-    suggestions = [
-        {
-            "id": _demo_uuid(),
-            "assignment_id": aid,
-            "name": str(row.get("name") or "")[:120],
-            "stdin": str(row.get("stdin") or "")[:8000],
-            "expected_stdout": str(row.get("expected_stdout", row.get("expected", "")) or "")[:8000],
-            "expected_exit_code": int(row.get("expected_exit_code", 0) or 0),
-            "visibility": str(row.get("visibility") or "hidden"),
-            "source": "ai",
-            "files": [],
-            "oracle": "teacher",
-            "oracle_validation": None,
-            "generated_set_id": None,
-            "display_order": index,
-        }
-        for index, row in enumerate(raw_suggestions, 1)
-    ]
-    return {"suggestions": suggestions}
+    suggestions = [_formal_case_to_suggestion(case) for case in result.cases]
+    return {
+        "suggestions": suggestions,
+        "verified_count": len(result.cases),
+        "difficulty": difficulty,
+        "persisted": False,
+    }
+
+
+@app.get("/api/assignments/{assignment_id}/generated-test-set")
+async def get_assignment_generated_test_set(
+    assignment_id: str,
+    principal: AuthPrincipal = Depends(require_teacher),
+):
+    aid = assignment_id.strip()
+    await _require_assignment_for_teacher(aid, principal, mutation=False)
+    store = await _get_generated_test_set_store()
+    test_set = await store.get_active(aid)
+    if test_set is None:
+        raise HTTPException(status_code=404, detail="Aktif test seti bulunamadi")
+    return _generated_test_set_response(test_set)
+
+
+@app.post("/api/assignments/{assignment_id}/generated-test-sets/{set_id}/promote")
+async def promote_generated_tests(
+    assignment_id: str,
+    set_id: str,
+    req: PromoteGeneratedTestsRequest,
+    principal: AuthPrincipal = Depends(require_teacher),
+):
+    if req.mode not in {"append", "replace"}:
+        raise HTTPException(status_code=400, detail="Gecersiz mode")
+    if not req.case_ids:
+        raise HTTPException(status_code=400, detail="En az bir test case secilmeli")
+
+    aid = assignment_id.strip()
+    sid = set_id.strip()
+    await _require_assignment_for_teacher(aid, principal, mutation=True)
+
+    store = await _get_generated_test_set_store()
+    test_set = await store.get_by_id(sid)
+    if test_set is None or test_set.assignment_id != aid:
+        raise HTTPException(status_code=404, detail="Test seti bulunamadi")
+
+    case_by_id = {case.id: case for case in test_set.cases}
+    selected: list[FormalTestCase] = []
+    for case_id in req.case_ids:
+        case = case_by_id.get(case_id)
+        if case is None:
+            raise HTTPException(status_code=400, detail="Gecersiz test case id")
+        selected.append(case)
+
+    if _DEMO_MODE:
+        existing = [
+            row
+            for row in _DEMO_STORE.get("assignment_test_cases", [])
+            if isinstance(row, dict) and str(row.get("assignment_id")) == aid
+        ]
+        if req.mode == "append":
+            kept = list(existing)
+            start_order = max((int(row.get("display_order", 0) or 0) for row in kept), default=0) + 1
+        else:
+            kept = []
+            start_order = 1
+
+        promoted: list[dict[str, Any]] = []
+        for index, case in enumerate(selected, start_order):
+            promoted.append(
+                _promoted_assignment_test_case(
+                    case,
+                    assignment_id=aid,
+                    set_id=sid,
+                    display_order=index,
+                )
+            )
+
+        now = _demo_now()
+        for row in promoted:
+            row["created_at"] = now
+            row["updated_at"] = now
+
+        remaining = [
+            row
+            for row in _DEMO_STORE.get("assignment_test_cases", [])
+            if not (isinstance(row, dict) and str(row.get("assignment_id")) == aid)
+        ]
+        if req.mode == "append":
+            _DEMO_STORE["assignment_test_cases"] = remaining + kept + promoted
+            result_rows = kept + promoted
+        else:
+            _DEMO_STORE["assignment_test_cases"] = remaining + promoted
+            result_rows = promoted
+        _save_demo_store_to_disk()
+        await store.deactivate_assignment(aid, reason="promoted")
+        return sorted(
+            [_assignment_test_case_response(row) for row in result_rows],
+            key=lambda row: (row["display_order"], row["name"]),
+        )
+
+    uid = _parse_assignment_uuid_param(aid)
+    set_uid = _parse_assignment_uuid_param(sid)
+    pool = await _get_db_pool()
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            if req.mode == "replace":
+                await conn.execute(
+                    "DELETE FROM public.assignment_test_cases WHERE assignment_id = $1::uuid",
+                    uid,
+                )
+            if req.mode == "append":
+                existing_rows = await conn.fetch(
+                    """
+                    SELECT display_order
+                    FROM public.assignment_test_cases
+                    WHERE assignment_id = $1::uuid
+                    ORDER BY display_order ASC
+                    """,
+                    uid,
+                )
+                start_order = max((int(row["display_order"]) for row in existing_rows), default=0) + 1
+            else:
+                start_order = 1
+
+            for offset, case in enumerate(selected):
+                row = _promoted_assignment_test_case(
+                    case,
+                    assignment_id=aid,
+                    set_id=sid,
+                    display_order=start_order + offset,
+                )
+                await conn.execute(
+                    """
+                    INSERT INTO public.assignment_test_cases (
+                        id, assignment_id, name, stdin, expected_stdout, expected_exit_code,
+                        visibility, source, display_order, files, oracle, oracle_validation,
+                        generated_set_id
+                    )
+                    VALUES (
+                        $1::uuid, $2::uuid, $3, $4, $5, $6, $7, $8, $9, $10::jsonb, $11, $12::jsonb, $13::uuid
+                    )
+                    """,
+                    row["id"],
+                    uid,
+                    row["name"],
+                    row["stdin"],
+                    row["expected_stdout"],
+                    row["expected_exit_code"],
+                    row["visibility"],
+                    row["source"],
+                    row["display_order"],
+                    json.dumps(row["files"]),
+                    row["oracle"],
+                    json.dumps(row["oracle_validation"]) if row["oracle_validation"] is not None else None,
+                    set_uid,
+                )
+    await store.deactivate_assignment(aid, reason="promoted")
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT id, assignment_id, name, stdin, expected_stdout, expected_exit_code,
+                   visibility, source, display_order, files, oracle, oracle_validation, generated_set_id
+            FROM public.assignment_test_cases
+            WHERE assignment_id = $1::uuid
+            ORDER BY display_order ASC, created_at ASC
+            """,
+            uid,
+        )
+    return [_assignment_test_case_response(row) for row in rows]
 
 
 @app.put("/api/assignments/{assignment_id}/test-cases")

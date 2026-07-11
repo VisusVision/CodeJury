@@ -42,6 +42,11 @@ TEACHER_ONLY_ROUTES = {
     ("DELETE", "/api/assignments/{assignment_id}"),
     ("GET", "/api/assignments/{assignment_id}/test-cases"),
     ("POST", "/api/assignments/{assignment_id}/test-cases/suggest"),
+    ("GET", "/api/assignments/{assignment_id}/generated-test-set"),
+    (
+        "POST",
+        "/api/assignments/{assignment_id}/generated-test-sets/{set_id}/promote",
+    ),
     ("PUT", "/api/assignments/{assignment_id}/test-cases"),
     ("GET", "/api/rubrics"),
     ("POST", "/api/rubrics/upsert"),
@@ -263,6 +268,11 @@ class TeacherAuthorizationTests(unittest.TestCase):
                 )
             if path.endswith("/test-cases/suggest"):
                 return client.post(path)
+            if path.endswith("/generated-test-sets/") or "/generated-test-sets/" in path:
+                return client.post(
+                    path,
+                    json={"case_ids": ["case-0"], "mode": "replace"},
+                )
             if path.endswith("/test-cases"):
                 return client.put(path, json={"test_cases": []})
             if path == "/api/rubrics/upsert":
@@ -310,6 +320,7 @@ class TeacherAuthorizationTests(unittest.TestCase):
             "department_id": _DEMO_DEPARTMENT_ID,
             "course_id": _DEMO_COURSE_ID,
             "assignment_id": _DEMO_ASSIGNMENT_ID,
+            "set_id": "set-1",
             "question_id": "77777777-7777-4777-8777-777777777777",
         }
         for method, route_template in sorted(TEACHER_ONLY_ROUTES):
