@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from datetime import datetime, timezone
+from collections.abc import Callable
 from typing import Any, Protocol
 
 import asyncpg
@@ -103,7 +104,12 @@ class GeneratedTestSetStore(Protocol):
         self, assignment_id: str, cache_key: str
     ) -> GeneratedTestSet | None: ...
 
-    async def insert_verified_set(self, test_set: GeneratedTestSet) -> GeneratedTestSet: ...
+    async def insert_verified_set(
+        self,
+        test_set: GeneratedTestSet,
+        *,
+        lease_check: Callable[[], None] | None = None,
+    ) -> GeneratedTestSet: ...
 
     async def deactivate_assignment(self, assignment_id: str, *, reason: str) -> int: ...
 
@@ -128,10 +134,18 @@ class DemoGeneratedTestSetStore:
                 return _row_to_generated_test_set(row)
         return None
 
-    async def insert_verified_set(self, test_set: GeneratedTestSet) -> GeneratedTestSet:
+    async def insert_verified_set(
+        self,
+        test_set: GeneratedTestSet,
+        *,
+        lease_check: Callable[[], None] | None = None,
+    ) -> GeneratedTestSet:
         existing = await self.find_by_cache_key(test_set.assignment_id, test_set.cache_key)
         if existing is not None:
             return existing
+
+        if lease_check is not None:
+            lease_check()
 
         version = (
             max(
@@ -226,7 +240,12 @@ class PostgresGeneratedTestSetStore:
             return None
         return _row_to_generated_test_set(dict(row))
 
-    async def insert_verified_set(self, test_set: GeneratedTestSet) -> GeneratedTestSet:
+    async def insert_verified_set(
+        self,
+        test_set: GeneratedTestSet,
+        *,
+        lease_check: Callable[[], None] | None = None,
+    ) -> GeneratedTestSet:
         version: int | None = None
         try:
             async with self._pool.acquire() as conn:
@@ -263,6 +282,9 @@ class PostgresGeneratedTestSetStore:
                             created_at = now
                     else:
                         created_at = now
+
+                    if lease_check is not None:
+                        lease_check()
 
                     await conn.execute(
                         """

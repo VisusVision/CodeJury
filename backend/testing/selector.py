@@ -172,7 +172,9 @@ async def _persist_generated_set(
         created_at=_utc_now_iso(),
     )
     try:
-        return await store.insert_verified_set(test_set)
+        return await store.insert_verified_set(test_set, lease_check=lease.check)
+    except LeaseLost:
+        raise
     except asyncpg.UniqueViolationError:
         winner = await store.find_by_cache_key(context.assignment_id, cache_key)
         if winner is None:

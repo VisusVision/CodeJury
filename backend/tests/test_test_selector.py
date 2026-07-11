@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import time
 import uuid
 from contextlib import asynccontextmanager
@@ -629,6 +630,58 @@ async def test_lease_loss_before_insert_returns_unavailable_fail_soft(
     assert selection.source == "none"
     assert selection.cases == ()
     assert selection.generation_attempts == 1
+
+
+@pytest.mark.asyncio
+async def test_lease_loss_during_insert_returns_unavailable_fail_soft(
+    context: AssignmentTestContext,
+    redis: FakeCacheRedis,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from backend.testing.cache import GenerationLockHandle
+    from backend.testing import selector as selector_module
+
+    handle = GenerationLockHandle("lease-token")
+
+    @asynccontextmanager
+    async def _lease_with_delayed_loss(redis_client, assignment_id, cache_key, *, ttl_seconds=180, **kwargs):
+        task = asyncio.create_task(_mark_lost_after(handle, 0.02))
+        try:
+            yield handle
+        finally:
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+
+    async def _mark_lost_after(lock_handle: GenerationLockHandle, delay: float) -> None:
+        await asyncio.sleep(delay)
+        lock_handle.mark_lost()
+
+    base_store = _make_demo_store()
+
+    class _DelayedInsertStore(DemoGeneratedTestSetStore):
+        async def insert_verified_set(self, test_set, *, lease_check=None):
+            await asyncio.sleep(0.05)
+            return await super().insert_verified_set(test_set, lease_check=lease_check)
+
+    store = _DelayedInsertStore(base_store._container)
+
+    monkeypatch.setattr(selector_module, "generation_lock", _lease_with_delayed_loss)
+
+    selection = await select_tests(
+        context,
+        "python",
+        load_faculty=AsyncMock(return_value=[]),
+        store=store,
+        redis=redis,
+        generate_once=AsyncMock(return_value=_sufficient_medium_attempt()),
+    )
+
+    assert selection.test_evidence_status == "unavailable"
+    assert selection.source == "none"
+    assert selection.cases == ()
+    assert selection.generation_attempts == 1
+    assert not store._container["generated_test_sets"]
 
 
 @pytest.mark.asyncio
