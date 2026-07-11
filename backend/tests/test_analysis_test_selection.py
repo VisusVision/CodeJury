@@ -10,6 +10,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import asyncpg
 import pytest
 
+from backend.algorithm_expectations.contracts import AlgorithmExpectationResolution
 from backend.auth.models import AuthPrincipal
 from backend.queue.analysis_jobs import AnalysisJobOwner, AnalysisJobStore, create_analysis_job, get_analysis_job
 from backend.sandbox.errors import SandboxUnavailableError
@@ -34,6 +35,23 @@ STUDENT_PROFILE = {
 }
 
 _ASSIGNMENT_ID = "55555555-5555-4555-8555-555555555555"
+
+
+def _unknown_expectation_resolution() -> AlgorithmExpectationResolution:
+    return AlgorithmExpectationResolution(
+        expectation=None,
+        status="unknown",
+        cache_key="",
+        generation_attempts=0,
+    )
+
+
+def _patch_unknown_expectation():
+    return patch.object(
+        main,
+        "_resolve_algorithm_expectation",
+        new=AsyncMock(return_value=_unknown_expectation_resolution()),
+    )
 
 
 def _faculty_case(case_id: str = "faculty-case-id") -> FormalTestCase:
@@ -196,6 +214,7 @@ class AnalysisWorkerSelectionTests(unittest.IsolatedAsyncioTestCase):
             patch("backend.sandbox.executor.run_in_sandbox", side_effect=_spy_run_in_sandbox),
             patch("backend.agents.task_relevance.assess_task_relevance_llm", new=AsyncMock(return_value={"factor": 0.9, "llm_off_topic": False, "reasons": []})),
             patch.object(main, "_build_resource_recommendations", new=AsyncMock(return_value=[])),
+            _patch_unknown_expectation(),
             patch.object(main.CodeQualityAgent, "analyze", new=AsyncMock(return_value=_good_agent_payload())),
             patch.object(main.AlgorithmAgent, "analyze", new=AsyncMock(return_value=_good_agent_payload())),
             patch.object(main.AIAuthorshipAgent, "analyze", new=AsyncMock(return_value=_good_agent_payload())),
@@ -251,6 +270,7 @@ class AnalysisWorkerSelectionTests(unittest.IsolatedAsyncioTestCase):
             patch("backend.sandbox.executor.run_in_sandbox", side_effect=_spy_run_in_sandbox),
             patch("backend.agents.task_relevance.assess_task_relevance_llm", new=AsyncMock(return_value={"factor": 0.9, "llm_off_topic": False, "reasons": []})),
             patch.object(main, "_build_resource_recommendations", new=AsyncMock(return_value=[])),
+            _patch_unknown_expectation(),
             patch.object(main.CodeQualityAgent, "analyze", new=AsyncMock(return_value=_good_agent_payload())),
             patch.object(main.AlgorithmAgent, "analyze", new=AsyncMock(return_value=_good_agent_payload())),
             patch.object(main.AIAuthorshipAgent, "analyze", new=AsyncMock(return_value=_good_agent_payload())),
@@ -286,6 +306,7 @@ async def test_python_without_faculty_invokes_selector_generation() -> None:
         }),
         patch("backend.agents.task_relevance.assess_task_relevance_llm", new=AsyncMock(return_value={"factor": 0.9, "llm_off_topic": False, "reasons": []})),
         patch.object(main, "_build_resource_recommendations", new=AsyncMock(return_value=[])),
+        _patch_unknown_expectation(),
         patch.object(main.CodeQualityAgent, "analyze", new=AsyncMock(return_value=_good_agent_payload())),
         patch.object(main.AlgorithmAgent, "analyze", new=AsyncMock(return_value=_good_agent_payload())),
         patch.object(main.SeniorityAgent, "analyze", new=AsyncMock(return_value=_good_agent_payload())),
@@ -324,6 +345,7 @@ async def test_non_python_without_faculty_returns_unavailable_without_generation
         }) as sandbox,
         patch("backend.agents.task_relevance.assess_task_relevance_llm", new=AsyncMock(return_value={"factor": 0.9, "llm_off_topic": False, "reasons": []})),
         patch.object(main, "_build_resource_recommendations", new=AsyncMock(return_value=[])),
+        _patch_unknown_expectation(),
         patch.object(main.CodeQualityAgent, "analyze", new=AsyncMock(return_value=_good_agent_payload())),
         patch.object(main.AlgorithmAgent, "analyze", new=AsyncMock(return_value=_good_agent_payload())),
         patch.object(main.SeniorityAgent, "analyze", new=AsyncMock(return_value=_good_agent_payload())),
@@ -363,6 +385,7 @@ async def test_assignment_less_job_returns_unavailable_without_selection_store_a
         }) as sandbox,
         patch("backend.agents.task_relevance.assess_task_relevance_llm", new=AsyncMock(return_value={"factor": 0.9, "llm_off_topic": False, "reasons": []})),
         patch.object(main, "_build_resource_recommendations", new=AsyncMock(return_value=[])),
+        _patch_unknown_expectation(),
         patch.object(main.CodeQualityAgent, "analyze", new=AsyncMock(return_value=_good_agent_payload())),
         patch.object(main.AlgorithmAgent, "analyze", new=AsyncMock(return_value=_good_agent_payload())),
         patch.object(main.AIAuthorshipAgent, "analyze", new=AsyncMock(return_value=_good_agent_payload())),
@@ -405,6 +428,7 @@ async def test_generator_exception_fail_soft_continues_with_unavailable_evidence
         }),
         patch("backend.agents.task_relevance.assess_task_relevance_llm", new=AsyncMock(return_value={"factor": 0.9, "llm_off_topic": False, "reasons": []})),
         patch.object(main, "_build_resource_recommendations", new=AsyncMock(return_value=[])),
+        _patch_unknown_expectation(),
         patch.object(main.CodeQualityAgent, "analyze", new=AsyncMock(return_value=_good_agent_payload())),
         patch.object(main.AlgorithmAgent, "analyze", new=AsyncMock(return_value=_good_agent_payload())),
         patch.object(main.SeniorityAgent, "analyze", new=AsyncMock(return_value=_good_agent_payload())),

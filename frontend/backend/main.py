@@ -62,6 +62,8 @@ from backend.auth.dependencies import (
 )
 from backend.auth.models import AuthPrincipal
 from backend.auth.policies import enforce_teacher_owner
+from backend.algorithm_expectations.cache import AlgorithmExpectationContext
+from backend.algorithm_expectations.contracts import AlgorithmExpectationResolution
 from backend.testing.cache import AssignmentTestContext
 from backend.testing.contracts import FormalTestCase, GeneratedTestSet, TestSelection
 from backend.testing.difficulty import infer_assignment_difficulty, normalize_difficulty
@@ -592,6 +594,8 @@ class AnalysisRequest(BaseModel):
     student_no: Optional[str] = None
     # Deprecated: ignored for backward compatibility; never copied to queue or pipeline.
     test_cases: Optional[list[dict[str, Any]]] = None
+    # Deprecated: ignored; worker resolves expectation authoritatively without client input.
+    algorithm_expectation: Optional[dict[str, Any]] = None
 
 
 class StudentLoginRequest(BaseModel):
@@ -4706,6 +4710,21 @@ async def _run_analysis_pipeline_body(
         "task_alignment": task_alignment,
     }
 
+    expectation_resolution = await _resolve_algorithm_expectation(
+        assignment_id,
+        brief,
+        fac,
+        None,
+    )
+    algorithm_input = {
+        **inp,
+        "algorithm_expectation": (
+            expectation_resolution.expectation.model_dump()
+            if expectation_resolution.expectation is not None
+            else None
+        ),
+    }
+
     from backend.core.config import settings as _cfg
     print(
         f"[pipeline] OLLAMA_ENABLED={_cfg.ollama_enabled}, "
@@ -4725,7 +4744,7 @@ async def _run_analysis_pipeline_body(
     async def _run_static():
         cq, alg, auth, sn, gl, sc = await asyncio.gather(
             CodeQualityAgent().analyze(inp),
-            AlgorithmAgent().analyze(inp),
+            AlgorithmAgent().analyze(algorithm_input),
             AIAuthorshipAgent().analyze(inp),
             SeniorityAgent().analyze(inp),
             GuidelineAgent().analyze(inp),
@@ -6322,6 +6341,75 @@ async def _invalidate_generated_test_set(assignment_id: str) -> None:
         )
 
 
+async def _get_algorithm_expectation_store():
+    from backend.algorithm_expectations.store import (
+        DemoAlgorithmExpectationStore,
+        PostgresAlgorithmExpectationStore,
+    )
+
+    if _DEMO_MODE:
+        return DemoAlgorithmExpectationStore(_DEMO_STORE)
+    pool = await _get_db_pool()
+    return PostgresAlgorithmExpectationStore(pool)
+
+
+async def _unknown_algorithm_expectation_resolution() -> AlgorithmExpectationResolution:
+    return AlgorithmExpectationResolution(
+        expectation=None,
+        status="unknown",
+        cache_key="",
+        generation_attempts=0,
+    )
+
+
+async def _resolve_algorithm_expectation(
+    assignment_id: str | None,
+    brief: str,
+    rubric: list[dict[str, Any]] | None,
+    difficulty: str | None,
+) -> AlgorithmExpectationResolution:
+    from backend.algorithm_expectations.generator import extract_and_verify_once
+    from backend.algorithm_expectations.service import resolve_expectation
+
+    if not assignment_id or not str(assignment_id).strip():
+        return await _unknown_algorithm_expectation_resolution()
+
+    test_ctx = await _build_assignment_test_context(
+        assignment_id,
+        assignment_brief=brief,
+        faculty_rubric_criteria=rubric,
+    )
+    resolved_difficulty = (
+        normalize_difficulty(difficulty) if difficulty else test_ctx.difficulty
+    )
+    context = AlgorithmExpectationContext(
+        assignment_id=test_ctx.assignment_id,
+        title=test_ctx.title,
+        description=test_ctx.description or (brief or "").strip(),
+        rubric=tuple(test_ctx.rubric),
+        difficulty=resolved_difficulty,
+    )
+    store = await _get_algorithm_expectation_store()
+    redis = await _get_testing_redis_client()
+    return await resolve_expectation(
+        context,
+        store=store,
+        redis=redis,
+        generate_once=extract_and_verify_once,
+    )
+
+
+async def _invalidate_algorithm_expectation(assignment_id: str) -> None:
+    try:
+        store = await _get_algorithm_expectation_store()
+        await store.deactivate_assignment(assignment_id, reason="assignment_mutation")
+    except Exception as exc:
+        print(
+            f"[algorithm_expectation] invalidation skipped for {assignment_id}: {exc}",
+            flush=True,
+        )
+
+
 async def _require_assignment_for_teacher(
     assignment_id: str,
     principal: AuthPrincipal,
@@ -6532,6 +6620,7 @@ async def update_assignment_difficulty(
         assignment["difficulty_source"] = "teacher"
         _save_demo_store_to_disk()
         await _invalidate_generated_test_set(aid)
+        await _invalidate_algorithm_expectation(aid)
         return dict(assignment)
 
     uid = _parse_assignment_uuid_param(aid)
@@ -6557,6 +6646,7 @@ async def update_assignment_difficulty(
     if updated is None:
         raise HTTPException(status_code=404, detail="Ödev bulunamadı")
     await _invalidate_generated_test_set(aid)
+    await _invalidate_algorithm_expectation(aid)
     return dict(updated)
 
 
@@ -7032,6 +7122,7 @@ async def upsert_rubric(req: RubricUpsertRequest, principal: AuthPrincipal = Dep
             existing["updated_at"] = _demo_now()
             _save_demo_store_to_disk()
             await _invalidate_generated_test_set(aid)
+            await _invalidate_algorithm_expectation(aid)
             return existing
 
         rubric = {
@@ -7046,6 +7137,7 @@ async def upsert_rubric(req: RubricUpsertRequest, principal: AuthPrincipal = Dep
         _DEMO_STORE["rubrics"].append(rubric)
         _save_demo_store_to_disk()
         await _invalidate_generated_test_set(aid)
+        await _invalidate_algorithm_expectation(aid)
         return rubric
 
     pool = await _get_db_pool()
@@ -7101,6 +7193,7 @@ async def upsert_rubric(req: RubricUpsertRequest, principal: AuthPrincipal = Dep
         except Exception as exc:
             raise HTTPException(status_code=500, detail=f"Rubrik oluşturma hatası: {exc}") from exc
     await _invalidate_generated_test_set(str(auid))
+    await _invalidate_algorithm_expectation(str(auid))
     return dict(row)
 
 
