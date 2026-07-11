@@ -1,8 +1,10 @@
 import { afterEach, describe, expect, test, vi } from "vitest";
+import * as apiModule from "./api";
 import {
   analyzeCode,
   fetchHealth,
   getActiveGeneratedTestSet,
+  getAlgorithmExpectation,
   getAssignmentTestCases,
   promoteGeneratedTests,
   replaceAssignmentTestCases,
@@ -384,5 +386,72 @@ describe("fetchHealth", () => {
     vi.stubGlobal("fetch", vi.fn().mockRejectedValueOnce(new Error("network down")));
 
     await expect(fetchHealth()).resolves.toBeNull();
+  });
+});
+
+describe("getAlgorithmExpectation", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  test("fetches active algorithm expectation via apiFetch", async () => {
+    const fetchMock = vi.fn().mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({
+        assignmentId: "assignment-1",
+        expectedComplexity: "O(log n)",
+        expectedApproach: "ikili arama",
+        algorithmFamilies: ["binary_search"],
+        confidence: 0.9,
+        source: "llm_verified",
+        version: 2,
+        verificationStatus: "verified",
+        extractorProvider: "ollama",
+        extractorModel: "qwen",
+        verifierProvider: "ollama",
+        verifierModel: "llama",
+      }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const expectation = await getAlgorithmExpectation("assignment-1");
+
+    expect(expectation?.expectedComplexity).toBe("O(log n)");
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/assignments/assignment-1/algorithm-expectation",
+      expect.objectContaining({ credentials: "include" }),
+    );
+  });
+
+  test("maps 404 to Turkish empty-state message", async () => {
+    const fetchMock = vi.fn().mockResolvedValueOnce({
+      ok: false,
+      status: 404,
+      text: async () => JSON.stringify({ detail: "Aktif algoritma beklentisi bulunamadi" }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(getAlgorithmExpectation("assignment-1")).rejects.toThrow("Henüz doğrulanmış beklenti yok");
+  });
+
+  test("surfaces backend detail on 503", async () => {
+    const fetchMock = vi.fn().mockResolvedValueOnce({
+      ok: false,
+      status: 503,
+      text: async () => JSON.stringify({ detail: "Beklenti servisi gecici olarak kullanilamiyor" }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(getAlgorithmExpectation("assignment-1")).rejects.toThrow(
+      "Beklenti servisi gecici olarak kullanilamiyor",
+    );
+  });
+
+  test("does not export algorithm expectation mutation helpers", () => {
+    const exportedNames = Object.keys(apiModule);
+    const mutationNames = exportedNames.filter((name) =>
+      /^(create|update|upsert|delete|replace|promote).*AlgorithmExpectation/i.test(name),
+    );
+    expect(mutationNames).toEqual([]);
   });
 });

@@ -10,6 +10,7 @@ import {
   Search,
   Brain,
   ChevronDown,
+  BarChart3,
   AlertTriangle,
   CheckCircle2,
   Info,
@@ -31,6 +32,8 @@ import {
   type EvidenceItem,
   type RejectedClaimItem,
 } from "@/lib/evidenceDisplay";
+import AlgorithmResults from "./AlgorithmResults";
+import type { ApiAlgorithmResult } from "@/services/api";
 
 /* ─── Types ─── */
 
@@ -59,6 +62,7 @@ interface AgentReport {
   maxScore: number;
   findings: Finding[];
   testResults?: TestResult[];
+  algorithmResult?: ApiAlgorithmResult | null;
 }
 
 type LineEvidence = EvidenceItem;
@@ -385,6 +389,15 @@ function AgentSection({
                     : null
                 }
               />
+            </div>
+          ) : null}
+          {agent.id === "algorithm" && agent.algorithmResult ? (
+            <div className="space-y-2">
+              <div className="flex items-center gap-2 text-xs font-semibold text-foreground">
+                <BarChart3 className="h-3.5 w-3.5" />
+                Algoritma Analizi
+              </div>
+              <AlgorithmResults audience={report.audience ?? "student"} result={agent.algorithmResult} />
             </div>
           ) : null}
           {agent.findings.map((f, i) => <FindingRow key={i} f={f} />)}

@@ -16,6 +16,7 @@ import {
 import AgentCard, { type AgentStatus } from "./AgentCard";
 import type { ReportData } from "./AnalysisReport";
 import FormalTestResults from "./FormalTestResults";
+import AlgorithmResults from "./AlgorithmResults";
 import type { CodeAnnotation } from "./CodeEditor";
 import { useTranslation } from "@/i18n/LanguageContext";
 
@@ -182,6 +183,8 @@ const RightPanel = ({
   const rubricItems = report?.rubric.slice(rubricStart, rubricEnd) ?? [];
   const testingAgent = report?.agents.find((agent) => agent.id === "testing");
   const testResults = testingAgent?.testResults ?? [];
+  const algorithmAgent = report?.agents.find((agent) => agent.id === "algorithm");
+  const algorithmResult = algorithmAgent?.algorithmResult ?? null;
   const runtime = report?.agentDiagnostics?.runtime;
   const llmRuntime = runtime?.llm;
   const sandboxRuntime = runtime?.sandbox;
@@ -490,6 +493,13 @@ const RightPanel = ({
                       }}
                       compact
                     />
+                  </div>
+                ) : null}
+
+                {algorithmResult ? (
+                  <div className="space-y-2">
+                    <h3 className="text-xs font-semibold text-foreground">Algoritma Analizi</h3>
+                    <AlgorithmResults audience={report.audience ?? "student"} result={algorithmResult} compact />
                   </div>
                 ) : null}
 

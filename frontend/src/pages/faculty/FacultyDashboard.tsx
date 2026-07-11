@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import {
-  GraduationCap, LogOut, Building2, BookOpen, FileText, Plus, Trash2, Pencil, Settings, CalendarIcon, Clock, Users, ShieldCheck, Loader2,
+  GraduationCap, LogOut, Building2, BookOpen, FileText, Plus, Trash2, Pencil, Settings, CalendarIcon, Clock, Users, ShieldCheck, Loader2, BarChart3,
 } from "lucide-react";
 import { format, differenceInDays, differenceInHours } from "date-fns";
 import { tr as trLocale } from "date-fns/locale";
@@ -15,6 +15,7 @@ import AssignmentChatbot from "@/components/faculty/AssignmentChatbot";
 import { buildAssignmentExample, descriptionWithExample, exampleBody } from "@/components/faculty/assignmentExample";
 import SettingsPanel from "@/components/faculty/SettingsPanel";
 import StudentsPanel from "@/components/faculty/StudentsPanel";
+import AlgorithmExpectationPanel from "./AlgorithmExpectationPanel";
 import RuntimeHealthBadge from "@/components/dashboard/RuntimeHealthBadge";
 import { useAuth } from "../../auth/AuthContext";
 import { toast } from "sonner";
@@ -95,6 +96,11 @@ interface RubricModalState {
   assignment: Assignment | null;
 }
 
+interface AlgorithmExpectationModalState {
+  open: boolean;
+  assignment: Assignment | null;
+}
+
 const getErrorMessage = (error: unknown, fallback: string) =>
   error instanceof Error ? error.message : fallback;
 
@@ -112,6 +118,10 @@ const FacultyDashboard = () => {
   const [evaluations, setEvaluations] = useState<EvaluationRecord[]>([]);
   const [loading, setLoading] = useState(true);
   const [rubricModal, setRubricModal] = useState<RubricModalState>({ open: false, assignment: null });
+  const [algorithmExpectationModal, setAlgorithmExpectationModal] = useState<AlgorithmExpectationModalState>({
+    open: false,
+    assignment: null,
+  });
   const [chatbotOpen, setChatbotOpen] = useState(false);
   const [assignmentSubmitting, setAssignmentSubmitting] = useState(false);
 
@@ -808,6 +818,12 @@ const FacultyDashboard = () => {
                           </div>
                           <div className="flex items-center gap-2 shrink-0">
                             <button
+                              onClick={() => setAlgorithmExpectationModal({ open: true, assignment: a })}
+                              className="flex items-center gap-1 px-3 py-1.5 rounded-lg bg-muted text-foreground text-xs font-medium hover:bg-muted/80 transition-colors"
+                            >
+                              <BarChart3 className="h-3 w-3" /> Algoritma Beklentisi
+                            </button>
+                            <button
                               onClick={() => setRubricModal({ open: true, assignment: a })}
                               className="flex items-center gap-1 px-3 py-1.5 rounded-lg bg-accent text-accent-foreground text-xs font-medium hover:bg-accent/80 transition-colors"
                             >
@@ -832,6 +848,14 @@ const FacultyDashboard = () => {
                 assignment={rubricModal.assignment}
                 open={rubricModal.open}
                 onClose={() => { setRubricModal({ open: false, assignment: null }); fetchAll(); }}
+              />
+            )}
+
+            {algorithmExpectationModal.assignment && (
+              <AlgorithmExpectationPanel
+                assignment={algorithmExpectationModal.assignment}
+                open={algorithmExpectationModal.open}
+                onClose={() => setAlgorithmExpectationModal({ open: false, assignment: null })}
               />
             )}
 
