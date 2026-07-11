@@ -261,6 +261,7 @@ class FakePostgresConnection:
     def __init__(self, ledger: _PostgresLedger) -> None:
         self.ledger = ledger
         self.executed: list[tuple[str, tuple[Any, ...] | None]] = []
+        self.transactional_executed: list[tuple[str, tuple[Any, ...] | None]] = []
         self._in_transaction = False
         self._transaction_rolled_back = False
 
@@ -278,10 +279,21 @@ class FakePostgresConnection:
 
     async def execute(self, query: str, *args: Any) -> str:
         self.executed.append((query, args or None))
+        if self._in_transaction:
+            self.transactional_executed.append((query, args or None))
         normalized = " ".join(query.lower().split())
 
         if "pg_advisory_xact_lock" in normalized:
             return "SELECT 1"
+
+        if normalized.startswith("update algorithm_expectations set active = true"):
+            assignment_id = args[0] if len(args) > 0 else None
+            cache_key = args[1] if len(args) > 1 else None
+            for row in self.ledger.rows:
+                if row["assignment_id"] == assignment_id and row["cache_key"] == cache_key:
+                    row["active"] = True
+                    row["deactivated_at"] = None
+            return "UPDATE 1"
 
         if normalized.startswith("update algorithm_expectations set active = false"):
             assignment_id = args[1] if len(args) > 1 else args[0]
@@ -487,3 +499,38 @@ async def test_postgres_store_reactivate_exact_returns_none_for_missing_key() ->
     store = PostgresAlgorithmExpectationStore(pool)
 
     assert await store.reactivate_exact("assignment-missing", "b2" * 32) is None
+
+
+@pytest.mark.asyncio
+async def test_postgres_store_reactivate_exact_uses_advisory_lock_in_single_transaction() -> None:
+    ledger = _PostgresLedger()
+    pool = FakePostgresPool(ledger)
+    store = PostgresAlgorithmExpectationStore(pool)
+    assignment_id = "assignment-reactivate-pg"
+    cache_key = "c3" * 32
+
+    inserted = await store.insert_verified(
+        _expectation(
+            expectation_id="pg-reactivate",
+            assignment_id=assignment_id,
+            cache_key=cache_key,
+        )
+    )
+    for row in ledger.rows:
+        if row["id"] == inserted.id:
+            row["active"] = False
+            row["deactivated_at"] = "2026-07-11T12:00:00Z"
+
+    pool.connection.executed.clear()
+    pool.connection.transactional_executed.clear()
+
+    reactivated = await store.reactivate_exact(assignment_id, cache_key)
+
+    assert reactivated is not None
+    assert reactivated.active is True
+
+    tx_sql = "\n".join(query for query, _ in pool.connection.transactional_executed)
+    assert "pg_advisory_xact_lock" in tx_sql.lower()
+    assert "active = false" in tx_sql.lower()
+    assert "active = true" in tx_sql.lower()
+    assert len(pool.connection.transactional_executed) == 3

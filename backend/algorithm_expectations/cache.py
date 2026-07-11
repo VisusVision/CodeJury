@@ -18,7 +18,9 @@ __all__ = [
     "ExpectationGenerationLockUnavailable",
     "ExpectationGenerationLockHandle",
     "acquire_expectation_generation_lock",
+    "compute_assignment_hash",
     "compute_expectation_identity",
+    "compute_rubric_hash",
     "expectation_generation_lock",
     "release_expectation_generation_lock",
 ]
@@ -63,6 +65,20 @@ class ExpectationGenerationLockHandle:
 
 def _expectation_lock_key(assignment_id: str, cache_key: str) -> str:
     return f"algorithm:expectation_lock:{assignment_id}:{cache_key}"
+
+
+def compute_assignment_hash(context: AlgorithmExpectationContext) -> str:
+    canonical = json.dumps(
+        {"title": context.title, "description": context.description},
+        sort_keys=True,
+        ensure_ascii=False,
+    )
+    return hashlib.sha256(canonical.encode()).hexdigest()
+
+
+def compute_rubric_hash(context: AlgorithmExpectationContext) -> str:
+    canonical = json.dumps(context.rubric, sort_keys=True, ensure_ascii=False)
+    return hashlib.sha256(canonical.encode()).hexdigest()
 
 
 def compute_expectation_identity(

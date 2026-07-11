@@ -18,7 +18,9 @@ from backend.algorithm_expectations.cache import (
     AlgorithmExpectationContext,
     AlgorithmExpectationLeaseLost,
     ExpectationGenerationLockUnavailable,
+    compute_assignment_hash,
     compute_expectation_identity,
+    compute_rubric_hash,
 )
 from backend.algorithm_expectations.contracts import (
     AlgorithmExpectation,
@@ -565,3 +567,32 @@ async def test_concurrent_resolve_expectation_runs_generator_once_and_shares_id(
     assert resolution_b.expectation is not None
     assert resolution_a.expectation.id == resolution_b.expectation.id
     assert resolution_a.expectation.version == resolution_b.expectation.version
+
+
+@pytest.mark.asyncio
+async def test_persist_expectation_populates_assignment_and_rubric_hashes(
+    context: AlgorithmExpectationContext,
+    redis: FakeCacheRedis,
+) -> None:
+    store = _make_demo_store()
+
+    resolution = await _resolve(
+        context,
+        store=store,
+        redis=redis,
+        generate_once=AsyncMock(return_value=_successful_attempt()),
+    )
+
+    assert resolution.status == "available"
+    assert resolution.expectation is not None
+    assert resolution.expectation.assignment_hash
+    assert resolution.expectation.rubric_hash
+    assert resolution.expectation.assignment_hash == compute_assignment_hash(context)
+    assert resolution.expectation.rubric_hash == compute_rubric_hash(context)
+
+    stored = await store.find_by_cache_key(
+        context.assignment_id, resolution.expectation.cache_key
+    )
+    assert stored is not None
+    assert stored.assignment_hash == compute_assignment_hash(context)
+    assert stored.rubric_hash == compute_rubric_hash(context)

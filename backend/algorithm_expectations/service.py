@@ -12,7 +12,9 @@ from backend.algorithm_expectations.cache import (
     AlgorithmExpectationContext,
     AlgorithmExpectationLeaseLost,
     ExpectationGenerationLockUnavailable,
+    compute_assignment_hash,
     compute_expectation_identity,
+    compute_rubric_hash,
     expectation_generation_lock,
 )
 from backend.algorithm_expectations.contracts import (
@@ -113,6 +115,8 @@ async def _persist_expectation(
         schema_version=settings.algorithm_expectation_schema_version,
         extractor_prompt_version=settings.algorithm_expectation_extractor_prompt_version,
         verifier_prompt_version=settings.algorithm_expectation_verifier_prompt_version,
+        assignment_hash=compute_assignment_hash(context),
+        rubric_hash=compute_rubric_hash(context),
         verification_status=verification_status,  # type: ignore[arg-type]
         verification_reason="",
         active=True,
