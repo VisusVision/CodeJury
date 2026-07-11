@@ -82,6 +82,51 @@ export interface ApiAgentReport {
   maxScore: number;
   findings: ApiFinding[];
   testResults?: ApiTestResult[];
+  algorithmResult?: ApiAlgorithmResult | null;
+}
+
+export type ComplexityGap = "better_than_expected" | "matches_expected" | "worse_than_expected" | "unknown";
+
+export interface ApiAlgorithmEvidence {
+  line: number;
+  kind: string;
+  detail: string;
+  confidence?: number;
+}
+
+export interface ApiAlgorithmResult {
+  detectedAlgorithms: string[];
+  dataStructures: string[];
+  timeComplexity: string;
+  spaceComplexity: string;
+  actualFamily: string;
+  actualConfidence: number | null;
+  expectedComplexity: string;
+  expectedApproach: string;
+  expectedFamilies?: string[];
+  expectedSource?: string;
+  expectedConfidence?: number | null;
+  expectationVersion?: number | null;
+  complexityGap: ComplexityGap;
+  gapSteps: number | null;
+  gapExplanation: string;
+  recommendedApproach: string;
+  evidence: ApiAlgorithmEvidence[];
+}
+
+export interface ApiAlgorithmExpectation {
+  assignmentId: string;
+  expectedComplexity: string;
+  expectedApproach: string;
+  algorithmFamilies: string[];
+  confidence: number;
+  source: "llm_verified" | "deterministic_fallback" | "unknown";
+  version: number;
+  verificationStatus: "verified" | "fallback" | "unknown";
+  extractorProvider: string;
+  extractorModel: string;
+  verifierProvider: string;
+  verifierModel: string;
 }
 
 export interface ApiRubricCategory {
@@ -1073,6 +1118,50 @@ export async function getActiveGeneratedTestSet(assignmentId: string): Promise<G
   }
   const data = await response.json();
   return normalizeGeneratedTestSet(data);
+}
+
+function normalizeAlgorithmExpectation(raw: unknown): ApiAlgorithmExpectation {
+  const record = (raw ?? {}) as Record<string, unknown>;
+  const sourceRaw = String(record.source ?? "unknown");
+  const source: ApiAlgorithmExpectation["source"] =
+    sourceRaw === "llm_verified" || sourceRaw === "deterministic_fallback" ? sourceRaw : "unknown";
+  const verificationRaw = String(record.verificationStatus ?? "unknown");
+  const verificationStatus: ApiAlgorithmExpectation["verificationStatus"] =
+    verificationRaw === "verified" || verificationRaw === "fallback" ? verificationRaw : "unknown";
+  const familiesRaw = record.algorithmFamilies;
+  const algorithmFamilies = Array.isArray(familiesRaw)
+    ? familiesRaw.map((item) => String(item))
+    : [];
+  return {
+    assignmentId: String(record.assignmentId ?? ""),
+    expectedComplexity: String(record.expectedComplexity ?? ""),
+    expectedApproach: String(record.expectedApproach ?? ""),
+    algorithmFamilies,
+    confidence: Number(record.confidence ?? 0) || 0,
+    source,
+    version: Number(record.version ?? 0) || 0,
+    verificationStatus,
+    extractorProvider: String(record.extractorProvider ?? ""),
+    extractorModel: String(record.extractorModel ?? ""),
+    verifierProvider: String(record.verifierProvider ?? ""),
+    verifierModel: String(record.verifierModel ?? ""),
+  };
+}
+
+export async function getAlgorithmExpectation(assignmentId: string): Promise<ApiAlgorithmExpectation> {
+  const response = await apiFetch(`${API_BASE_URL}/api/assignments/${assignmentId}/algorithm-expectation`);
+  if (response.status === 404) {
+    throw new Error("Henüz doğrulanmış beklenti yok");
+  }
+  if (!response.ok) {
+    const message = await parseApiErrorMessage(
+      response,
+      response.status === 503 ? "Beklenti servisi geçici olarak kullanılamıyor" : "Algoritma beklentisi alınamadı",
+    );
+    throw new Error(message);
+  }
+  const data = await response.json();
+  return normalizeAlgorithmExpectation(data);
 }
 
 export async function promoteGeneratedTests(

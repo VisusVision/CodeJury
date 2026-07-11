@@ -27,7 +27,7 @@ import LogPanel, { type LogEntry } from "@/components/dashboard/LogPanel";
 import CodeEditor, { type CodeAnnotation } from "@/components/dashboard/CodeEditor";
 import { type ReportData } from "@/components/dashboard/AnalysisReport";
 import { buildPdfReportSectionsHtml } from "@/components/dashboard/reportPdfSections";
-import { analyzeCode, createUploadHistoryRecord, getUploadHistoryRecords, getAssignmentQuestions, getCurrentEvaluation, submitEvaluation, fetchHealth, type ApiAnalysisResult, type QuestionItem, type EvaluationRecord } from "@/services/api";
+import { analyzeCode, createUploadHistoryRecord, getUploadHistoryRecords, getAssignmentQuestions, getCurrentEvaluation, submitEvaluation, fetchHealth, type ApiAnalysisResult, type ApiAlgorithmResult, type QuestionItem, type EvaluationRecord } from "@/services/api";
 import UploadHistory, { type UploadRecord } from "@/components/dashboard/UploadHistory";
 import ExecutionStats from "@/components/dashboard/ExecutionStats";
 import RightPanel from "@/components/dashboard/RightPanel";
@@ -292,6 +292,33 @@ const EvaluationModal = ({ open, blocking, language, contextLabel, onClose, onSu
 };
 
 const WORKSPACE_CACHE_VERSION = 5;
+const PRIVATE_ALGORITHM_RESULT_KEYS = [
+  "expectedFamilies",
+  "expectedSource",
+  "expectedConfidence",
+  "expectationVersion",
+] as const;
+
+const stripPrivateAlgorithmProvenance = (result: ApiAlgorithmResult | null | undefined): ApiAlgorithmResult | null | undefined => {
+  if (!result) return result;
+  const sanitized = { ...result };
+  for (const key of PRIVATE_ALGORITHM_RESULT_KEYS) {
+    delete sanitized[key];
+  }
+  return sanitized;
+};
+
+const sanitizeReportForPersistence = (report: ReportData | null): ReportData | null => {
+  if (!report) return null;
+  return {
+    ...report,
+    agents: report.agents.map((agent) => ({
+      ...agent,
+      algorithmResult: stripPrivateAlgorithmProvenance(agent.algorithmResult) ?? undefined,
+    })),
+  };
+};
+
 const getStorageKey = (assignmentId: string, studentNo: string) =>
   `workspace_${studentNo}_${assignmentId}_cv${WORKSPACE_CACHE_VERSION}`;
 
@@ -325,7 +352,13 @@ const loadPersistedState = (assignmentId: string, studentNo: string): PersistedS
 
 const savePersistedState = (assignmentId: string, studentNo: string, state: PersistedState) => {
   try {
-    localStorage.setItem(getStorageKey(assignmentId, studentNo), JSON.stringify(state));
+    localStorage.setItem(
+      getStorageKey(assignmentId, studentNo),
+      JSON.stringify({
+        ...state,
+        report: sanitizeReportForPersistence(state.report),
+      }),
+    );
   } catch {
     // storage full, ignore
   }
@@ -361,6 +394,7 @@ function buildReportData(result: ApiAnalysisResult, fileContent: string): Report
       ...agent,
       icon: agentIconMap[agent.id] || FlaskConical,
       testResults: agent.testResults?.map(mapFormalTestResult),
+      algorithmResult: agent.algorithmResult ?? null,
     })),
     evidence: result.evidence,
     rejectedClaims: result.rejectedClaims ?? [],
