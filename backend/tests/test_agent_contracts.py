@@ -1440,7 +1440,8 @@ class TestAgentContractTests(unittest.TestCase):
         self.assertTrue(_looks_like_cli_usage_error("usage: app FILE"))
         self.assertTrue(result["runs_successfully"])
         self.assertEqual(result["failed_tests"], 0)
-        self.assertGreaterEqual(result["score"], 70)
+        self.assertEqual(result["formalTotal"], 0)
+        self.assertLessEqual(result["score"], 40)
 
     def test_cli_usage_summary_is_clear_for_argument_driven_programs(self):
         agents = _build_agents_list(
@@ -1484,7 +1485,9 @@ class TestAgentContractTests(unittest.TestCase):
 
         self.assertTrue(_looks_like_service_program(code, "python"))
         self.assertTrue(result["runs_successfully"])
-        self.assertGreaterEqual(result["score"], 60)
+        self.assertTrue(result.get("service_runtime_accepted"))
+        self.assertEqual(result["formalTotal"], 0)
+        self.assertLessEqual(result["score"], 40)
 
 
 def _formal_sandbox_input(

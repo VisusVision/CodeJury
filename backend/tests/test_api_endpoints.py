@@ -807,6 +807,7 @@ class ApiEndpointTests(unittest.TestCase):
         self.assertEqual(resp.json()[0]["files"], [])
 
     def test_analyze_uses_saved_assignment_test_cases_when_request_has_no_override(self):
+        """Enqueue omits test_cases; worker resolves faculty cases at execution."""
         main._DEMO_STORE.setdefault("assignment_test_cases", []).append(
             {
                 "id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
@@ -828,6 +829,7 @@ class ApiEndpointTests(unittest.TestCase):
         store = MagicMock(redis=object())
         with (
             patch.object(main, "_get_analysis_job_store", new=AsyncMock(return_value=store)),
+            patch.object(main, "_fetch_assignment_test_cases_for_pipeline", new=AsyncMock()) as fetch_cases,
             patch.object(main, "get_worker_readiness", new=AsyncMock(return_value={
                 "status": "ok", "analysis_ready": True,
                 "worker_count": 1, "ready_worker_count": 1,
@@ -847,8 +849,9 @@ class ApiEndpointTests(unittest.TestCase):
 
         self.assertEqual(resp.status_code, 200)
         request = resp.json()["request"]
-        self.assertEqual(request["test_cases"][0]["name"], "saved public")
-        self.assertEqual(request["test_cases"][0]["expected_stdout"], "49\n")
+        self.assertNotIn("test_cases", request)
+        self.assertEqual(request["assignment_id"], _DEMO_ASSIGNMENT_ID)
+        fetch_cases.assert_not_awaited()
 
     def test_assignment_test_case_suggestions_are_ai_source_and_not_persisted(self):
         from backend.testing.contracts import FormalTestCase, OracleValidation

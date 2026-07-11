@@ -492,9 +492,12 @@ async def test_stale_inactive_cache_key_is_not_reactivated(
     winner = _generated_set(context, set_id="fresh-set")
     generate_once = AsyncMock(return_value=_sufficient_medium_attempt())
 
-    async def insert_and_return(test_set: GeneratedTestSet) -> GeneratedTestSet:
+    async def insert_and_return(test_set: GeneratedTestSet, *, lease_check=None) -> GeneratedTestSet:
+        if lease_check is not None:
+            lease_check()
         return await DemoGeneratedTestSetStore(store._container).insert_verified_set(
-            winner.model_copy(update={"id": test_set.id, "cases": test_set.cases})
+            winner.model_copy(update={"id": test_set.id, "cases": test_set.cases}),
+            lease_check=lease_check,
         )
 
     store.insert_verified_set = insert_and_return  # type: ignore[method-assign]

@@ -145,3 +145,91 @@ Docker servisleri:
 ```bash
 docker compose down
 ```
+
+---
+
+## 8. Faz 2B — Formal test üretimi ve puanlama
+
+### Zorluk (difficulty)
+
+| Değer | Hedef test | Minimum | Açık (public) |
+|-------|------------|---------|---------------|
+| `easy` | 5 | 4 | 1 |
+| `medium` | 8 | 7 | 2 |
+| `hard` | 12 | 10 | 2 |
+
+- Öğretmen manuel oluştururken veya AI asistanından seçerken zorluk gönderilir.
+- Kaynak (`difficulty_source`): `default`, `teacher`, `ai_selected`, `inferred`.
+- Eski kayıtlarda alan boşsa sunucu `inferred` ile tamamlar.
+
+### Öğretmen iş akışı
+
+1. Ödev + onaylı rubrik oluşturun.
+2. **Testler** sekmesinde:
+   - Manuel test ekleyin/düzenleyin, veya
+   - **AI öner** ile taslak alın (kaydedilmez), seçtiklerinizi **Ekle** / **Değiştir** ile onaylayın, veya
+   - Aktif otomatik setten seçili testleri **Promote** ile fakülte testine taşıyın.
+3. **Önemli:** En az bir fakülte testi varken otomatik üretim **tamamen durur**.
+
+### Python-first
+
+- Otomatik test üretimi yalnızca **Python** ödevlerinde ve fakülte testi **yokken** çalışır.
+- C++/Java için yalnızca öğretmenin girdiği testler kullanılır.
+
+### Gerekli servisler (gerçek analiz)
+
+| Servis | Rol |
+|--------|-----|
+| PostgreSQL | Ödev, rubrik, fakülte testleri, üretilmiş set önbelleği |
+| Redis | Oturum + test üretim kilidi |
+| Docker sandbox pool | Formal test çalıştırma (worker) |
+| Ollama / NIM | Test üretimi ve doğrulama (fail-soft) |
+
+`npm run dev:full` API + worker başlatır; worker sandbox havuzunu yönetir.
+
+### Fail-soft vs fail-closed
+
+| Durum | Davranış |
+|-------|----------|
+| Test üretimi / doğrulama / kilit başarısız | **Fail-soft:** `testEvidenceStatus=unavailable`, TestAgent üst sınırı 40 |
+| Sandbox kullanılamıyor | **Fail-closed:** analiz işi başarısız, puanlama yok |
+| Öğrenci gizli test detayı | **Fail-closed:** yalnızca `Hidden test #N` + durum |
+
+Öğrenci sonuçları gizli stdin/çıktı, stderr, fixture, oracle veya cache kimliği **içermez**. Öğretmen (sahip) tam kanıtı görür.
+
+### Faz 2B QA komutları
+
+Önkoşul: `.env` içinde `DEMO_MODE=0`, Docker Desktop açık, sandbox imajı:
+
+```powershell
+docker build -t agentgrade-sandbox:phase2b sandbox-images/agentgrade
+```
+
+```powershell
+$env:PYTHONPATH='.'
+$env:PYTHONIOENCODING='utf-8'
+
+# Redis + PostgreSQL kilit ve önbellek
+C:\Python314\python.exe scripts/qa_phase2b_cache_smoke.py --manage-services
+
+# Sandbox vaka izolasyonu ve backend otoritesi
+C:\Python314\python.exe scripts/qa_phase2b_case_isolation.py --manage-services
+
+# Tam Faz 2B uçtan uca (seçim, sandbox, projeksiyon, güvenlik defteri)
+C:\Python314\python.exe scripts/qa_phase2b_e2e.py --manage-services
+```
+
+`--manage-services`: Compose'ta çalışmayan Redis/PostgreSQL'i başlatır; önceden çalışan servisleri **durdurmaz**; `finally` ile önceki durumu geri yükler.
+
+Beklenen çıktı: her script `PASS` ve e2e sonunda güvenlik defteri (tüm bayraklar `False` = güvenli).
+
+```text
+CLIENT_TEST_OVERRIDE_AFFECTED_SCORE=False
+SECOND_GENERATOR_RAN_FOR_SAME_CACHE=False
+STUDENT_CODE_APPEARED_IN_GENERATOR_PROMPT=False
+HIDDEN_SENTINEL_LEAK=False
+CONTAINER_PASSED_OVERRULED_BACKEND=False
+CASE_FIXTURE_STATE_CROSSED_BOUNDARY=False
+FACULTY_TEST_TRIGGERED_GENERATOR=False
+GENERATION_FAILURE_CREATED_FORMAL_PASS=False
+```
