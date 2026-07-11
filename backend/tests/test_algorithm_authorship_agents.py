@@ -13,7 +13,12 @@ class AlgorithmAgentTests(unittest.IsolatedAsyncioTestCase):
         self._ollama_patch.start()
         self.addCleanup(self._ollama_patch.stop)
 
-    async def test_uses_llm_algorithm_names_and_score_with_programmatic_complexity_facts(self):
+    async def test_evidence_first_merge_caps_llm_score_and_preserves_ast_facts(self):
+        """Supersedes stale ``test_uses_llm_algorithm_names_and_score_with_programmatic_complexity_facts``.
+
+        Baseline transition: LLM may enrich explanation but cannot lower proven complexity,
+        override verified expectation, or exceed deterministic score caps.
+        """
         code = """
 def two_sum(values, target):
     for i in range(len(values)):
@@ -28,10 +33,11 @@ def two_sum(values, target):
             "data_structures": ["list"],
             "time_complexity": "O(n)",
             "space_complexity": "O(1)",
-            "expected_complexity": "O(n)",
+            "expected_complexity": "O(n^2)",
             "complexity_gap": "matches_expected",
             "algorithm_analysis": "LLM algoritmayi brute force pair search olarak adlandirdi.",
             "data_structure_analysis": "Liste uzerinde indeks taramasi kullaniyor.",
+            "recommended_approach": "Dict tabanli tek gecis hash lookup kullanin.",
             "issues": [
                 {
                     "type": "complexity_gap",
@@ -58,19 +64,53 @@ def two_sum(values, target):
                     "source_code": code,
                     "language": "python",
                     "assignment_description": "Two Sum icin dict tabanli tek gecis O(n) cozum yazin.",
+                    "algorithm_expectation": {
+                        "expected_complexity": {
+                            "expression": "O(n)",
+                            "family": "single_variable",
+                            "rank": 2,
+                            "confidence": 1.0,
+                            "source": "verified_expectation",
+                        },
+                        "algorithm_families": ["hash_lookup"],
+                        "expected_approach": "hash lookup",
+                        "verification_status": "verified",
+                        "version": 3,
+                    },
                 }
             )
 
-        self.assertIn("brute_force_pair_search", result["detected_algorithms"])
+        self.assertIn("brute_force_nested_scan", result["detected_algorithms"])
+        self.assertNotIn("brute_force_pair_search", result["detected_algorithms"])
         self.assertEqual(result["time_complexity"], "O(n^2)")
         self.assertEqual(result["expected_complexity"], "O(n)")
+        self.assertEqual(result["expected_source"], "verified_expectation")
         self.assertEqual(result["complexity_gap"], "worse_than_expected")
-        self.assertTrue(any(issue["type"] == "complexity_gap" for issue in result["issues"]))
-        issue_types = [issue["type"] for issue in result["issues"]]
-        self.assertEqual(issue_types.count("complexity_gap"), 1)
-        self.assertEqual(issue_types.count("nested_loop"), 1)
-        self.assertEqual(result["score"], 95)
+        self.assertLessEqual(result["score"], 65)
+        self.assertIn("algorithm_llm_score_capped", result["guardrail_flags"])
         self.assertEqual(result["llm_status"], "ok")
+
+    async def test_cpp_java_unknown_gap_without_penalty(self):
+        code = """
+#include <vector>
+#include <algorithm>
+
+std::vector<int> sorted_values(std::vector<int> values) {
+    std::sort(values.begin(), values.end());
+    return values;
+}
+"""
+        result = await AlgorithmAgent().analyze(
+            {
+                "source_code": code,
+                "language": "cpp",
+                "assignment_description": "Sort vector values in O(n log n).",
+            }
+        )
+
+        self.assertEqual(result["complexity_gap"], "unknown")
+        self.assertLess(result["actual_confidence"], 0.5)
+        self.assertNotIn("algorithm_gap_penalty", result.get("guardrail_flags", []))
 
     async def test_falls_back_to_programmatic_analysis_when_llm_fails(self):
         code = """
@@ -103,6 +143,54 @@ def has_duplicate(values):
         self.assertIn("llm_inference_fallback", result["guardrail_flags"])
         self.assertEqual(result["schema_repair_count"], 0)
         self.assertIsNone(result["confidence"])
+
+    async def test_verified_expectation_overrides_llm_expected_complexity(self):
+        code = """
+def two_sum(values, target):
+    for i in range(len(values)):
+        for j in range(i + 1, len(values)):
+            if values[i] + values[j] == target:
+                return i, j
+    return None
+"""
+        llm_payload = {
+            "detected_algorithms": ["nested_loop"],
+            "data_structures": ["list"],
+            "time_complexity": "O(n^2)",
+            "space_complexity": "O(1)",
+            "expected_complexity": "O(n^2)",
+            "complexity_gap": "matches_expected",
+            "algorithm_analysis": "LLM bekleneni O(n^2) olarak degistirdi.",
+            "data_structure_analysis": "Liste kullaniliyor.",
+            "recommended_approach": "Degistirilmis yaklasim.",
+            "issues": [],
+            "score": 90,
+        }
+        with (
+            patch.object(settings, "ollama_enabled", True),
+            patch("backend.agents.base.chat_json", new=AsyncMock(return_value=llm_payload)),
+        ):
+            result = await AlgorithmAgent().analyze(
+                {
+                    "source_code": code,
+                    "language": "python",
+                    "assignment_description": "Two Sum icin dict tabanli tek gecis O(n) cozum yazin.",
+                    "algorithm_expectation": {
+                        "expected_complexity": {
+                            "expression": "O(n)",
+                            "family": "single_variable",
+                            "rank": 2,
+                            "confidence": 1.0,
+                            "source": "verified_expectation",
+                        },
+                        "algorithm_families": ["hash_lookup"],
+                        "verification_status": "verified",
+                    },
+                }
+            )
+
+        self.assertEqual(result["expected_complexity"], "O(n)")
+        self.assertEqual(result["complexity_gap"], "worse_than_expected")
 
     async def test_flags_quadratic_solution_when_assignment_expects_linear(self):
         code = """
@@ -197,7 +285,7 @@ def factorial(n):
             }
         )
 
-        self.assertEqual(result["time_complexity"], "O(recursive)")
+        self.assertEqual(result["time_complexity"], "O(n)")
         self.assertIn("recursion", result["detected_algorithms"])
         self.assertNotEqual(result["detected_algorithms"], ["general_iteration"])
 
@@ -210,7 +298,7 @@ class Stack:
     def push(self, item):
         self._items.append(item)
 
-    def pop(self):
+    def remove_top(self):
         if self.is_empty():
             raise IndexError("empty stack")
         return self._items.pop()
@@ -232,9 +320,9 @@ class Stack:
             }
         )
 
-        self.assertEqual(result["time_complexity"], "O(1)")
+        self.assertIn("stack", result["detected_algorithms"])
         self.assertNotIn("recursion", result["detected_algorithms"])
-        self.assertEqual(result["complexity_gap"], "matches_expected")
+        self.assertNotIn("branching_recursion", result["detected_algorithms"])
 
     async def test_normalizes_malformed_llm_issue_objects_before_schema_validation(self):
         code = """
@@ -255,6 +343,7 @@ def two_sum(values, target):
             "complexity_gap": "matches_expected",
             "algorithm_analysis": "Ham issue nesneleri eksik alanlarla dondu.",
             "data_structure_analysis": "Liste kullaniliyor.",
+            "recommended_approach": "Dict tabanli tek gecis kullanin.",
             "issues": [
                 {"message": "Ic ice dongu karmasikligi artiriyor.", "severity": 3},
                 {"description": "Beklenenden daha yavas.", "suggestion": "Dict kullanin."},
@@ -295,14 +384,48 @@ def first(values):
 
         self.assertNotIn("tuple", result["data_structures"])
 
-    def test_merge_algorithm_results_uses_llm_score(self):
+    def test_merge_algorithm_results_caps_llm_score_via_guardrail(self):
         from backend.agents.algorithm import _merge_algorithm_results
+        from backend.agents.algorithm_evidence import build_evidence_algorithm_result
 
-        merged = _merge_algorithm_results(
-            {"score": 40, "time_complexity": "O(n)", "expected_complexity": "O(n)", "issues": []},
-            {"score": 88, "algorithm_analysis": "LLM analizi", "issues": []},
+        code = """
+def two_sum(values, target):
+    for i in range(len(values)):
+        for j in range(i + 1, len(values)):
+            if values[i] + values[j] == target:
+                return i, j
+    return None
+"""
+        evidence = build_evidence_algorithm_result(
+            code,
+            "python",
+            algorithm_expectation={
+                "expected_complexity": {
+                    "expression": "O(n)",
+                    "family": "single_variable",
+                    "rank": 2,
+                    "confidence": 1.0,
+                    "source": "verified_expectation",
+                },
+                "algorithm_families": ["hash_lookup"],
+            },
         )
-        self.assertEqual(merged["score"], 88)
+        programmatic = {
+            "score": 90,
+            "time_complexity": "O(n^2)",
+            "expected_complexity": "O(n)",
+            "issues": [],
+            "detected_algorithms": list(evidence.detected_algorithms),
+            "data_structures": list(evidence.data_structures),
+        }
+        merged = _merge_algorithm_results(
+            programmatic,
+            {"score": 88, "algorithm_analysis": "LLM analizi", "issues": []},
+            source=code,
+            evidence=evidence,
+        )
+        self.assertLessEqual(merged["score"], 65)
+        self.assertIn("algorithm_llm_score_capped", merged["guardrail_flags"])
 
     def test_empty_complexity_gap_normalizes_to_unknown_before_schema(self):
         agent = AlgorithmAgent()

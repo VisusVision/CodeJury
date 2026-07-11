@@ -1,23 +1,29 @@
 from __future__ import annotations
 
-import ast
 import json
-import re
 from typing import Any
 
-from backend.agents.base import BaseAgent, LLMInferenceError, build_llm_user_suffix, format_assignment_context_for_prompt
-from backend.agents.code_utils import (
-    FunctionInfo,
-    enrich_issue_with_line,
-    get_code_metrics,
-    nested_loop_focus_line,
+from backend.agents.algorithm_evidence import (
+    build_evidence_algorithm_result,
+    build_programmatic_algorithm_result,
+    evidence_result_to_output,
+    merge_algorithm_results,
+    resolve_expectation_input,
 )
-from backend.agents.json_output_schema import ALGORITHM_OUTPUT_SCHEMA, normalize_agent_severity
+from backend.agents.algorithm_evidence import _normalize_complexity_gap as normalize_complexity_gap
+from backend.agents.algorithm_evidence import _safe_str_list as safe_str_list
+from backend.agents.base import BaseAgent, LLMInferenceError, build_llm_user_suffix, format_assignment_context_for_prompt
+from backend.agents.json_output_schema import ALGORITHM_OUTPUT_SCHEMA
+
+# Backward-compatible aliases for tests and adapters.
+_build_programmatic_algorithm_result = build_programmatic_algorithm_result
+_merge_algorithm_results = merge_algorithm_results
 
 _ALGORITHM_SYSTEM_PROMPT = """
 You are an algorithm analysis agent for programming assignments.
-Return only JSON. Evaluate the submitted code's algorithmic approach, named algorithms,
-data structures, Big-O complexity, and whether it is more complex than the assignment expects.
+Return only JSON. Explain the submitted code's algorithmic approach using the provided
+deterministic evidence as authoritative facts. You may enrich names and narrative, but you
+must not contradict proven complexity, verified expectations, or evidence line numbers.
 Be concrete and code-grounded. Do not over-credit inefficient code.
 """
 
@@ -30,391 +36,10 @@ _ALGORITHM_REQUIRED_KEYS = [
     "complexity_gap",
     "algorithm_analysis",
     "data_structure_analysis",
+    "recommended_approach",
     "issues",
     "score",
 ]
-
-_COMPLEXITY_RANK = {
-    "O(1)": 0,
-    "O(log n)": 1,
-    "O(n)": 2,
-    "O(n log n)": 3,
-    "O(n^2)": 5,
-    "O(n^3)": 7,
-    "O(2^n)": 9,
-    "O(n!)": 10,
-    "O(recursive)": 4,
-    "O(n * recursive)": 6,
-}
-
-
-def _rank(value: str) -> int:
-    return _COMPLEXITY_RANK.get(value, 5)
-
-
-def _worst(left: str, right: str) -> str:
-    return left if _rank(left) >= _rank(right) else right
-
-
-def _expected_complexity_from_text(text: str) -> str:
-    lowered = (text or "").lower()
-    expected_match = re.search(
-        r"(beklenen|expected|hedef|target|istenen|istenilen)[^.\n;]*(o\s*\(\s*n\s*\)|tek gecis|tek geÃ§iÅŸ|linear|lineer)",
-        lowered,
-    )
-    if expected_match:
-        return "O(n)"
-    expected_match = re.search(
-        r"(beklenen|expected|hedef|target|istenen|istenilen)[^.\n;]*(o\s*\(\s*n\s*log\s*n\s*\)|n\s*log\s*n)",
-        lowered,
-    )
-    if expected_match:
-        return "O(n log n)"
-    expected_match = re.search(
-        r"(beklenen|expected|hedef|target|istenen|istenilen)[^.\n;]*(o\s*\(\s*log\s*n\s*\)|logaritmik)",
-        lowered,
-    )
-    if expected_match:
-        return "O(log n)"
-    expected_match = re.search(
-        r"(beklenen|expected|hedef|target|istenen|istenilen)[^.\n;]*(o\s*\(\s*1\s*\)|sabit zaman|constant)",
-        lowered,
-    )
-    if expected_match:
-        return "O(1)"
-    expected_match = re.search(
-        r"(beklenen|expected|hedef|target|istenen|istenilen)[^.\n;]*(o\s*\(\s*n\s*\^\s*2\s*\)|o\(n2\)|quadratic|karesel)",
-        lowered,
-    )
-    if expected_match:
-        return "O(n^2)"
-
-    patterns = [
-        (r"o\s*\(\s*n\s*\^\s*2\s*\)|o\(n2\)|quadratic|karesel", "O(n^2)"),
-        (r"o\s*\(\s*n\s*log\s*n\s*\)|n\s*log\s*n", "O(n log n)"),
-        (r"o\s*\(\s*log\s*n\s*\)|logaritmik", "O(log n)"),
-        (r"o\s*\(\s*n\s*\)|tek gecis|tek geçiş|linear|lineer", "O(n)"),
-        (r"o\s*\(\s*1\s*\)|sabit zaman|constant", "O(1)"),
-    ]
-    for pattern, value in patterns:
-        if re.search(pattern, lowered):
-            return value
-    return ""
-
-
-def _detect_data_structures(source: str) -> list[str]:
-    found: set[str] = set()
-    try:
-        tree = ast.parse(source or "")
-    except SyntaxError:
-        tree = None
-
-    if tree is not None:
-        for node in ast.walk(tree):
-            if isinstance(node, ast.Dict):
-                found.add("dict")
-            elif isinstance(node, ast.Set):
-                found.add("set")
-            elif isinstance(node, ast.List):
-                found.add("list")
-            elif isinstance(node, ast.Call):
-                call_name = ""
-                if isinstance(node.func, ast.Name):
-                    call_name = node.func.id
-                elif isinstance(node.func, ast.Attribute):
-                    call_name = node.func.attr
-                if call_name in {"dict", "set", "list", "tuple"}:
-                    found.add(call_name)
-                elif call_name in {"deque"}:
-                    found.add("deque")
-                elif call_name in {"heappush", "heappop", "heapify"}:
-                    found.add("heap")
-
-    lowered = source.lower()
-    checks = [
-        ("dict", ("dict(", ".get(", "defaultdict", "counter(")),
-        ("set", ("set(", ".add(")),
-        ("list", ("list(", ".append(", ".extend(")),
-        ("tuple", ("tuple(",)),
-        ("heap", ("heapq", "heappush", "heappop", "heapify")),
-        ("deque", ("deque",)),
-        ("tree", ("left", "right", "node", "root")),
-    ]
-    for name, tokens in checks:
-        if any(token in lowered for token in tokens):
-            found.add(name)
-    return sorted(set(found))
-
-
-def _detect_algorithms(source: str, functions: list[FunctionInfo]) -> list[str]:
-    lowered = source.lower()
-    found: set[str] = set()
-    if "sort(" in lowered or ".sort(" in lowered or "sorted(" in lowered:
-        found.add("sorting")
-    if "binary_search" in lowered or "ikili_arama" in lowered:
-        found.add("binary_search")
-    if any(fn.uses_recursion for fn in functions):
-        found.add("recursion")
-    if any(name in lowered for name in ("bfs", "queue", "deque")):
-        found.add("bfs")
-    if any(name in lowered for name in ("dfs", "recursive", "recursion")):
-        found.add("dfs/recursion")
-    if re.search(r"for\s+.+:\s*\n\s+for\s+", source):
-        found.add("nested_loop")
-    for fn in functions:
-        name = fn.name
-        clean = name.lower()
-        if "search" in clean or "ara" in clean:
-            found.add("search")
-        if "sort" in clean or "sirala" in clean:
-            found.add("sorting")
-        if "duplicate" in clean or "tekrar" in clean:
-            found.add("duplicate_detection")
-    return sorted(found) or ["general_iteration"]
-
-
-def _looks_like_binary_search(source: str, functions: list[FunctionInfo]) -> bool:
-    lowered = (source or "").lower()
-    if not any("binary" in fn.name.lower() or "ikili" in fn.name.lower() for fn in functions):
-        return False
-    return (
-        "while" in lowered
-        and "mid" in lowered
-        and re.search(r"\b(lo|low|left)\s*=\s*mid\s*\+\s*1", lowered)
-        and re.search(r"\b(hi|high|right)\s*=\s*mid\s*-\s*1", lowered)
-    )
-
-
-def _safe_str_list(value: Any, fallback: list[str]) -> list[str]:
-    if not isinstance(value, list):
-        return list(fallback)
-    out: list[str] = []
-    for item in value:
-        text = str(item or "").strip()
-        if text and text not in out:
-            out.append(text)
-    return out or list(fallback)
-
-
-def _merge_str_lists(*lists: list[str], fallback: list[str] | None = None, limit: int = 8) -> list[str]:
-    merged: list[str] = []
-    for values in lists:
-        for item in values:
-            text = str(item or "").strip()
-            if text and text not in merged:
-                merged.append(text)
-            if len(merged) >= limit:
-                return merged
-    return merged or list(fallback or [])
-
-
-_COMPLEXITY_GAP_VALUES = frozenset(
-    {"unknown", "worse_than_expected", "matches_expected", "better_than_expected"}
-)
-
-
-def _normalize_complexity_gap(value: Any) -> str:
-    gap = str(value or "").strip()
-    if gap in _COMPLEXITY_GAP_VALUES:
-        return gap
-    return "unknown"
-
-
-def _complexity_gap(actual: str, expected: str) -> str:
-    if not expected:
-        return "unknown"
-    if _rank(actual) > _rank(expected):
-        return "worse_than_expected"
-    if _rank(actual) < _rank(expected):
-        return "better_than_expected"
-    return "matches_expected"
-
-
-def _normalize_algorithm_issues(issues: Any) -> list[dict[str, Any]]:
-    if not isinstance(issues, list):
-        return []
-    normalized: list[dict[str, Any]] = []
-    for raw in issues:
-        if not isinstance(raw, dict):
-            continue
-        description = str(raw.get("description") or raw.get("message") or "").strip()
-        suggested_fix = str(raw.get("suggested_fix") or raw.get("suggestion") or "").strip()
-        if not description:
-            continue
-        issue = {
-            "type": str(raw.get("type") or "algorithm_observation").strip() or "algorithm_observation",
-            "description": description[:300],
-            "severity": normalize_agent_severity(raw.get("severity")),
-            "suggested_fix": suggested_fix[:300] or "Algoritma secimini ve karmasiklik hedefini odev beklentisine gore iyilestirin.",
-        }
-        line = raw.get("line")
-        if isinstance(line, int) and line > 0:
-            issue["line"] = line
-        line_hint = raw.get("line_hint")
-        if "line" not in issue and isinstance(line_hint, int) and line_hint > 0:
-            issue["line"] = line_hint
-        normalized.append(issue)
-        if len(normalized) >= 8:
-            break
-    return normalized
-
-
-def _dedupe_algorithm_issues(issues: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    deduped: list[dict[str, Any]] = []
-    seen: set[tuple[str, Any]] = set()
-    for issue in issues:
-        issue_type = str(issue.get("type") or "algorithm_observation").strip()
-        line = issue.get("line")
-        if issue_type in {"complexity_gap", "nested_loop"}:
-            key = (issue_type, line if isinstance(line, int) else None)
-        else:
-            description = str(issue.get("description") or "").strip().lower()
-            key = (issue_type, description[:120])
-        if key in seen:
-            continue
-        seen.add(key)
-        deduped.append(issue)
-    return deduped
-
-
-def _build_programmatic_algorithm_result(source: str, language: str, brief: str) -> dict[str, Any]:
-    metrics = get_code_metrics(source, language)
-
-    time_complexity = "O(1)"
-    for fn in metrics.functions:
-        time_complexity = _worst(time_complexity, fn.complexity)
-    if not metrics.functions and metrics.max_nesting_depth >= 2:
-        time_complexity = "O(n^2)"
-    elif not metrics.functions and metrics.max_nesting_depth == 1:
-        time_complexity = "O(n)"
-    if _looks_like_binary_search(source, metrics.functions):
-        time_complexity = "O(log n)"
-
-    data_structures = _detect_data_structures(source)
-    expected = _expected_complexity_from_text(brief)
-    gap = _complexity_gap(time_complexity, expected)
-    issues: list[dict[str, Any]] = []
-    nested_line = nested_loop_focus_line(metrics) if metrics.max_nesting_depth >= 2 else None
-    if gap == "worse_than_expected":
-        gap_issue: dict[str, Any] = {
-            "type": "complexity_gap",
-            "description": f"Cozum {time_complexity}; odev beklentisi {expected} gorunuyor.",
-            "severity": "high",
-            "suggested_fix": "Tekrarlayan taramalari dict/set tabanli tek gecis yaklasimina indirin.",
-        }
-        if nested_line:
-            gap_issue["line"] = nested_line
-        elif metrics.functions:
-            gap_issue["line"] = metrics.functions[0].line
-        issues.append(gap_issue)
-
-    if metrics.max_nesting_depth >= 2:
-        nested_issue: dict[str, Any] = {
-            "type": "nested_loop",
-            "description": "Ic ice dongu karmasikligi artiriyor.",
-            "severity": "medium",
-            "suggested_fix": "Lookup veya indeksleme icin uygun veri yapisi kullanin.",
-        }
-        if nested_line:
-            nested_issue["line"] = nested_line
-        issues.append(nested_issue)
-
-    score = 90
-    if gap == "worse_than_expected":
-        score -= 35
-    if metrics.max_nesting_depth >= 2:
-        score -= 10
-    score = max(0, min(100, score))
-
-    detected_algorithms = _detect_algorithms(source, metrics.functions)
-    return {
-        "detected_algorithms": detected_algorithms,
-        "data_structures": data_structures,
-        "time_complexity": time_complexity,
-        "space_complexity": "O(n)" if data_structures else "O(1)",
-        "expected_complexity": expected,
-        "complexity_gap": gap,
-        "algorithm_analysis": (
-            f"Tespit edilen yaklasim: {', '.join(detected_algorithms)}. "
-            f"Programatik karmasiklik tahmini {time_complexity}."
-        ),
-        "data_structure_analysis": (
-            f"Kullanilan veri yapilari: {', '.join(data_structures)}."
-            if data_structures
-            else "Belirgin ek veri yapisi kullanimi tespit edilmedi."
-        ),
-        "issues": issues,
-        "score": score,
-    }
-
-
-def _merge_algorithm_results(
-    programmatic: dict[str, Any],
-    llm_result: dict[str, Any],
-    *,
-    source: str = "",
-) -> dict[str, Any]:
-    actual = str(programmatic.get("time_complexity") or "O(1)")
-    expected = str(programmatic.get("expected_complexity") or "")
-    llm_expected = str(llm_result.get("expected_complexity") or "").strip()
-    if not expected and llm_expected in _COMPLEXITY_RANK:
-        expected = llm_expected
-    gap = _complexity_gap(actual, expected)
-
-    issues = _normalize_algorithm_issues(llm_result.get("issues"))
-    programmatic_issues = _normalize_algorithm_issues(programmatic.get("issues"))
-    if gap == "worse_than_expected" and not any(i.get("type") == "complexity_gap" for i in programmatic_issues):
-        programmatic_issues.insert(
-            0,
-            {
-                "type": "complexity_gap",
-                "description": f"Cozum {actual}; odev beklentisi {expected} gorunuyor.",
-                "severity": "high",
-                "suggested_fix": "Algoritmayi beklenen karmasiklik sinirina indirin.",
-            },
-        )
-
-    try:
-        llm_score = int(float(llm_result.get("score")))
-    except (TypeError, ValueError):
-        llm_score = 50
-    llm_score = max(0, min(100, llm_score))
-
-    merged = dict(llm_result)
-    merged.update(
-        {
-            "detected_algorithms": _merge_str_lists(
-                _safe_str_list(programmatic.get("detected_algorithms"), []),
-                _safe_str_list(llm_result.get("detected_algorithms"), []),
-                fallback=["general_iteration"],
-            ),
-            "data_structures": _merge_str_lists(
-                _safe_str_list(programmatic.get("data_structures"), []),
-                _safe_str_list(llm_result.get("data_structures"), []),
-                fallback=[],
-            ),
-            "time_complexity": actual,
-            "space_complexity": str(programmatic.get("space_complexity") or "O(1)"),
-            "expected_complexity": expected,
-            "complexity_gap": gap,
-            "algorithm_analysis": str(
-                llm_result.get("algorithm_analysis") or programmatic.get("algorithm_analysis") or ""
-            ).strip(),
-            "data_structure_analysis": str(
-                llm_result.get("data_structure_analysis") or programmatic.get("data_structure_analysis") or ""
-            ).strip(),
-            "issues": _dedupe_algorithm_issues(programmatic_issues + issues)[:10],
-            "score": llm_score,
-        }
-    )
-    source_lines = source.splitlines()
-    if source_lines:
-        merged["issues"] = [
-            enrich_issue_with_line(dict(issue), source_lines)
-            for issue in merged.get("issues", [])
-            if isinstance(issue, dict)
-        ]
-    return merged
 
 
 def _task_alignment_prompt_hint(input_data: dict[str, Any]) -> str:
@@ -434,6 +59,12 @@ def _task_alignment_prompt_hint(input_data: dict[str, Any]) -> str:
     )
 
 
+def _normalize_algorithm_issues(issues: Any) -> list[dict[str, Any]]:
+    from backend.agents.algorithm_evidence import _normalize_algorithm_issues as normalize_issues
+
+    return normalize_issues(issues)
+
+
 class AlgorithmAgent(BaseAgent):
     name = "algorithm"
     description = "Algoritma, veri yapisi ve karmasiklik analizi"
@@ -442,13 +73,13 @@ class AlgorithmAgent(BaseAgent):
         if not isinstance(result, dict):
             return result
         normalized = dict(result)
-        normalized["complexity_gap"] = _normalize_complexity_gap(normalized.get("complexity_gap"))
+        normalized["complexity_gap"] = normalize_complexity_gap(normalized.get("complexity_gap"))
         normalized["issues"] = _normalize_algorithm_issues(normalized.get("issues"))
-        normalized["detected_algorithms"] = _safe_str_list(
+        normalized["detected_algorithms"] = safe_str_list(
             normalized.get("detected_algorithms"),
             ["general_iteration"],
         )
-        normalized["data_structures"] = _safe_str_list(
+        normalized["data_structures"] = safe_str_list(
             normalized.get("data_structures"),
             [],
         )
@@ -458,18 +89,59 @@ class AlgorithmAgent(BaseAgent):
         source = str(input_data.get("source_code") or "")
         language = str(input_data.get("language") or "python")
         brief = str(input_data.get("assignment_description") or "")
-        programmatic = _build_programmatic_algorithm_result(source, language, brief)
+        algorithm_expectation = input_data.get("algorithm_expectation")
+
+        evidence = build_evidence_algorithm_result(
+            source,
+            language,
+            algorithm_expectation=algorithm_expectation,
+            brief=brief,
+        )
+        programmatic = evidence_result_to_output(evidence)
+        from backend.algorithm_analysis.scoring import apply_algorithm_score_guardrail
+
+        decision = apply_algorithm_score_guardrail(
+            evidence.programmatic_base_score,
+            evidence.programmatic_base_score,
+            evidence.gap,
+            evidence.evidence,
+        )
+        programmatic["score"] = decision.score
+        programmatic["guardrail_flags"] = list(decision.guardrail_flags)
+        source_lines = source.splitlines()
+        if source_lines:
+            from backend.agents.code_utils import enrich_issue_with_line
+
+            programmatic["issues"] = [
+                enrich_issue_with_line(dict(issue), source_lines)
+                for issue in programmatic.get("issues", [])
+                if isinstance(issue, dict)
+            ]
+
+        resolved = resolve_expectation_input(algorithm_expectation, brief=brief)
+        expectation_hint = {
+            "expected_complexity": (
+                resolved.expected_complexity.expression if resolved.expected_complexity else ""
+            ),
+            "expected_approach": resolved.expected_approach,
+            "expected_families": list(resolved.expected_families),
+            "expected_source": resolved.expected_source,
+        }
         user_prompt = (
             "Analyze this submission's algorithmic behavior.\n"
             f"{format_assignment_context_for_prompt(brief)}\n"
             f"{_task_alignment_prompt_hint(input_data)}"
             f"Language: {language}\n"
-            f"Non-binding heuristic hints (AST/metrics): {json.dumps(programmatic, ensure_ascii=False)}\n"
+            f"Authoritative deterministic evidence (do not contradict): "
+            f"{json.dumps(programmatic, ensure_ascii=False)}\n"
+            f"Resolved expectation (authoritative when verified): "
+            f"{json.dumps(expectation_hint, ensure_ascii=False)}\n"
             "Source code:\n"
             f"{source[:12000]}\n\n"
             "Return JSON with detected_algorithms, data_structures, time_complexity, space_complexity, "
-            "expected_complexity, complexity_gap, algorithm_analysis, data_structure_analysis, issues, score. "
-            "If code is more complex than expected, include a complexity_gap issue.\n"
+            "expected_complexity, complexity_gap, algorithm_analysis, data_structure_analysis, "
+            "recommended_approach, issues, score. Use deterministic evidence for complexity and gap; "
+            "provide explanation only.\n"
             f"{build_llm_user_suffix(report_language=str(input_data.get('report_language') or 'tr'))}"
         )
         try:
@@ -481,17 +153,21 @@ class AlgorithmAgent(BaseAgent):
             )
         except LLMInferenceError as exc:
             fallback = {**programmatic, "llm_error": str(exc)[:300]}
-            source_lines = source.splitlines()
-            if source_lines:
-                fallback["issues"] = [
-                    enrich_issue_with_line(dict(issue), source_lines)
-                    for issue in fallback.get("issues", [])
-                    if isinstance(issue, dict)
-                ]
             return self._with_contract_metadata(
                 fallback,
                 llm_status="fallback",
                 guardrail_flags=["llm_inference_fallback"],
             )
 
-        return _merge_algorithm_results(programmatic, llm_result, source=source)
+        merged = merge_algorithm_results(
+            programmatic,
+            llm_result,
+            source=source,
+            evidence=evidence,
+        )
+        return self._with_contract_metadata(
+            merged,
+            llm_status=str(llm_result.get("llm_status") or "ok"),
+            guardrail_flags=list(merged.get("guardrail_flags") or []),
+            schema_repair_count=int(llm_result.get("schema_repair_count") or 0),
+        )
