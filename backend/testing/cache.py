@@ -147,10 +147,28 @@ async def _renew_generation_lock_periodically(
 
 @asynccontextmanager
 async def generation_lock(
-    redis, assignment_id: str, cache_key: str, *, ttl_seconds: int = 180
+    redis,
+    assignment_id: str,
+    cache_key: str,
+    *,
+    ttl_seconds: int = 180,
+    wait_seconds: float | None = None,
+    poll_seconds: float = 0.2,
 ):
+    if wait_seconds is not None and wait_seconds > 0:
+        max_attempts = max(1, int(wait_seconds / poll_seconds))
+        retry_delay_seconds = poll_seconds
+    else:
+        max_attempts = 1
+        retry_delay_seconds = 0.05
+
     token = await acquire_generation_lock(
-        redis, assignment_id, cache_key, ttl_seconds=ttl_seconds, max_attempts=1
+        redis,
+        assignment_id,
+        cache_key,
+        ttl_seconds=ttl_seconds,
+        max_attempts=max_attempts,
+        retry_delay_seconds=retry_delay_seconds,
     )
     key = _generation_lock_key(assignment_id, cache_key)
     handle = GenerationLockHandle(token)
