@@ -389,22 +389,27 @@ class PostgresAlgorithmExpectationStore:
             return None
 
         async with self._pool.acquire() as conn:
-            await conn.execute(
-                """
-                UPDATE algorithm_expectations SET active = false, deactivated_at = $1
-                WHERE assignment_id = $2 AND active = true
-                """,
-                _utc_now_dt(),
-                assignment_id,
-            )
-            await conn.execute(
-                """
-                UPDATE algorithm_expectations SET active = true, deactivated_at = NULL
-                WHERE assignment_id = $1 AND cache_key = $2
-                """,
-                assignment_id,
-                cache_key,
-            )
+            async with conn.transaction():
+                await conn.execute(
+                    "SELECT pg_advisory_xact_lock(hashtext($1))",
+                    assignment_id,
+                )
+                await conn.execute(
+                    """
+                    UPDATE algorithm_expectations SET active = false, deactivated_at = $1
+                    WHERE assignment_id = $2 AND active = true
+                    """,
+                    _utc_now_dt(),
+                    assignment_id,
+                )
+                await conn.execute(
+                    """
+                    UPDATE algorithm_expectations SET active = true, deactivated_at = NULL
+                    WHERE assignment_id = $1 AND cache_key = $2
+                    """,
+                    assignment_id,
+                    cache_key,
+                )
 
         reactivated = await self.find_by_cache_key(assignment_id, cache_key)
         if reactivated is None:
