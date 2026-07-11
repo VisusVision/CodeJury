@@ -17,6 +17,7 @@ import logging
 import re
 import time
 from collections import OrderedDict
+from dataclasses import dataclass
 from typing import Any
 
 import httpx
@@ -24,6 +25,18 @@ import httpx
 from backend.core.config import settings
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class ChatJsonResult:
+    data: dict[str, Any] | None
+    provider: str
+    model: str
+    fallback_used: bool
+    error: str | None = None
+    cache_hit: bool = False
+    max_tokens: int = 0
+    fallback_reason: str = ""
 
 _client: httpx.AsyncClient | None = None
 _semaphore: asyncio.Semaphore | None = None
@@ -437,7 +450,7 @@ async def _do_ollama_text_request(payload: dict[str, Any]) -> str | None:
     return None
 
 
-async def chat_json(
+async def _chat_json_request(
     system_prompt: str,
     user_prompt: str,
     schema_hint: dict[str, Any] | None = None,
@@ -447,16 +460,7 @@ async def chat_json(
     model: str | None = None,
     use_cache: bool = True,
     provider_override: str | None = None,
-) -> dict | None:
-    """Ollama chat endpoint'ine istek gonderir ve JSON parse eder.
-
-    Args:
-        num_predict: Token limiti; None ise ayarlardan. Uzun JSON listeleri icin artirin.
-        use_cache: False ise LRU onbellek atlanir (aynı prompt için yeni liste gibi senaryolar).
-    """
-    if not settings.ollama_enabled:
-        return None
-
+) -> ChatJsonResult:
     provider = _normalize_provider(provider_override) or _provider_for_model(model)
     provider_is_nim = _provider_is_nvidia_nim(provider)
     provider_name = "nvidia_nim" if provider_is_nim else "ollama"
@@ -472,16 +476,14 @@ async def chat_json(
     if use_cache:
         cached = _cache_get(cache_key)
         if cached is not None:
-            _record_call_metadata(
-                function="chat_json",
+            return ChatJsonResult(
+                data=cached,
                 provider=provider_name,
                 model=selected_model,
+                fallback_used=False,
                 cache_hit=True,
-                result_status="ok",
-                response_format="json",
                 max_tokens=predict,
             )
-            return cached
 
     messages = [
         {"role": "system", "content": system_prompt},
@@ -489,6 +491,7 @@ async def chat_json(
     ]
 
     fallback_reason = ""
+    fallback_used = False
     if provider_is_nim:
         result: dict | None = None
         if settings.nvidia_nim_api_key.strip():
@@ -521,9 +524,12 @@ async def chat_json(
                 provider_name = "ollama"
                 selected_model = ollama_model
                 predict = ollama_predict
+                fallback_used = True
                 if not fallback_reason:
                     fallback_reason = "nim_failed_ollama_fallback"
                 logger.info("[ollama] nvidia-nim JSON request fell back to local Ollama")
+            elif fallback_reason == "missing_api_key":
+                fallback_used = True
     else:
         payload = {
             "model": selected_model,
@@ -538,17 +544,108 @@ async def chat_json(
 
     if result is not None and use_cache:
         _cache_put(cache_key, result)
-    _record_call_metadata(
-        function="chat_json",
+
+    error = None if result is not None else (fallback_reason or "empty_or_unparseable")
+    return ChatJsonResult(
+        data=result,
         provider=provider_name,
         model=selected_model,
-        cache_hit=False,
-        result_status="ok" if result is not None else "failed",
-        response_format="json",
+        fallback_used=fallback_used,
+        error=error,
         max_tokens=predict,
-        fallback_reason="" if (result is not None and not fallback_reason) else (fallback_reason or "empty_or_unparseable"),
+        fallback_reason=fallback_reason,
     )
-    return result
+
+
+async def chat_json(
+    system_prompt: str,
+    user_prompt: str,
+    schema_hint: dict[str, Any] | None = None,
+    temperature: float = 0.0,
+    num_predict: int | None = None,
+    *,
+    model: str | None = None,
+    use_cache: bool = True,
+    provider_override: str | None = None,
+) -> dict | None:
+    """Ollama chat endpoint'ine istek gonderir ve JSON parse eder.
+
+    Args:
+        num_predict: Token limiti; None ise ayarlardan. Uzun JSON listeleri icin artirin.
+        use_cache: False ise LRU onbellek atlanir (aynı prompt için yeni liste gibi senaryolar).
+    """
+    if not settings.ollama_enabled:
+        return None
+
+    result = await _chat_json_request(
+        system_prompt,
+        user_prompt,
+        schema_hint,
+        temperature,
+        num_predict,
+        model=model,
+        use_cache=use_cache,
+        provider_override=provider_override,
+    )
+    if result.cache_hit:
+        _record_call_metadata(
+            function="chat_json",
+            provider=result.provider,
+            model=result.model,
+            cache_hit=True,
+            result_status="ok",
+            response_format="json",
+            max_tokens=result.max_tokens,
+        )
+        return result.data
+
+    metadata_fallback = (
+        ""
+        if result.data is not None and not result.fallback_reason
+        else (result.fallback_reason or "empty_or_unparseable")
+    )
+    _record_call_metadata(
+        function="chat_json",
+        provider=result.provider,
+        model=result.model,
+        cache_hit=False,
+        result_status="ok" if result.data is not None else "failed",
+        response_format="json",
+        max_tokens=result.max_tokens,
+        fallback_reason=metadata_fallback,
+    )
+    return result.data
+
+
+async def chat_json_with_metadata(
+    system_prompt: str,
+    user_prompt: str,
+    schema_hint: dict[str, Any] | None = None,
+    temperature: float = 0.0,
+    num_predict: int | None = None,
+    *,
+    model: str | None = None,
+    use_cache: bool = True,
+    provider_override: str | None = None,
+) -> ChatJsonResult:
+    if not settings.ollama_enabled:
+        return ChatJsonResult(
+            data=None,
+            provider="",
+            model=model or "",
+            fallback_used=False,
+            error="ollama_disabled",
+        )
+    return await _chat_json_request(
+        system_prompt,
+        user_prompt,
+        schema_hint,
+        temperature,
+        num_predict,
+        model=model,
+        use_cache=use_cache,
+        provider_override=provider_override,
+    )
 
 
 async def chat_text(
