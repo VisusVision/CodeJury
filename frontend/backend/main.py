@@ -210,6 +210,7 @@ _DEMO_STORE: dict[str, Any] = {
     "assignment_questions": {},
     "assignment_test_cases": [],
     "generated_test_sets": [],
+    "algorithm_expectations": [],
     "upload_history": [],
     "evaluations": [],
 }
@@ -413,6 +414,7 @@ def _ensure_demo_assignment_catalog() -> bool:
 
     assignments = _DEMO_STORE.setdefault("assignments", [])
     rubrics = _DEMO_STORE.setdefault("rubrics", [])
+    _DEMO_STORE.setdefault("algorithm_expectations", [])
     assignments_by_id = {
         str(a.get("id")): a for a in assignments if isinstance(a, dict) and a.get("id")
     }
@@ -3896,6 +3898,39 @@ async def _ensure_db_schema(pool: asyncpg.Pool) -> None:
 
         CREATE INDEX IF NOT EXISTS idx_generated_test_sets_assignment_id
             ON public.generated_test_sets(assignment_id, version DESC);
+
+        CREATE TABLE IF NOT EXISTS public.algorithm_expectations (
+            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            assignment_id UUID NOT NULL REFERENCES public.assignments(id) ON DELETE CASCADE,
+            cache_key TEXT NOT NULL,
+            version INTEGER NOT NULL,
+            assignment_hash TEXT NOT NULL DEFAULT '',
+            rubric_hash TEXT NOT NULL DEFAULT '',
+            complexity JSONB NULL,
+            expected_approach TEXT NOT NULL DEFAULT '',
+            algorithm_families JSONB NOT NULL DEFAULT '[]'::jsonb,
+            confidence DOUBLE PRECISION NOT NULL DEFAULT 0.0,
+            extractor_provider TEXT NOT NULL,
+            extractor_model TEXT NOT NULL,
+            verifier_provider TEXT NOT NULL,
+            verifier_model TEXT NOT NULL,
+            schema_version TEXT NOT NULL,
+            extractor_prompt_version TEXT NOT NULL,
+            verifier_prompt_version TEXT NOT NULL,
+            verification_status TEXT NOT NULL,
+            verification_reason TEXT NOT NULL DEFAULT '',
+            active BOOLEAN NOT NULL DEFAULT true,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+            deactivated_at TIMESTAMPTZ NULL,
+            UNIQUE (assignment_id, cache_key),
+            UNIQUE (assignment_id, version)
+        );
+
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_algorithm_expectations_one_active
+            ON public.algorithm_expectations(assignment_id) WHERE active = true;
+
+        CREATE INDEX IF NOT EXISTS idx_algorithm_expectations_assignment_id
+            ON public.algorithm_expectations(assignment_id, version DESC);
 
         DO $$
         BEGIN

@@ -293,6 +293,33 @@ class AssignmentDbPathTests(unittest.TestCase):
         self.assertIn("active", pool.sql)
         self.assertIn("generated_set_id", pool.sql)
 
+    def test_ensure_db_schema_includes_algorithm_expectations_table(self):
+        class FakePool:
+            def __init__(self):
+                self.sql = None
+
+            async def execute(self, sql, *args):
+                if self.sql is None:
+                    self.sql = sql
+                return "OK"
+
+            async def fetch(self, query, *args):
+                return []
+
+        pool = FakePool()
+
+        async def run_case():
+            await main._ensure_db_schema(pool)
+
+        asyncio.run(run_case())
+
+        self.assertIsNotNone(pool.sql)
+        self.assertIn("public.algorithm_expectations", pool.sql)
+        self.assertIn("complexity JSONB", pool.sql)
+        self.assertIn("algorithm_families JSONB", pool.sql)
+        self.assertIn("verification_status", pool.sql)
+        self.assertIn("idx_algorithm_expectations_one_active", pool.sql)
+
     def test_promote_generated_tests_db_path_uses_transaction(self):
         set_id = "66666666-6666-4666-8666-666666666666"
         case_id = "77777777-7777-4777-8777-777777777777"
