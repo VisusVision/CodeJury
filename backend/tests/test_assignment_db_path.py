@@ -61,7 +61,58 @@ class AssignmentDbPathTests(unittest.TestCase):
 
         insert_calls = [call for call in pool.calls if "INSERT INTO public.assignments" in call[0]]
         self.assertEqual(len(insert_calls), 1)
-        self.assertEqual(len(insert_calls[0][1]), 5)
+        self.assertEqual(len(insert_calls[0][1]), 7)
+
+    def test_create_assignment_db_insert_includes_difficulty_columns(self):
+        class FakePool:
+            def __init__(self):
+                self.calls = []
+
+            async def fetchrow(self, query, *args):
+                self.calls.append((query, args))
+                if "FROM public.departments" in query:
+                    return {"created_by": _TEACHER_ID}
+                if "FROM public.courses" in query:
+                    return {
+                        "id": _COURSE_ID,
+                        "name": "Python Programlama",
+                        "code": "PRO101",
+                        "class_year": 3,
+                        "created_by": _TEACHER_ID,
+                    }
+                return {
+                    "id": _ASSIGNMENT_ID,
+                    "course_id": _COURSE_ID,
+                    "name": "Dosya Analizi",
+                    "description": "Sayilari oku.",
+                    "due_date": None,
+                    "created_at": "2026-06-25T12:00:00Z",
+                    "difficulty": "hard",
+                    "difficulty_source": "teacher",
+                }
+
+        pool = FakePool()
+
+        async def run_case():
+            with patch.object(main, "_DEMO_MODE", False):
+                with patch.object(main, "_get_db_pool", new=AsyncMock(return_value=pool)):
+                    with patch.object(main, "_ensure_assignment_safety", new=AsyncMock(return_value=None)):
+                        return await main.create_assignment(
+                            main.AssignmentCreateRequest(
+                                course_id=_COURSE_ID,
+                                name="Dosya Analizi",
+                                description="Sayilari oku.",
+                                difficulty="hard",
+                            ),
+                            principal=_TEACHER_PRINCIPAL,
+                        )
+
+        result = asyncio.run(run_case())
+
+        insert_calls = [call for call in pool.calls if "INSERT INTO public.assignments" in call[0]]
+        self.assertEqual(len(insert_calls), 1)
+        self.assertIn("difficulty", insert_calls[0][0])
+        self.assertEqual(result["difficulty"], "hard")
 
     def test_create_assignment_db_insert_returning_includes_created_by(self):
         class FakePool:

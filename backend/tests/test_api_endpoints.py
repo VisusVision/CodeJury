@@ -490,6 +490,136 @@ class ApiEndpointTests(unittest.TestCase):
             )
         self.assertEqual(resp.status_code, 400)
 
+    def test_create_assignment_with_manual_difficulty_sets_teacher_source(self):
+        csrf = self._login_teacher()
+        with patch.object(main, "_ensure_assignment_safety", new=AsyncMock(return_value=None)):
+            resp = self.client.post(
+                "/api/assignments",
+                json={
+                    "course_id": _DEMO_COURSE_ID,
+                    "name": "Dosya Analizi",
+                    "description": "CSV oku ve raporla",
+                    "difficulty": "hard",
+                },
+                headers=self._csrf_headers(csrf),
+            )
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+        self.assertEqual(data["difficulty"], "hard")
+        self.assertEqual(data["difficulty_source"], "teacher")
+
+    def test_create_assignment_with_ai_assistant_mode_sets_ai_selected_source(self):
+        csrf = self._login_teacher()
+        with patch.object(main, "_ensure_assignment_safety", new=AsyncMock(return_value=None)):
+            resp = self.client.post(
+                "/api/assignments",
+                json={
+                    "course_id": _DEMO_COURSE_ID,
+                    "name": "X",
+                    "difficulty": "easy",
+                    "creation_mode": "ai_assistant",
+                },
+                headers=self._csrf_headers(csrf),
+            )
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+        self.assertEqual(data["difficulty_source"], "ai_selected")
+
+    def test_create_assignment_without_difficulty_defaults_to_medium_default_source(self):
+        csrf = self._login_teacher()
+        with patch.object(main, "_ensure_assignment_safety", new=AsyncMock(return_value=None)):
+            resp = self.client.post(
+                "/api/assignments",
+                json={
+                    "course_id": _DEMO_COURSE_ID,
+                    "name": "Varsayilan Zorluk Odevi",
+                    "description": "Aciklama",
+                },
+                headers=self._csrf_headers(csrf),
+            )
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+        self.assertEqual(data["difficulty"], "medium")
+        self.assertEqual(data["difficulty_source"], "default")
+
+    def test_create_assignment_rejects_invalid_difficulty(self):
+        csrf = self._login_teacher()
+        with patch.object(main, "_ensure_assignment_safety", new=AsyncMock(return_value=None)):
+            resp = self.client.post(
+                "/api/assignments",
+                json={
+                    "course_id": _DEMO_COURSE_ID,
+                    "name": "Gecersiz Zorluk",
+                    "difficulty": "impossible",
+                },
+                headers=self._csrf_headers(csrf),
+            )
+        self.assertEqual(resp.status_code, 400)
+
+    def test_list_assignments_includes_difficulty_fields(self):
+        csrf = self._login_teacher()
+        with patch.object(main, "_ensure_assignment_safety", new=AsyncMock(return_value=None)):
+            create_resp = self.client.post(
+                "/api/assignments",
+                json={
+                    "course_id": _DEMO_COURSE_ID,
+                    "name": "Liste Zorluk Odevi",
+                    "description": "Liste testi",
+                    "difficulty": "easy",
+                },
+                headers=self._csrf_headers(csrf),
+            )
+        self.assertEqual(create_resp.status_code, 200)
+        list_resp = self.client.get("/api/assignments")
+        self.assertEqual(list_resp.status_code, 200)
+        for item in list_resp.json():
+            self.assertIn("difficulty", item)
+            self.assertIn("difficulty_source", item)
+
+    def test_assignment_detail_includes_difficulty_fields(self):
+        csrf = self._login_teacher()
+        with patch.object(main, "_ensure_assignment_safety", new=AsyncMock(return_value=None)):
+            create_resp = self.client.post(
+                "/api/assignments",
+                json={
+                    "course_id": _DEMO_COURSE_ID,
+                    "name": "Detay Zorluk Odevi",
+                    "description": "Detay testi",
+                    "difficulty": "medium",
+                },
+                headers=self._csrf_headers(csrf),
+            )
+        self.assertEqual(create_resp.status_code, 200)
+        assignment_id = create_resp.json()["id"]
+        detail_resp = self.client.get(f"/api/assignments/{assignment_id}")
+        self.assertEqual(detail_resp.status_code, 200)
+        data = detail_resp.json()
+        self.assertIn("difficulty", data)
+        self.assertIn("difficulty_source", data)
+
+    def test_legacy_assignment_without_difficulty_is_lazily_inferred(self):
+        csrf = self._login_teacher()
+        legacy_assignment_id = "ffffffff-ffff-4fff-8fff-ffffffffffff"
+        main._DEMO_STORE["assignments"].append(
+            {
+                "id": legacy_assignment_id,
+                "course_id": _DEMO_COURSE_ID,
+                "name": "Legacy Difficulty Assignment",
+                "description": "Eski kayit",
+                "due_date": None,
+                "created_by": None,
+                "created_at": main._demo_now(),
+            }
+        )
+        detail_resp = self.client.get(
+            f"/api/assignments/{legacy_assignment_id}",
+            headers=self._csrf_headers(csrf),
+        )
+        self.assertEqual(detail_resp.status_code, 200)
+        data = detail_resp.json()
+        self.assertIn(data["difficulty"], {"easy", "medium", "hard"})
+        self.assertEqual(data["difficulty_source"], "inferred")
+
     # ── Rubrics ────────────────────────────────────────────────────────────────
     def test_assignment_test_cases_can_be_replaced_and_listed(self):
         csrf = self._login_teacher()
