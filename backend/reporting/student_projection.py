@@ -546,43 +546,83 @@ def _normalize_algorithm_result_source(agent: dict[str, Any]) -> dict[str, Any]:
     return normalized
 
 
-def _collect_algorithm_private_fragments(source: dict[str, Any]) -> list[str]:
-    private_keys = (
-        "expectedFamilies",
-        "expectedSource",
-        "expectedConfidence",
-        "expectationVersion",
-        "expectationId",
-        "cacheKey",
-        "extractorProvider",
-        "extractorModel",
-        "extractorPromptVersion",
-        "verifierProvider",
-        "verifierModel",
-        "verificationReason",
-        "schemaVersion",
-    )
-    fragments: list[str] = []
-    for key in private_keys:
+_SUBSTRING_SCRUB_PROVENANCE_KEYS = frozenset({
+    "expectationId",
+    "cacheKey",
+})
+_TOKEN_DROP_PROVENANCE_KEYS = frozenset({
+    "extractorProvider",
+    "extractorModel",
+    "extractorPromptVersion",
+    "verifierProvider",
+    "verifierModel",
+    "verificationReason",
+    "schemaVersion",
+})
+
+
+def _token_boundary_contains(text: str, fragment: str) -> bool:
+    if not fragment:
+        return False
+    pattern = re.compile(rf"(?<![\w]){re.escape(fragment)}(?![\w])")
+    return pattern.search(text) is not None
+
+
+def _collect_algorithm_provenance_fragments(
+    source: dict[str, Any],
+) -> tuple[list[str], list[str]]:
+    """Return (substring_scrub_fragments, token_drop_fragments) by field kind.
+
+    Only ID/cache values may be substring-scrubbed. Provider/model/reason/schema/
+    prompt values always use token-boundary matching and drop the narrative field.
+    """
+    substring_fragments: list[str] = []
+    token_drop_fragments: list[str] = []
+    for key in _SUBSTRING_SCRUB_PROVENANCE_KEYS:
         value = source.get(key)
         if isinstance(value, str) and value.strip():
-            fragments.append(value.strip())
-        elif isinstance(value, (int, float)) and not isinstance(value, bool):
-            fragments.append(str(value))
-        elif isinstance(value, list):
-            for item in value:
-                if isinstance(item, str) and item.strip():
-                    fragments.append(item.strip())
+            substring_fragments.append(value.strip())
+    for key in _TOKEN_DROP_PROVENANCE_KEYS:
+        value = source.get(key)
+        if isinstance(value, str) and value.strip():
+            token_drop_fragments.append(value.strip())
+    return substring_fragments, token_drop_fragments
+
+
+def _distinctive_private_numeric_markers(source: dict[str, Any]) -> list[str]:
+    """Numeric provenance that is distinctive enough to drop contaminated narratives.
+
+    Short values like version ``1`` or confidence ``0.5`` are excluded so
+    legitimate text such as ``O(1)`` is never mangled.
+    """
+    markers: list[str] = []
+    version = source.get("expectationVersion")
+    if isinstance(version, int) and not isinstance(version, bool):
+        token = str(version)
+        if len(token) >= 4:
+            markers.append(token)
+    confidence = source.get("expectedConfidence")
+    if isinstance(confidence, (int, float)) and not isinstance(confidence, bool):
+        token = str(confidence)
+        if len(token) >= 4:
+            markers.append(token)
     for item in source.get("evidence") or []:
         if not isinstance(item, dict):
             continue
         confidence = item.get("confidence")
-        if confidence is not None:
-            fragments.append(str(confidence))
-    return fragments
+        if isinstance(confidence, (int, float)) and not isinstance(confidence, bool):
+            token = str(confidence)
+            if len(token) >= 4:
+                markers.append(token)
+    return markers
 
 
-def _algorithm_evidence_detail_is_student_safe(detail: Any, private_fragments: list[str]) -> bool:
+def _algorithm_evidence_detail_is_student_safe(
+    detail: Any,
+    *,
+    substring_fragments: list[str],
+    token_drop_fragments: list[str],
+) -> bool:
     if not isinstance(detail, str):
         return detail is not None
     text = detail.strip()
@@ -591,7 +631,44 @@ def _algorithm_evidence_detail_is_student_safe(detail: Any, private_fragments: l
     lowered = text.lower()
     if "pseudo-code" in lowered or "pseudocode" in lowered:
         return False
-    return not any(fragment and fragment in text for fragment in private_fragments)
+    if any(fragment and fragment in text for fragment in substring_fragments):
+        return False
+    if any(
+        fragment and _token_boundary_contains(text, fragment)
+        for fragment in token_drop_fragments
+    ):
+        return False
+    return True
+
+
+def _scrub_algorithm_private_text(
+    text: str,
+    *,
+    substring_fragments: list[str],
+    token_drop_fragments: list[str],
+    drop_markers: list[str] | None = None,
+) -> str | None:
+    """Scrub ID/cache sentinels; drop field on provider/reason token hits."""
+    for marker in drop_markers or ():
+        if marker and marker in text:
+            return None
+
+    for fragment in token_drop_fragments:
+        if fragment and _token_boundary_contains(text, fragment):
+            return None
+
+    scrubbed = text
+    for fragment in substring_fragments:
+        if fragment and fragment in scrubbed:
+            scrubbed = scrubbed.replace(fragment, "")
+    scrubbed = " ".join(scrubbed.split()).strip()
+    if not scrubbed:
+        return None
+    if any(fragment and fragment in scrubbed for fragment in substring_fragments):
+        return None
+    if any(marker and marker in scrubbed for marker in (drop_markers or ())):
+        return None
+    return scrubbed
 
 
 def _project_algorithm_result(
@@ -602,7 +679,8 @@ def _project_algorithm_result(
     if not source:
         return {}
 
-    private_fragments = _collect_algorithm_private_fragments(source)
+    substring_fragments, token_drop_fragments = _collect_algorithm_provenance_fragments(source)
+    drop_markers = _distinctive_private_numeric_markers(source)
     projected: dict[str, Any] = {}
     for key in ALGORITHM_RESULT_STUDENT_KEYS:
         if key == "evidence":
@@ -614,7 +692,15 @@ def _project_algorithm_result(
                 if not isinstance(item, dict):
                     continue
                 detail = item.get("detail")
-                if not _algorithm_evidence_detail_is_student_safe(detail, private_fragments):
+                if not _algorithm_evidence_detail_is_student_safe(
+                    detail,
+                    substring_fragments=substring_fragments,
+                    token_drop_fragments=token_drop_fragments,
+                ):
+                    continue
+                if isinstance(detail, str) and any(
+                    marker and marker in detail for marker in drop_markers
+                ):
                     continue
                 rebuilt = {
                     field: item[field]
@@ -634,7 +720,16 @@ def _project_algorithm_result(
             continue
         value = source[key]
         if isinstance(value, str):
-            projected[key] = _sanitize_text(value, hidden_private_fragments)
+            sanitized = _sanitize_text(value, hidden_private_fragments)
+            scrubbed = _scrub_algorithm_private_text(
+                sanitized,
+                substring_fragments=substring_fragments,
+                token_drop_fragments=token_drop_fragments,
+                drop_markers=drop_markers,
+            )
+            if scrubbed is None:
+                continue
+            projected[key] = scrubbed
         else:
             projected[key] = value
     return projected

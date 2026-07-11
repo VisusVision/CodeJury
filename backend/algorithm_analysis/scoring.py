@@ -31,8 +31,7 @@ def _evidence_deduction(evidence: tuple[AlgorithmEvidence, ...]) -> tuple[int, t
         for item in evidence
     )
     proven_exponential = any(
-        item.kind in {"direct_recursion", "mutual_recursion"}
-        and item.confidence >= _EVIDENCE_CONFIDENCE_FLOOR
+        item.kind == "branching_recursion" and item.confidence >= _EVIDENCE_CONFIDENCE_FLOOR
         for item in evidence
     )
     if proven_nested:

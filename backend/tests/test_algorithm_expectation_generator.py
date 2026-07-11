@@ -332,6 +332,18 @@ def test_infer_expectation_parses_graph_complexity_from_rubric_text() -> None:
     assert candidate.expected_complexity.family == "graph"
 
 
+def test_infer_expectation_parses_nested_graph_log_expression() -> None:
+    assert infer_expectation_from_assignment is not None
+    context = _context(
+        description="Use a graph algorithm with complexity O((V+E) log V).",
+    )
+    candidate = infer_expectation_from_assignment(context)
+
+    assert candidate is not None
+    assert candidate.expected_complexity.expression == "O((V+E) log V)"
+    assert candidate.expected_complexity.family == "graph"
+
+
 def test_infer_expectation_does_not_guess_from_vague_efficiency_language() -> None:
     assert infer_expectation_from_assignment is not None
     context = _context(description="Use an efficient algorithm with good performance.")

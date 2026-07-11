@@ -191,6 +191,331 @@ def two_sum(values, target):
 
         self.assertEqual(result["expected_complexity"], "O(n)")
         self.assertEqual(result["complexity_gap"], "worse_than_expected")
+        self.assertNotEqual(result.get("recommended_approach"), "Degistirilmis yaklasim.")
+
+    async def test_single_loop_without_named_family_uses_ast_lower_bound_not_o1(self):
+        code = """
+def sum_values(values):
+    total = 0
+    for value in values:
+        total += value
+    return total
+"""
+        result = await AlgorithmAgent().analyze(
+            {
+                "source_code": code,
+                "language": "python",
+                "assignment_description": "Diziyi tek geciste O(n) karmasiklikla toplayin.",
+                "algorithm_expectation": {
+                    "expected_complexity": {
+                        "expression": "O(n)",
+                        "family": "single_variable",
+                        "rank": 2,
+                        "confidence": 1.0,
+                        "source": "verified_expectation",
+                    },
+                    "expected_approach": "linear scan",
+                    "algorithm_families": ["brute_force_nested_scan"],
+                    "verification_status": "verified",
+                },
+            }
+        )
+
+        self.assertEqual(result["time_complexity"], "O(n)")
+        self.assertNotEqual(result["time_complexity"], "O(1)")
+        self.assertNotEqual(result.get("complexity_gap"), "better_than_expected")
+        self.assertIn(result["complexity_gap"], {"matches_expected", "unknown"})
+
+    async def test_no_loop_and_no_detection_uses_unknown_not_o1(self):
+        code = "x = 1\n"
+        result = await AlgorithmAgent().analyze(
+            {
+                "source_code": code,
+                "language": "python",
+                "assignment_description": "Beklenen karmasiklik O(n).",
+                "algorithm_expectation": {
+                    "expected_complexity": {
+                        "expression": "O(n)",
+                        "family": "single_variable",
+                        "rank": 2,
+                        "confidence": 1.0,
+                        "source": "verified_expectation",
+                    },
+                    "verification_status": "verified",
+                },
+            }
+        )
+
+        self.assertEqual(result["time_complexity"], "unknown")
+        self.assertEqual(result["complexity_gap"], "unknown")
+
+    async def test_constant_range_loop_is_not_treated_as_linear(self):
+        code = """
+def fixed_work():
+    total = 0
+    for i in range(10):
+        total += i
+    return total
+"""
+        result = await AlgorithmAgent().analyze(
+            {
+                "source_code": code,
+                "language": "python",
+                "assignment_description": "Sabit zamanli O(1) is yapin.",
+                "algorithm_expectation": {
+                    "expected_complexity": {
+                        "expression": "O(1)",
+                        "family": "constant",
+                        "rank": 0,
+                        "confidence": 1.0,
+                        "source": "verified_expectation",
+                    },
+                    "verification_status": "verified",
+                },
+            }
+        )
+
+        self.assertNotEqual(result["time_complexity"], "O(n)")
+        self.assertIn(result["time_complexity"], {"O(1)", "unknown"})
+        self.assertNotEqual(result["complexity_gap"], "worse_than_expected")
+        self.assertNotEqual(result.get("gap_steps"), 2)
+
+    async def test_local_literal_list_iteration_is_not_treated_as_linear(self):
+        code = """
+def fixed_work():
+    values = [1, 2, 3]
+    total = 0
+    for x in values:
+        total += x
+    return total
+"""
+        result = await AlgorithmAgent().analyze(
+            {
+                "source_code": code,
+                "language": "python",
+                "assignment_description": "Sabit zamanli O(1) is yapin.",
+                "algorithm_expectation": {
+                    "expected_complexity": {
+                        "expression": "O(1)",
+                        "family": "constant",
+                        "rank": 0,
+                        "confidence": 1.0,
+                        "source": "verified_expectation",
+                    },
+                    "verification_status": "verified",
+                },
+            }
+        )
+
+        self.assertNotEqual(result["time_complexity"], "O(n)")
+        self.assertIn(result["time_complexity"], {"O(1)", "unknown"})
+        self.assertNotEqual(result["complexity_gap"], "worse_than_expected")
+        self.assertNotEqual(result.get("gap_steps"), 2)
+
+    async def test_param_reassigned_to_unknown_call_is_not_treated_as_linear(self):
+        code = """
+def f(values):
+    values = load_fixed_values()
+    total = 0
+    for x in values:
+        total += x
+    return total
+"""
+        result = await AlgorithmAgent().analyze(
+            {
+                "source_code": code,
+                "language": "python",
+                "assignment_description": "Sabit zamanli O(1) is yapin.",
+                "algorithm_expectation": {
+                    "expected_complexity": {
+                        "expression": "O(1)",
+                        "family": "constant",
+                        "rank": 0,
+                        "confidence": 1.0,
+                        "source": "verified_expectation",
+                    },
+                    "verification_status": "verified",
+                },
+            }
+        )
+
+        self.assertNotEqual(result["time_complexity"], "O(n)")
+        self.assertEqual(result["time_complexity"], "unknown")
+        self.assertNotEqual(result["complexity_gap"], "worse_than_expected")
+        self.assertNotEqual(result.get("gap_steps"), 2)
+
+    async def test_constant_list_extended_from_param_is_not_reported_as_o1(self):
+        code = """
+def f(source):
+    values = [1, 2, 3]
+    values.extend(source)
+    total = 0
+    for x in values:
+        total += x
+    return total
+"""
+        result = await AlgorithmAgent().analyze(
+            {
+                "source_code": code,
+                "language": "python",
+                "assignment_description": "Girdiye bagli O(n) tarama yapin.",
+                "algorithm_expectation": {
+                    "expected_complexity": {
+                        "expression": "O(n)",
+                        "family": "single_variable",
+                        "rank": 2,
+                        "confidence": 1.0,
+                        "source": "verified_expectation",
+                    },
+                    "verification_status": "verified",
+                },
+            }
+        )
+
+        self.assertNotEqual(result["time_complexity"], "O(1)")
+        self.assertEqual(result["time_complexity"], "unknown")
+        self.assertEqual(result["complexity_gap"], "unknown")
+
+    async def test_mutable_alias_extend_is_not_reported_as_o1(self):
+        code = """
+def f(source):
+    values = []
+    alias = values
+    alias.extend(source)
+    total = 0
+    for x in values:
+        total += x
+    return total
+"""
+        result = await AlgorithmAgent().analyze(
+            {
+                "source_code": code,
+                "language": "python",
+                "assignment_description": "Girdiye bagli O(n) tarama yapin.",
+                "algorithm_expectation": {
+                    "expected_complexity": {
+                        "expression": "O(n)",
+                        "family": "single_variable",
+                        "rank": 2,
+                        "confidence": 1.0,
+                        "source": "verified_expectation",
+                    },
+                    "verification_status": "verified",
+                },
+            }
+        )
+
+        self.assertNotEqual(result["time_complexity"], "O(1)")
+        self.assertNotEqual(result["complexity_gap"], "matches_expected")
+        self.assertEqual(result["time_complexity"], "unknown")
+        self.assertEqual(result["complexity_gap"], "unknown")
+
+    async def test_if_else_divergent_bindings_are_unknown_not_constant(self):
+        code = """
+def f(flag, source):
+    if flag:
+        values = source
+    else:
+        values = [1, 2, 3]
+    total = 0
+    for x in values:
+        total += x
+    return total
+"""
+        result = await AlgorithmAgent().analyze(
+            {
+                "source_code": code,
+                "language": "python",
+                "assignment_description": "Beklenen karmasiklik O(1).",
+                "algorithm_expectation": {
+                    "expected_complexity": {
+                        "expression": "O(1)",
+                        "family": "constant",
+                        "rank": 0,
+                        "confidence": 1.0,
+                        "source": "verified_expectation",
+                    },
+                    "verification_status": "verified",
+                },
+            }
+        )
+
+        self.assertNotEqual(result["time_complexity"], "O(1)")
+        self.assertEqual(result["time_complexity"], "unknown")
+        self.assertNotEqual(result["complexity_gap"], "matches_expected")
+        self.assertEqual(result["complexity_gap"], "unknown")
+
+    async def test_non_exhaustive_match_is_unknown_not_constant(self):
+        code = """
+def f(flag, source):
+    values = source
+    match flag:
+        case 1:
+            values = [1]
+        case 2:
+            values = [2]
+    total = 0
+    for x in values:
+        total += x
+    return total
+"""
+        result = await AlgorithmAgent().analyze(
+            {
+                "source_code": code,
+                "language": "python",
+                "assignment_description": "Beklenen karmasiklik O(1).",
+                "algorithm_expectation": {
+                    "expected_complexity": {
+                        "expression": "O(1)",
+                        "family": "constant",
+                        "rank": 0,
+                        "confidence": 1.0,
+                        "source": "verified_expectation",
+                    },
+                    "verification_status": "verified",
+                },
+            }
+        )
+
+        self.assertNotEqual(result["time_complexity"], "O(1)")
+        self.assertEqual(result["time_complexity"], "unknown")
+        self.assertNotEqual(result["complexity_gap"], "matches_expected")
+        self.assertEqual(result["complexity_gap"], "unknown")
+
+    async def test_exhaustive_match_with_wildcard_can_stay_constant(self):
+        code = """
+def f(flag, source):
+    values = source
+    match flag:
+        case 1:
+            values = [1]
+        case _:
+            values = [2]
+    total = 0
+    for x in values:
+        total += x
+    return total
+"""
+        result = await AlgorithmAgent().analyze(
+            {
+                "source_code": code,
+                "language": "python",
+                "assignment_description": "Sabit zamanli O(1) is yapin.",
+                "algorithm_expectation": {
+                    "expected_complexity": {
+                        "expression": "O(1)",
+                        "family": "constant",
+                        "rank": 0,
+                        "confidence": 1.0,
+                        "source": "verified_expectation",
+                    },
+                    "verification_status": "verified",
+                },
+            }
+        )
+
+        self.assertEqual(result["time_complexity"], "O(1)")
+        self.assertEqual(result["complexity_gap"], "matches_expected")
 
     async def test_flags_quadratic_solution_when_assignment_expects_linear(self):
         code = """
