@@ -67,9 +67,14 @@ class TestAgentSandboxResultsTests(unittest.TestCase):
         }
         code = "print('ok')\n"
 
+        expected = [
+            {"name": "case_a", "visibility": "public", "expected_stdout": "1"},
+            {"name": "case_b", "visibility": "public", "expected_stdout": "2"},
+        ]
+
         result = TestAgent()._programmatic_analysis(
             sandbox,
-            None,
+            expected,
             code,
             "python",
             assignment_description="Basit CLI",
@@ -79,8 +84,11 @@ class TestAgentSandboxResultsTests(unittest.TestCase):
         self.assertEqual(result["passed_tests"], 2)
         self.assertEqual(result["failed_tests"], 0)
         self.assertTrue(result["runs_successfully"])
-        self.assertGreaterEqual(result["score"], 70)
+        self.assertEqual(result["formalTotal"], 2)
+        self.assertEqual(result["formalPassed"], 2)
+        self.assertEqual(result["score"], 100)
         self.assertEqual(len(result["test_results"]), 2)
+        self.assertTrue(all(item.get("formal") for item in result["test_results"]))
 
     def test_empty_expected_output_list_uses_smoke_result(self):
         sandbox = {
@@ -105,7 +113,8 @@ class TestAgentSandboxResultsTests(unittest.TestCase):
         self.assertEqual(result["passed_tests"], 1)
         self.assertEqual(result["failed_tests"], 0)
         self.assertEqual(result["total_tests"], 1)
-        self.assertGreaterEqual(result["score"], 80)
+        self.assertEqual(result["formalTotal"], 0)
+        self.assertLessEqual(result["score"], 40)
 
     def test_analyze_drops_llm_runtime_error_when_formal_tests_pass(self):
         sandbox = {
@@ -239,7 +248,8 @@ class TestAgentSandboxResultsTests(unittest.TestCase):
 
         self.assertTrue(result["runs_successfully"])
         self.assertEqual(result["passed_tests"], 1)
-        self.assertGreaterEqual(result["score"], 50)
+        self.assertEqual(result["formalTotal"], 0)
+        self.assertLessEqual(result["score"], 40)
         self.assertIn("test_agent_score_repaired_sandbox_pass", result.get("guardrail_flags", []))
 
     def test_service_timeout_llm_score_repaired_from_programmatic(self):
@@ -294,7 +304,9 @@ class TestAgentSandboxResultsTests(unittest.TestCase):
         result = asyncio.run(run_case())
 
         self.assertTrue(result["runs_successfully"])
-        self.assertGreaterEqual(result["score"], 50)
+        self.assertTrue(result.get("service_runtime_accepted"))
+        self.assertEqual(result["formalTotal"], 0)
+        self.assertLessEqual(result["score"], 40)
         self.assertIn("test_agent_score_repaired_service_runtime", result.get("guardrail_flags", []))
 
     def test_service_sandbox_tests_failure_accepted_as_runtime(self):
@@ -357,7 +369,8 @@ class TestAgentSandboxResultsTests(unittest.TestCase):
 
         self.assertTrue(result["runs_successfully"])
         self.assertTrue(result.get("service_runtime_accepted"))
-        self.assertGreaterEqual(result["score"], 50)
+        self.assertEqual(result["formalTotal"], 0)
+        self.assertLessEqual(result["score"], 40)
 
     def test_http_client_smoke_exit_zero_accepted(self):
         code = (
@@ -420,7 +433,8 @@ class TestAgentSandboxResultsTests(unittest.TestCase):
 
         self.assertTrue(result["runs_successfully"])
         self.assertTrue(result.get("service_runtime_accepted"))
-        self.assertGreaterEqual(result["score"], 58)
+        self.assertEqual(result["formalTotal"], 0)
+        self.assertLessEqual(result["score"], 40)
 
     def test_analyze_falls_back_when_llm_response_missing_score(self):
         sandbox = {
@@ -766,8 +780,8 @@ class TestAgentSandboxResultsTests(unittest.TestCase):
         self.assertGreaterEqual(result.get("static_checks_passed", 0), 3)
         self.assertGreaterEqual(result["passed_tests"], 4)
         self.assertIn("static:", result["test_results"][1]["test_name"])
-        self.assertGreaterEqual(result["score"], 82)
-        self.assertIn("test_agent_score_repaired_programmatic_floor", result.get("guardrail_flags", []))
+        self.assertEqual(result["formalTotal"], 0)
+        self.assertLessEqual(result["score"], 40)
 
     def test_unsafe_stack_gets_low_test_score(self):
         from pathlib import Path
