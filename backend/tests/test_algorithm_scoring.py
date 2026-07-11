@@ -138,3 +138,45 @@ def test_programmatic_base_recorded() -> None:
     decision = apply_algorithm_score_guardrail(77, 60, _gap(status="matches_expected"), ())
     assert decision.programmatic_base == 77
     assert decision.score == 60
+
+
+def test_linear_direct_recursion_does_not_receive_exponential_penalty() -> None:
+    gap = GapResult(
+        status="matches_expected",
+        steps=0,
+        approach_mismatch=False,
+        explanation="ok",
+    )
+    evidence = (
+        AlgorithmEvidence(
+            kind="direct_recursion",
+            line=4,
+            detail="factorial calls itself",
+            confidence=0.9,
+        ),
+    )
+    decision = apply_algorithm_score_guardrail(90, 90, gap, evidence)
+    assert decision.score == 90
+    assert decision.deduction == 0
+    assert "algorithm_evidence_exponential_recursion_penalty" not in decision.guardrail_flags
+
+
+def test_branching_recursion_evidence_receives_exponential_penalty() -> None:
+    gap = GapResult(
+        status="matches_expected",
+        steps=0,
+        approach_mismatch=False,
+        explanation="ok",
+    )
+    evidence = (
+        AlgorithmEvidence(
+            kind="branching_recursion",
+            line=5,
+            detail="fib makes multiple recursive calls",
+            confidence=0.9,
+        ),
+    )
+    decision = apply_algorithm_score_guardrail(90, 90, gap, evidence)
+    assert decision.score == 80
+    assert decision.deduction == 10
+    assert "algorithm_evidence_exponential_recursion_penalty" in decision.guardrail_flags

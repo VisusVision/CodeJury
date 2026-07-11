@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import re
 import subprocess
 import sys
 import time
@@ -407,21 +408,24 @@ def _unit_student_projection(ledger: AdversarialLedger) -> None:
                 "algorithmResult": {
                     "detectedAlgorithms": ["binary_search"],
                     "dataStructures": [],
-                    "timeComplexity": "O(log n)",
+                    "timeComplexity": "O(1)",
                     "spaceComplexity": "O(1)",
-                    "actualFamily": "single_variable",
+                    "actualFamily": "constant",
                     "actualConfidence": 0.9,
-                    "expectedComplexity": "O(log n)",
-                    "expectedApproach": "binary search",
+                    "expectedComplexity": "O(1)",
+                    "expectedApproach": "constant work",
                     "complexityGap": "matches_expected",
                     "gapSteps": 0,
-                    "gapExplanation": "ok",
-                    "recommendedApproach": "binary search",
+                    "gapExplanation": "hash_lookup remains the minimum viable approach",
+                    "recommendedApproach": "Use hash_lookup with O(1) access and minimum comparisons",
                     "expectationId": PHASE3_PROVENANCE_SENTINELS[0],
                     "cacheKey": PHASE3_PROVENANCE_SENTINELS[1],
-                    "extractorProvider": PHASE3_PROVENANCE_SENTINELS[2],
-                    "verificationReason": PHASE3_PROVENANCE_SENTINELS[3],
-                    "evidence": [{"line": 2, "kind": "binary_search", "detail": "loop", "confidence": 0.9}],
+                    "extractorProvider": "nim",
+                    "verificationReason": "verified",
+                    "expectationVersion": 1,
+                    "expectedConfidence": 0.5,
+                    "expectedFamilies": ["hash_lookup"],
+                    "evidence": [{"line": 2, "kind": "hash_lookup", "detail": "loop", "confidence": 0.9}],
                 },
             }
         ],
@@ -440,6 +444,45 @@ def _unit_student_projection(ledger: AdversarialLedger) -> None:
     projected = project_student_result(private)
     serialized = json.dumps(projected, ensure_ascii=False)
     if any(sentinel in serialized for sentinel in PHASE3_PROVENANCE_SENTINELS):
+        ledger.student_expectation_provenance_leak = True
+    algorithm = private["agents"][0]["algorithmResult"]
+    projected_algorithm = projected["agents"][0].get("algorithmResult") or {}
+    # Low-entropy fields must never corrupt allowlisted complexity / approach text.
+    for field in ("timeComplexity", "expectedComplexity", "recommendedApproach"):
+        raw = str(algorithm.get(field) or "")
+        out = str(projected_algorithm.get(field) or "")
+        if "O(1)" in raw and out and ("O()" in out or ("O(1)" not in out and "O(" in out)):
+            ledger.student_expectation_provenance_leak = True
+        if "hash_lookup" in raw and out and "hash_lookup" not in out and "Use" in out:
+            ledger.student_expectation_provenance_leak = True
+    if projected_algorithm.get("timeComplexity") != "O(1)":
+        ledger.student_expectation_provenance_leak = True
+    recommended = str(projected_algorithm.get("recommendedApproach") or "")
+    gap = str(projected_algorithm.get("gapExplanation") or "")
+    if "hash_lookup" not in recommended or "O(1)" not in recommended:
+        ledger.student_expectation_provenance_leak = True
+    if "minimum" not in recommended and "minimum" not in gap:
+        ledger.student_expectation_provenance_leak = True
+    if "hash_loup" in serialized or re.search(r"(?<![\w])mium(?![\w])", serialized):
+        ledger.student_expectation_provenance_leak = True
+    # Reason/provider must drop contaminated narratives, never substring-mangle them.
+    mangled_result = dict(algorithm)
+    mangled_result["gapExplanation"] = "This verified approach is fine"
+    mangled_result["recommendedApproach"] = "verified method with hash_lookup"
+    mangled_agent = dict(private["agents"][0])
+    mangled_agent["algorithmResult"] = mangled_result
+    mangled_private = dict(private)
+    mangled_private["agents"] = [mangled_agent]
+    mangled_projected = project_student_result(mangled_private)
+    mangled_serialized = json.dumps(mangled_projected, ensure_ascii=False)
+    mangled_alg = mangled_projected["agents"][0].get("algorithmResult") or {}
+    if "This approach" in mangled_serialized or "This  approach" in mangled_serialized:
+        ledger.student_expectation_provenance_leak = True
+    if mangled_alg.get("gapExplanation") == "This approach":
+        ledger.student_expectation_provenance_leak = True
+    if mangled_alg.get("recommendedApproach") == "method with hash_lookup":
+        ledger.student_expectation_provenance_leak = True
+    if "gapExplanation" in mangled_alg or "recommendedApproach" in mangled_alg:
         ledger.student_expectation_provenance_leak = True
 
 

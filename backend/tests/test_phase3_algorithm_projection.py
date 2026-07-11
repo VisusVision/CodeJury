@@ -168,6 +168,133 @@ class Phase3AlgorithmProjectionTests(unittest.TestCase):
         for sentinel in PRIVATE_ALGORITHM_SENTINELS:
             self.assertNotIn(sentinel, serialized)
 
+    def test_student_projection_scrubs_provenance_embedded_in_explanation_text(self):
+        private = _private_result_with_algorithm()
+        algorithm_result = _algorithm_agent(private)["algorithmResult"]
+        algorithm_result["gapExplanation"] = (
+            f"Beklenti surumu {SENTINEL_VERSION} ve id {SENTINEL_EXPECTATION_ID} "
+            f"ile uyumlu; confidence {SENTINEL_EVIDENCE_CONFIDENCE}."
+        )
+        algorithm_result["recommendedApproach"] = (
+            f"Yaklasim {SENTINEL_CACHE_KEY} / {SENTINEL_VERIFIER_REASON}"
+        )
+
+        projected = project_student_result(private)
+        result = _algorithm_agent(projected)["algorithmResult"]
+        serialized = json.dumps(projected)
+
+        for sentinel in (
+            SENTINEL_EXPECTATION_ID,
+            SENTINEL_CACHE_KEY,
+            SENTINEL_VERIFIER_REASON,
+        ):
+            self.assertNotIn(sentinel, serialized)
+            self.assertNotIn(sentinel, str(result.get("gapExplanation", "")))
+            self.assertNotIn(sentinel, str(result.get("recommendedApproach", "")))
+        # Distinctive low-entropy markers must not remain in student narratives;
+        # unsafe fields are dropped rather than substring-mangled.
+        self.assertNotIn(str(SENTINEL_VERSION), serialized)
+        self.assertNotIn(str(SENTINEL_EVIDENCE_CONFIDENCE), serialized)
+
+    def test_student_projection_does_not_mangle_o1_or_algorithm_names_via_low_entropy_scrub(
+        self,
+    ):
+        private = _private_result_with_algorithm()
+        algorithm_result = _algorithm_agent(private)["algorithmResult"]
+        algorithm_result["expectationVersion"] = 1
+        algorithm_result["expectedConfidence"] = 0.5
+        algorithm_result["expectedFamilies"] = ["hash_lookup"]
+        algorithm_result["timeComplexity"] = "O(1)"
+        algorithm_result["expectedComplexity"] = "O(1)"
+        algorithm_result["spaceComplexity"] = "O(1)"
+        algorithm_result["recommendedApproach"] = "Use hash_lookup with O(1) access"
+        algorithm_result["gapExplanation"] = "Constant-time O(1) hash_lookup matches expectation."
+
+        projected = project_student_result(private)
+        result = _algorithm_agent(projected)["algorithmResult"]
+
+        self.assertEqual(result["timeComplexity"], "O(1)")
+        self.assertEqual(result["expectedComplexity"], "O(1)")
+        self.assertEqual(result["spaceComplexity"], "O(1)")
+        self.assertEqual(result["recommendedApproach"], "Use hash_lookup with O(1) access")
+        self.assertEqual(
+            result["gapExplanation"],
+            "Constant-time O(1) hash_lookup matches expectation.",
+        )
+        self.assertNotIn("expectationVersion", result)
+        self.assertNotIn("expectedFamilies", result)
+
+    def test_student_projection_drops_narrative_for_short_provenance_token_hits(
+        self,
+    ):
+        """Short provider/reason values must not substring-mangle student text."""
+        private = _private_result_with_algorithm()
+        algorithm_result = _algorithm_agent(private)["algorithmResult"]
+        algorithm_result["extractorProvider"] = "nim"
+        algorithm_result["verificationReason"] = "ok"
+        algorithm_result["expectationId"] = "LONG_EXPECTATION_ID_SENTINEL_UNIQUE"
+        algorithm_result["cacheKey"] = "LONG_CACHE_KEY_SENTINEL_UNIQUE"
+        algorithm_result["recommendedApproach"] = "Use hash_lookup with minimum comparisons"
+        algorithm_result["gapExplanation"] = "hash_lookup remains the minimum viable approach"
+        algorithm_result["timeComplexity"] = "O(1)"
+        algorithm_result["expectedComplexity"] = "O(1)"
+
+        projected = project_student_result(private)
+        result = _algorithm_agent(projected)["algorithmResult"]
+        serialized = json.dumps(projected)
+
+        self.assertEqual(result["timeComplexity"], "O(1)")
+        self.assertEqual(result["expectedComplexity"], "O(1)")
+        # No token-boundary hit for ok/nim inside these words → keep intact.
+        self.assertEqual(
+            result["recommendedApproach"],
+            "Use hash_lookup with minimum comparisons",
+        )
+        self.assertEqual(
+            result["gapExplanation"],
+            "hash_lookup remains the minimum viable approach",
+        )
+        self.assertNotIn("hash_loup", serialized)
+        self.assertNotIn('"mium"', serialized)
+        self.assertNotRegex(serialized, r"(?<![\w])ok(?![\w])")
+        self.assertNotRegex(serialized, r"(?<![\w])nim(?![\w])")
+
+    def test_student_projection_drops_field_when_short_provenance_is_whole_token(self):
+        private = _private_result_with_algorithm()
+        algorithm_result = _algorithm_agent(private)["algorithmResult"]
+        algorithm_result["extractorProvider"] = "nim"
+        algorithm_result["verificationReason"] = "ok"
+        algorithm_result["gapExplanation"] = "Verifier said ok via nim provider."
+        algorithm_result["recommendedApproach"] = "Prefer nim when ok."
+
+        projected = project_student_result(private)
+        result = _algorithm_agent(projected)["algorithmResult"]
+
+        self.assertNotIn("gapExplanation", result)
+        self.assertNotIn("recommendedApproach", result)
+
+    def test_student_projection_does_not_substring_scrub_verified_reason(self):
+        private = _private_result_with_algorithm()
+        algorithm_result = _algorithm_agent(private)["algorithmResult"]
+        algorithm_result["verificationReason"] = "verified"
+        algorithm_result["extractorProvider"] = "openai-compatible"
+        algorithm_result["extractorModel"] = "gpt-test-model"
+        algorithm_result["gapExplanation"] = "This verified approach is fine"
+        algorithm_result["recommendedApproach"] = "verified method with hash_lookup"
+        algorithm_result["timeComplexity"] = "O(1)"
+        algorithm_result["expectedComplexity"] = "O(1)"
+
+        projected = project_student_result(private)
+        result = _algorithm_agent(projected)["algorithmResult"]
+        serialized = json.dumps(projected)
+
+        self.assertEqual(result["timeComplexity"], "O(1)")
+        # Token hit on reason/provider/model → drop narrative; never mangle mid-sentence.
+        self.assertNotIn("gapExplanation", result)
+        self.assertNotIn("recommendedApproach", result)
+        self.assertNotIn("This approach", serialized)
+        self.assertNotIn("This  approach", serialized)
+
     def test_student_projection_does_not_mutate_private_result(self):
         private = _private_result_with_algorithm()
         before = copy.deepcopy(private)

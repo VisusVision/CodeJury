@@ -256,10 +256,8 @@ def _detect_branching_recursion(facts: PythonAstFacts) -> _FamilyMatch | None:
         if _direct_recursion_count(facts, function) < 2:
             continue
         seen.add(function)
-        entry = _first_fact_evidence(facts, "direct_recursion", detail_contains=function)
         branching.append(
-            entry
-            or _family_evidence(
+            _family_evidence(
                 "branching_recursion",
                 signal.line,
                 f"{function} makes multiple recursive calls",

@@ -53,7 +53,26 @@ ALLOWED_ALGORITHM_FAMILIES = frozenset(
     }
 )
 
-_BIG_O_PATTERN = re.compile(r"O\s*\([^)]+\)", re.IGNORECASE)
+_BIG_O_PATTERN = re.compile(r"O\s*\(", re.IGNORECASE)
+
+
+def _extract_big_o_expressions(text: str) -> tuple[str, ...]:
+    """Extract Big-O expressions, including nested parentheses like O((V+E) log V)."""
+    expressions: list[str] = []
+    for match in _BIG_O_PATTERN.finditer(text):
+        start = match.start()
+        index = match.end()
+        depth = 1
+        while index < len(text) and depth > 0:
+            char = text[index]
+            if char == "(":
+                depth += 1
+            elif char == ")":
+                depth -= 1
+            index += 1
+        if depth == 0:
+            expressions.append(text[start:index])
+    return tuple(expressions)
 
 
 class ExtractorResponse(BaseModel):
@@ -182,8 +201,7 @@ def infer_expectation_from_assignment(
     context: AlgorithmExpectationContext,
 ) -> AlgorithmExpectationCandidate | None:
     text = _assignment_text(context)
-    for match in _BIG_O_PATTERN.finditer(text):
-        expression = match.group(0)
+    for expression in _extract_big_o_expressions(text):
         try:
             complexity = normalize_complexity(
                 expression,

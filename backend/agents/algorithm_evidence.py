@@ -210,6 +210,79 @@ def _space_complexity_for_detection(detection: AlgorithmDetection) -> Complexity
     return normalize_complexity("O(1)", source="python_ast", confidence=0.8)
 
 
+def _loop_lower_bound_complexity(
+    facts: Any,
+) -> ComplexityEstimate:
+    """Derive a conservative time lower-bound only when input dependence is proven."""
+    loops = tuple(getattr(facts, "loops", ()) or ())
+    if not loops:
+        return ComplexityEstimate(
+            expression="unknown",
+            family="unknown",
+            rank=None,
+            confidence=0.3,
+            source="python_ast",
+            evidence_lines=(),
+        )
+
+    kinds = tuple(getattr(row, "iteration_kind", "unknown") for row in loops)
+    # Any unclassified loop (e.g. while) means we cannot prove input complexity.
+    if any(kind == "unknown" for kind in kinds):
+        return ComplexityEstimate(
+            expression="unknown",
+            family="unknown",
+            rank=None,
+            confidence=0.3,
+            source="python_ast",
+            evidence_lines=(),
+        )
+
+    input_loops = tuple(row for row, kind in zip(loops, kinds) if kind == "input_dependent")
+    if not input_loops:
+        # Proven constant bounds only (e.g. range(10)).
+        return normalize_complexity(
+            "O(1)",
+            source="python_ast",
+            confidence=0.7,
+            evidence_lines=tuple(int(row.line) for row in loops if getattr(row, "line", 0)),
+        )
+
+    # Mixed constant + input-dependent nesting is ambiguous for depth ranking.
+    if any(kind == "constant" for kind in kinds):
+        return ComplexityEstimate(
+            expression="unknown",
+            family="unknown",
+            rank=None,
+            confidence=0.3,
+            source="python_ast",
+            evidence_lines=(),
+        )
+
+    depth = max(int(getattr(row, "depth", 0) or 0) for row in input_loops)
+    loop_lines = tuple(int(row.line) for row in input_loops if getattr(row, "line", 0))
+    if depth >= 3:
+        expression = "O(n^3)"
+    elif depth == 2:
+        expression = "O(n^2)"
+    elif depth == 1:
+        expression = "O(n)"
+    else:
+        return ComplexityEstimate(
+            expression="unknown",
+            family="unknown",
+            rank=None,
+            confidence=0.3,
+            source="python_ast",
+            evidence_lines=(),
+        )
+    return normalize_complexity(
+        expression,
+        source="python_ast",
+        confidence=0.6,
+        evidence_lines=loop_lines,
+    )
+
+
 def _build_issues(
     *,
     gap: GapResult,
@@ -303,15 +376,23 @@ def build_evidence_algorithm_result(
     detection = detect_algorithms(facts, source)
     actual_time = detection.time_complexity
     if actual_time is None:
-        actual_time = normalize_complexity("O(1)", source="python_ast", confidence=0.5)
+        actual_time = _loop_lower_bound_complexity(facts)
     actual_space = _space_complexity_for_detection(detection)
 
-    if expected.expected_complexity is None:
+    if (
+        expected.expected_complexity is None
+        or actual_time.family == "unknown"
+        or actual_time.rank is None
+    ):
         gap = GapResult(
             status="unknown",
             steps=None,
             approach_mismatch=False,
-            explanation="Expected complexity is unknown; gap comparison skipped.",
+            explanation=(
+                "Expected complexity is unknown; gap comparison skipped."
+                if expected.expected_complexity is None
+                else "Actual complexity lacks a reliable ranked estimate; gap comparison skipped."
+            ),
         )
     else:
         gap = compare_expected_actual(
@@ -324,12 +405,15 @@ def build_evidence_algorithm_result(
     evidence = detection.evidence
     issues = tuple(_build_issues(gap=gap, evidence=evidence, expected=expected))
     time_expression = actual_time.expression
+    actual_confidence = (
+        detection.confidence if detection.names else float(actual_time.confidence)
+    )
     return EvidenceAlgorithmResult(
         detected_algorithms=detection.names,
         data_structures=detection.data_structures,
         time_complexity=actual_time,
         space_complexity=actual_space,
-        actual_confidence=detection.confidence,
+        actual_confidence=actual_confidence,
         evidence=evidence,
         gap=gap,
         expected=expected,
@@ -491,6 +575,27 @@ def build_programmatic_algorithm_result(
     return output
 
 
+def _merge_recommended_approach(
+    *,
+    evidence: EvidenceAlgorithmResult,
+    programmatic: dict[str, Any],
+    llm_result: dict[str, Any],
+    expected_expression: str,
+) -> str:
+    """Prefer verified expectation; never let LLM override when expectation is present."""
+    from_evidence = str(evidence.recommended_approach or "").strip()
+    if from_evidence:
+        return from_evidence
+    from_programmatic = str(programmatic.get("recommended_approach") or "").strip()
+    if from_programmatic:
+        return from_programmatic
+    has_verified_expectation = evidence.expected.expected_complexity is not None
+    if has_verified_expectation:
+        expression = expected_expression.strip() or "unknown"
+        return f"Beklenen yaklasim: {expression} karmasiklikli bir cozum."
+    return str(llm_result.get("recommended_approach") or "").strip()
+
+
 def merge_algorithm_results(
     programmatic: dict[str, Any],
     llm_result: dict[str, Any],
@@ -538,12 +643,12 @@ def merge_algorithm_results(
             "data_structure_analysis": str(
                 llm_result.get("data_structure_analysis") or programmatic.get("data_structure_analysis") or ""
             ).strip(),
-            "recommended_approach": str(
-                llm_result.get("recommended_approach")
-                or programmatic.get("recommended_approach")
-                or evidence.recommended_approach
-                or ""
-            ).strip(),
+            "recommended_approach": _merge_recommended_approach(
+                evidence=evidence,
+                programmatic=programmatic,
+                llm_result=llm_result,
+                expected_expression=expected_expression,
+            ),
             "issues": _dedupe_algorithm_issues(programmatic_issues + llm_issues)[:10],
             "score": decision.score,
             "actual_family": actual_time.family if actual_time else "unknown",

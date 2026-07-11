@@ -7,7 +7,8 @@ Expected contract for GREEN implementer (`backend/algorithm_analysis/ast_facts.p
   (`extra="forbid"`, `frozen=True`, tuple fields).
 
 `PythonAstFacts` fields:
-- `loops: tuple[LoopFact, ...]` — each `LoopFact` has `line: int`, `depth: int`
+- `loops: tuple[LoopFact, ...]` — each `LoopFact` has `line: int`, `depth: int`,
+  and `iteration_kind` (`"constant"`, `"input_dependent"`, or `"unknown"`)
 - `max_loop_depth: int`
 - `recursion_signals: tuple[RecursionSignal, ...]` — `kind` is `"direct"` or `"mutual"`,
   plus `line: int` and `functions: tuple[str, ...]`
@@ -250,11 +251,167 @@ def test_python_ast_facts_is_strict_frozen_model() -> None:
 
 
 def test_loop_fact_is_frozen_and_rejects_extra_fields() -> None:
-    loop = LoopFact(line=4, depth=2)
+    loop = LoopFact(line=4, depth=2, iteration_kind="constant")
     with pytest.raises(ValidationError):
         loop.line = 5
     with pytest.raises(ValidationError):
         LoopFact(line=4, depth=2, unexpected="x")
+
+
+def test_constant_range_loop_records_constant_iteration_kind() -> None:
+    facts = extract_python_facts("for i in range(10):\n    pass\n")
+    assert len(facts.loops) == 1
+    assert facts.loops[0].iteration_kind == "constant"
+
+
+def test_name_iteration_records_input_dependent_kind() -> None:
+    facts = extract_python_facts("def walk(values):\n    for value in values:\n        pass\n")
+    assert len(facts.loops) == 1
+    assert facts.loops[0].iteration_kind == "input_dependent"
+
+
+def test_local_literal_name_iteration_is_constant() -> None:
+    source = (
+        "def fixed():\n"
+        "    values = [1, 2, 3]\n"
+        "    for x in values:\n"
+        "        pass\n"
+    )
+    facts = extract_python_facts(source)
+    assert len(facts.loops) == 1
+    assert facts.loops[0].iteration_kind == "constant"
+
+
+def test_param_reassigned_to_unknown_call_is_unknown() -> None:
+    source = (
+        "def f(values):\n"
+        "    values = load_fixed_values()\n"
+        "    for x in values:\n"
+        "        pass\n"
+    )
+    facts = extract_python_facts(source)
+    assert len(facts.loops) == 1
+    assert facts.loops[0].iteration_kind == "unknown"
+
+
+def test_constant_list_extended_becomes_unknown() -> None:
+    source = (
+        "def f(source):\n"
+        "    values = [1, 2, 3]\n"
+        "    values.extend(source)\n"
+        "    for x in values:\n"
+        "        pass\n"
+    )
+    facts = extract_python_facts(source)
+    assert len(facts.loops) == 1
+    assert facts.loops[0].iteration_kind == "unknown"
+
+
+def test_mutable_alias_extend_invalidates_original_binding() -> None:
+    source = (
+        "def f(source):\n"
+        "    values = []\n"
+        "    alias = values\n"
+        "    alias.extend(source)\n"
+        "    for x in values:\n"
+        "        pass\n"
+    )
+    facts = extract_python_facts(source)
+    assert len(facts.loops) == 1
+    assert facts.loops[0].iteration_kind == "unknown"
+
+
+def test_if_else_divergent_bindings_merge_to_unknown() -> None:
+    source = (
+        "def f(flag, source):\n"
+        "    if flag:\n"
+        "        values = source\n"
+        "    else:\n"
+        "        values = [1, 2, 3]\n"
+        "    for x in values:\n"
+        "        pass\n"
+    )
+    facts = extract_python_facts(source)
+    assert len(facts.loops) == 1
+    assert facts.loops[0].iteration_kind == "unknown"
+
+
+def test_if_else_same_constant_bindings_stay_constant() -> None:
+    source = (
+        "def f(flag):\n"
+        "    if flag:\n"
+        "        values = [1, 2]\n"
+        "    else:\n"
+        "        values = [3, 4, 5]\n"
+        "    for x in values:\n"
+        "        pass\n"
+    )
+    facts = extract_python_facts(source)
+    assert len(facts.loops) == 1
+    assert facts.loops[0].iteration_kind == "constant"
+
+
+def test_non_exhaustive_match_includes_before_as_unknown() -> None:
+    source = (
+        "def f(flag, source):\n"
+        "    values = source\n"
+        "    match flag:\n"
+        "        case 1:\n"
+        "            values = [1]\n"
+        "        case 2:\n"
+        "            values = [2]\n"
+        "    for x in values:\n"
+        "        pass\n"
+    )
+    facts = extract_python_facts(source)
+    assert len(facts.loops) == 1
+    assert facts.loops[0].iteration_kind == "unknown"
+
+
+def test_guarded_wildcard_match_is_not_exhaustive() -> None:
+    source = (
+        "def f(flag, source):\n"
+        "    values = source\n"
+        "    match flag:\n"
+        "        case 1:\n"
+        "            values = [1]\n"
+        "        case _ if flag:\n"
+        "            values = [2]\n"
+        "    for x in values:\n"
+        "        pass\n"
+    )
+    facts = extract_python_facts(source)
+    assert len(facts.loops) == 1
+    assert facts.loops[0].iteration_kind == "unknown"
+
+
+def test_exhaustive_match_with_wildcard_merges_case_results() -> None:
+    source = (
+        "def f(flag, source):\n"
+        "    values = source\n"
+        "    match flag:\n"
+        "        case 1:\n"
+        "            values = [1]\n"
+        "        case _:\n"
+        "            values = [2]\n"
+        "    for x in values:\n"
+        "        pass\n"
+    )
+    facts = extract_python_facts(source)
+    assert len(facts.loops) == 1
+    assert facts.loops[0].iteration_kind == "constant"
+
+
+def test_unresolved_name_iteration_is_unknown() -> None:
+    facts = extract_python_facts("def walk():\n    for value in values:\n        pass\n")
+    assert len(facts.loops) == 1
+    assert facts.loops[0].iteration_kind == "unknown"
+
+
+def test_range_len_records_input_dependent_kind() -> None:
+    facts = extract_python_facts("def walk(values):\n    for i in range(len(values)):\n        pass\n")
+    assert len(facts.loops) == 1
+    assert facts.loops[0].iteration_kind == "input_dependent"
 
 
 def test_evidence_entries_use_algorithm_evidence_contract() -> None:
