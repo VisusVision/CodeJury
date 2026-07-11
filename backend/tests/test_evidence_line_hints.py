@@ -1,6 +1,7 @@
 import unittest
 
 from backend.agents.algorithm import _build_programmatic_algorithm_result, _merge_algorithm_results
+from backend.agents.algorithm_evidence import build_evidence_algorithm_result
 from backend.agents.code_utils import (
     build_focused_code_excerpt,
     enrich_issue_with_line,
@@ -62,7 +63,12 @@ class EvidenceLineHintTests(unittest.TestCase):
             ],
             "score": 55,
         }
-        merged = _merge_algorithm_results(programmatic, llm_result, source=NESTED_LOOP_CODE)
+        merged = _merge_algorithm_results(
+            programmatic,
+            llm_result,
+            source=NESTED_LOOP_CODE,
+            evidence=build_evidence_algorithm_result(NESTED_LOOP_CODE, "python", brief="O(n) bekleniyor"),
+        )
         issue = next(i for i in merged["issues"] if "find_pair" in i.get("description", ""))
         self.assertIsInstance(issue.get("line"), int)
         self.assertGreater(issue["line"], 0)
