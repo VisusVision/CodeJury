@@ -63,7 +63,7 @@ from backend.auth.dependencies import (
 from backend.auth.models import AuthPrincipal
 from backend.auth.policies import enforce_teacher_owner
 from backend.algorithm_expectations.cache import AlgorithmExpectationContext
-from backend.algorithm_expectations.contracts import AlgorithmExpectationResolution
+from backend.algorithm_expectations.contracts import AlgorithmExpectation, AlgorithmExpectationResolution
 from backend.testing.cache import AssignmentTestContext
 from backend.testing.contracts import FormalTestCase, GeneratedTestSet, TestSelection
 from backend.testing.difficulty import infer_assignment_difficulty, normalize_difficulty
@@ -5187,6 +5187,7 @@ def _build_agents_list(cq, sn, gl, sc, ta, ev, alg=None, auth=None) -> list[dict
             "score": alg.get("score", 0),
             "maxScore": 100,
             "findings": alg_findings,
+            "algorithmResult": _algorithm_result_from_output(alg),
             **_agent_report_metadata(alg),
         })
 
@@ -6456,6 +6457,81 @@ def _generated_test_set_response(test_set: GeneratedTestSet) -> dict[str, Any]:
     return payload
 
 
+def _algorithm_expectation_source(expectation: AlgorithmExpectation) -> str:
+    if expectation.verification_status == "verified":
+        return "llm_verified"
+    return "deterministic_fallback"
+
+
+def _algorithm_expectation_verification_status(expectation: AlgorithmExpectation) -> str:
+    if expectation.verification_status == "verified":
+        return "verified"
+    return "fallback"
+
+
+def _algorithm_expectation_response(expectation: AlgorithmExpectation) -> dict[str, Any]:
+    expected_complexity = ""
+    if expectation.expected_complexity is not None:
+        expected_complexity = expectation.expected_complexity.expression
+    return {
+        "id": expectation.id,
+        "assignmentId": expectation.assignment_id,
+        "cacheKey": expectation.cache_key,
+        "version": expectation.version,
+        "expectedComplexity": expected_complexity,
+        "expectedApproach": expectation.expected_approach,
+        "algorithmFamilies": list(expectation.algorithm_families),
+        "confidence": expectation.confidence,
+        "source": _algorithm_expectation_source(expectation),
+        "verificationStatus": _algorithm_expectation_verification_status(expectation),
+        "verificationReason": expectation.verification_reason,
+        "extractorProvider": expectation.extractor_provider,
+        "extractorModel": expectation.extractor_model,
+        "verifierProvider": expectation.verifier_provider,
+        "verifierModel": expectation.verifier_model,
+        "schemaVersion": expectation.schema_version,
+        "extractorPromptVersion": expectation.extractor_prompt_version,
+        "verifierPromptVersion": expectation.verifier_prompt_version,
+        "createdAt": expectation.created_at,
+        "active": expectation.active,
+    }
+
+
+def _algorithm_result_from_output(alg: dict[str, Any]) -> dict[str, Any]:
+    evidence: list[dict[str, Any]] = []
+    for item in alg.get("evidence") or []:
+        if not isinstance(item, dict):
+            continue
+        entry = {
+            "line": item.get("line"),
+            "kind": item.get("kind"),
+            "detail": item.get("detail"),
+        }
+        if item.get("confidence") is not None:
+            entry["confidence"] = item.get("confidence")
+        evidence.append(entry)
+
+    return {
+        "detectedAlgorithms": list(alg.get("detected_algorithms") or []),
+        "dataStructures": list(alg.get("data_structures") or []),
+        "timeComplexity": str(alg.get("time_complexity") or "unknown"),
+        "spaceComplexity": str(alg.get("space_complexity") or "O(1)"),
+        "actualFamily": str(alg.get("actual_family") or "unknown"),
+        "actualConfidence": alg.get("actual_confidence"),
+        "expectedComplexity": str(alg.get("expected_complexity") or ""),
+        "expectedApproach": str(alg.get("expected_approach") or ""),
+        "expectedFamilies": list(alg.get("expected_families") or []),
+        "expectedSource": str(alg.get("expected_source") or ""),
+        "expectedConfidence": alg.get("expected_confidence"),
+        "expectationVersion": alg.get("expectation_version"),
+        "complexityGap": str(alg.get("complexity_gap") or "unknown"),
+        "gapSteps": alg.get("gap_steps"),
+        "gapExplanation": str(alg.get("gap_explanation") or ""),
+        "recommendedApproach": str(alg.get("recommended_approach") or ""),
+        "evidence": evidence,
+    }
+
+
 def _promoted_assignment_test_case(
     case: FormalTestCase,
     *,
@@ -6775,6 +6851,20 @@ async def get_assignment_generated_test_set(
     if test_set is None:
         raise HTTPException(status_code=404, detail="Aktif test seti bulunamadi")
     return _generated_test_set_response(test_set)
+
+
+@app.get("/api/assignments/{assignment_id}/algorithm-expectation")
+async def get_assignment_algorithm_expectation(
+    assignment_id: str,
+    principal: AuthPrincipal = Depends(require_teacher),
+):
+    aid = assignment_id.strip()
+    await _require_assignment_for_teacher(aid, principal, mutation=False)
+    store = await _get_algorithm_expectation_store()
+    expectation = await store.get_active(aid)
+    if expectation is None:
+        raise HTTPException(status_code=404, detail="Aktif algoritma beklentisi bulunamadi")
+    return _algorithm_expectation_response(expectation)
 
 
 @app.post("/api/assignments/{assignment_id}/generated-test-sets/{set_id}/promote")

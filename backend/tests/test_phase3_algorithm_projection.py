@@ -1,0 +1,221 @@
+"""Task 10: student-safe algorithmResult projection sentinel tests."""
+
+from __future__ import annotations
+
+import copy
+import json
+import unittest
+from typing import Any
+
+from backend.reporting.student_projection import project_student_result
+from frontend.backend import main
+
+SENTINEL_EXPECTATION_ID = "SENTINEL_EXPECTATION_ID_TASK10"
+SENTINEL_CACHE_KEY = "SENTINEL_CACHE_KEY_TASK10_UNIQUE"
+SENTINEL_VERSION = 424242
+SENTINEL_EXTRACTOR_PROVIDER = "SENTINEL_EXTRACTOR_PROVIDER_TASK10"
+SENTINEL_EXTRACTOR_MODEL = "SENTINEL_EXTRACTOR_MODEL_TASK10"
+SENTINEL_VERIFIER_REASON = "SENTINEL_VERIFIER_REASON_TASK10"
+SENTINEL_EXTRACTOR_PROMPT = "SENTINEL_EXTRACTOR_PROMPT_TASK10"
+SENTINEL_EVIDENCE_CONFIDENCE = 0.7777777
+SENTINEL_RAW_EVIDENCE_DETAIL = "SENTINEL_RAW_EVIDENCE_DETAIL_TASK10 pseudo-code leak"
+
+ALLOWED_ALGORITHM_RESULT_KEYS = frozenset({
+    "detectedAlgorithms",
+    "dataStructures",
+    "timeComplexity",
+    "spaceComplexity",
+    "actualFamily",
+    "actualConfidence",
+    "expectedComplexity",
+    "expectedApproach",
+    "complexityGap",
+    "gapSteps",
+    "gapExplanation",
+    "recommendedApproach",
+    "evidence",
+})
+
+PRIVATE_ALGORITHM_SENTINELS = (
+    SENTINEL_EXPECTATION_ID,
+    SENTINEL_CACHE_KEY,
+    str(SENTINEL_VERSION),
+    SENTINEL_EXTRACTOR_PROVIDER,
+    SENTINEL_EXTRACTOR_MODEL,
+    SENTINEL_VERIFIER_REASON,
+    SENTINEL_EXTRACTOR_PROMPT,
+    str(SENTINEL_EVIDENCE_CONFIDENCE),
+    SENTINEL_RAW_EVIDENCE_DETAIL,
+)
+
+
+def _private_algorithm_agent(*, include_snake_case: bool = False) -> dict[str, Any]:
+    algorithm_result = {
+        "detectedAlgorithms": ["hash_lookup"],
+        "dataStructures": ["dict"],
+        "timeComplexity": "O(n)",
+        "spaceComplexity": "O(n)",
+        "actualFamily": "single_variable",
+        "actualConfidence": 0.95,
+        "expectedComplexity": "O(n)",
+        "expectedApproach": "hash lookup",
+        "expectedFamilies": ["hash_lookup"],
+        "expectedSource": "verified_expectation",
+        "expectedConfidence": 0.92,
+        "expectationVersion": SENTINEL_VERSION,
+        "expectationId": SENTINEL_EXPECTATION_ID,
+        "cacheKey": SENTINEL_CACHE_KEY,
+        "extractorProvider": SENTINEL_EXTRACTOR_PROVIDER,
+        "extractorModel": SENTINEL_EXTRACTOR_MODEL,
+        "extractorPromptVersion": SENTINEL_EXTRACTOR_PROMPT,
+        "verificationReason": SENTINEL_VERIFIER_REASON,
+        "complexityGap": "matches_expected",
+        "gapSteps": 0,
+        "gapExplanation": "Karmasiklik beklentiyle uyumlu.",
+        "recommendedApproach": "Tek geciste hash map kullanin.",
+        "evidence": [
+            {
+                "line": 4,
+                "kind": "hash_lookup",
+                "detail": "dict membership check",
+                "confidence": SENTINEL_EVIDENCE_CONFIDENCE,
+            },
+            {
+                "line": 9,
+                "kind": "nested_loop",
+                "detail": SENTINEL_RAW_EVIDENCE_DETAIL,
+                "confidence": 0.1,
+            },
+        ],
+    }
+    agent: dict[str, Any] = {
+        "id": "algorithm",
+        "name": "Algoritma Ajani",
+        "summary": "Karmasiklik: O(n), Beklenen: O(n), Durum: matches_expected",
+        "score": 88,
+        "maxScore": 100,
+        "findings": [],
+        "algorithmResult": algorithm_result,
+        "llm_status": "ok",
+        "confidence": 0.9,
+        "guardrail_flags": [],
+    }
+    if include_snake_case:
+        agent.update({
+            "detected_algorithms": ["ignored_snake"],
+            "expectation_version": 999,
+            "cache_key": "ignored_cache",
+        })
+    return agent
+
+
+def _private_result_with_algorithm(**agent_kwargs: Any) -> dict[str, Any]:
+    return {
+        "totalScore": 88,
+        "maxScore": 100,
+        "rubric": {},
+        "agents": [_private_algorithm_agent(**agent_kwargs)],
+        "fileName": "solution.py",
+        "executionTimeMs": 100,
+        "memoryUsageMb": 1.0,
+        "peakMemoryMb": 1.0,
+        "analysisEngine": "agentgrade-v1",
+        "summary": "Algorithm summary",
+        "strengths": [],
+        "weaknesses": [],
+        "recommendations": [],
+        "taskAlignment": {},
+        "reportStatus": "ready",
+    }
+
+
+def _algorithm_agent(projected: dict[str, Any]) -> dict[str, Any]:
+    for agent in projected.get("agents", []):
+        if agent.get("id") == "algorithm":
+            return agent
+    raise AssertionError("algorithm agent missing")
+
+
+class Phase3AlgorithmProjectionTests(unittest.TestCase):
+    def test_student_projection_keeps_allowlisted_algorithm_fields(self):
+        private = _private_result_with_algorithm()
+        projected = project_student_result(private)
+        result = _algorithm_agent(projected)["algorithmResult"]
+
+        self.assertEqual(set(result.keys()), ALLOWED_ALGORITHM_RESULT_KEYS)
+        self.assertEqual(result["detectedAlgorithms"], ["hash_lookup"])
+        self.assertEqual(result["dataStructures"], ["dict"])
+        self.assertEqual(result["timeComplexity"], "O(n)")
+        self.assertEqual(result["spaceComplexity"], "O(n)")
+        self.assertEqual(result["actualFamily"], "single_variable")
+        self.assertEqual(result["actualConfidence"], 0.95)
+        self.assertEqual(result["expectedComplexity"], "O(n)")
+        self.assertEqual(result["expectedApproach"], "hash lookup")
+        self.assertEqual(result["complexityGap"], "matches_expected")
+        self.assertEqual(result["gapSteps"], 0)
+        self.assertEqual(result["gapExplanation"], "Karmasiklik beklentiyle uyumlu.")
+        self.assertEqual(result["recommendedApproach"], "Tek geciste hash map kullanin.")
+        self.assertEqual(
+            result["evidence"],
+            [{"line": 4, "kind": "hash_lookup", "detail": "dict membership check"}],
+        )
+
+    def test_student_projection_strips_algorithm_provenance_sentinels(self):
+        private = _private_result_with_algorithm()
+        projected = project_student_result(private)
+        serialized = json.dumps(projected)
+
+        for sentinel in PRIVATE_ALGORITHM_SENTINELS:
+            self.assertNotIn(sentinel, serialized)
+
+    def test_student_projection_does_not_mutate_private_result(self):
+        private = _private_result_with_algorithm()
+        before = copy.deepcopy(private)
+        project_student_result(private)
+        self.assertEqual(private, before)
+
+    def test_teacher_private_result_retains_algorithm_provenance(self):
+        private = _private_result_with_algorithm()
+        algorithm_result = _algorithm_agent(private)["algorithmResult"]
+        self.assertIn("expectationId", algorithm_result)
+        self.assertIn("cacheKey", algorithm_result)
+        self.assertIn("extractorProvider", algorithm_result)
+        self.assertEqual(algorithm_result["evidence"][0]["confidence"], SENTINEL_EVIDENCE_CONFIDENCE)
+
+    def test_build_agents_list_attaches_algorithm_result_adapter(self):
+        alg = {
+            "detected_algorithms": ["hash_lookup"],
+            "data_structures": ["dict"],
+            "time_complexity": "O(n)",
+            "space_complexity": "O(n)",
+            "actual_family": "single_variable",
+            "actual_confidence": 0.95,
+            "expected_complexity": "O(n)",
+            "expected_approach": "hash lookup",
+            "expected_families": ["hash_lookup"],
+            "expected_source": "verified_expectation",
+            "expected_confidence": 0.92,
+            "expectation_version": 3,
+            "complexity_gap": "matches_expected",
+            "gap_steps": 0,
+            "gap_explanation": "Uyumlu.",
+            "recommended_approach": "Hash map kullan.",
+            "evidence": [{"line": 2, "kind": "hash_lookup", "detail": "dict use", "confidence": 0.8}],
+            "issues": [],
+            "score": 90,
+            "llm_status": "ok",
+            "confidence": 0.9,
+            "guardrail_flags": [],
+        }
+        agents = main._build_agents_list({}, {}, {}, {}, {}, {}, alg, None)
+        algorithm = next(agent for agent in agents if agent["id"] == "algorithm")
+        result = algorithm["algorithmResult"]
+        self.assertEqual(result["detectedAlgorithms"], ["hash_lookup"])
+        self.assertEqual(result["timeComplexity"], "O(n)")
+        self.assertEqual(result["expectedFamilies"], ["hash_lookup"])
+        self.assertEqual(result["expectationVersion"], 3)
+        self.assertEqual(result["evidence"][0]["confidence"], 0.8)
+
+
+if __name__ == "__main__":
+    unittest.main()

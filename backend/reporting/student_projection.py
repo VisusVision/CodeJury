@@ -43,6 +43,36 @@ PRIVATE_TOP_LEVEL_FRAGMENT_KEYS = frozenset({
 
 AGENT_KEYS = frozenset({"id", "name", "summary", "score", "maxScore", "findings", "testResults"})
 FINDING_KEYS = frozenset({"severity", "message", "line", "agent", "code"})
+ALGORITHM_RESULT_STUDENT_KEYS = frozenset({
+    "detectedAlgorithms",
+    "dataStructures",
+    "timeComplexity",
+    "spaceComplexity",
+    "actualFamily",
+    "actualConfidence",
+    "expectedComplexity",
+    "expectedApproach",
+    "complexityGap",
+    "gapSteps",
+    "gapExplanation",
+    "recommendedApproach",
+    "evidence",
+})
+ALGORITHM_EVIDENCE_STUDENT_KEYS = frozenset({"line", "kind", "detail"})
+ALGORITHM_RESULT_SNAKE_TO_CAMEL = {
+    "detected_algorithms": "detectedAlgorithms",
+    "data_structures": "dataStructures",
+    "time_complexity": "timeComplexity",
+    "space_complexity": "spaceComplexity",
+    "actual_family": "actualFamily",
+    "actual_confidence": "actualConfidence",
+    "expected_complexity": "expectedComplexity",
+    "expected_approach": "expectedApproach",
+    "complexity_gap": "complexityGap",
+    "gap_steps": "gapSteps",
+    "gap_explanation": "gapExplanation",
+    "recommended_approach": "recommendedApproach",
+}
 PUBLIC_TEST_KEYS = frozenset({
     "name",
     "input",
@@ -481,6 +511,17 @@ def _project_agents(
                 hidden_private_fragments,
                 projected_test_results,
             )
+        elif agent_id == "algorithm":
+            projected_algorithm_result = _project_algorithm_result(
+                agent,
+                hidden_private_fragments,
+            )
+            if projected_algorithm_result:
+                projected_agent["algorithmResult"] = projected_algorithm_result
+            projected_agent["findings"] = _project_non_testing_findings(
+                agent.get("findings", []),
+                hidden_private_fragments,
+            )
         else:
             projected_agent["findings"] = _project_non_testing_findings(
                 agent.get("findings", []),
@@ -489,6 +530,114 @@ def _project_agents(
 
         projected_agents.append(projected_agent)
     return projected_agents
+
+
+def _normalize_algorithm_result_source(agent: dict[str, Any]) -> dict[str, Any]:
+    algorithm_result = agent.get("algorithmResult")
+    if isinstance(algorithm_result, dict):
+        return algorithm_result
+
+    normalized: dict[str, Any] = {}
+    for snake_key, camel_key in ALGORITHM_RESULT_SNAKE_TO_CAMEL.items():
+        if snake_key in agent and agent[snake_key] is not None:
+            normalized[camel_key] = agent[snake_key]
+    if "evidence" in agent and agent["evidence"] is not None:
+        normalized["evidence"] = agent["evidence"]
+    return normalized
+
+
+def _collect_algorithm_private_fragments(source: dict[str, Any]) -> list[str]:
+    private_keys = (
+        "expectedFamilies",
+        "expectedSource",
+        "expectedConfidence",
+        "expectationVersion",
+        "expectationId",
+        "cacheKey",
+        "extractorProvider",
+        "extractorModel",
+        "extractorPromptVersion",
+        "verifierProvider",
+        "verifierModel",
+        "verificationReason",
+        "schemaVersion",
+    )
+    fragments: list[str] = []
+    for key in private_keys:
+        value = source.get(key)
+        if isinstance(value, str) and value.strip():
+            fragments.append(value.strip())
+        elif isinstance(value, (int, float)) and not isinstance(value, bool):
+            fragments.append(str(value))
+        elif isinstance(value, list):
+            for item in value:
+                if isinstance(item, str) and item.strip():
+                    fragments.append(item.strip())
+    for item in source.get("evidence") or []:
+        if not isinstance(item, dict):
+            continue
+        confidence = item.get("confidence")
+        if confidence is not None:
+            fragments.append(str(confidence))
+    return fragments
+
+
+def _algorithm_evidence_detail_is_student_safe(detail: Any, private_fragments: list[str]) -> bool:
+    if not isinstance(detail, str):
+        return detail is not None
+    text = detail.strip()
+    if not text:
+        return False
+    lowered = text.lower()
+    if "pseudo-code" in lowered or "pseudocode" in lowered:
+        return False
+    return not any(fragment and fragment in text for fragment in private_fragments)
+
+
+def _project_algorithm_result(
+    agent: dict[str, Any],
+    hidden_private_fragments: HiddenFragments,
+) -> dict[str, Any]:
+    source = _normalize_algorithm_result_source(agent)
+    if not source:
+        return {}
+
+    private_fragments = _collect_algorithm_private_fragments(source)
+    projected: dict[str, Any] = {}
+    for key in ALGORITHM_RESULT_STUDENT_KEYS:
+        if key == "evidence":
+            evidence = source.get("evidence")
+            if not isinstance(evidence, list):
+                continue
+            projected_evidence: list[dict[str, Any]] = []
+            for item in evidence:
+                if not isinstance(item, dict):
+                    continue
+                detail = item.get("detail")
+                if not _algorithm_evidence_detail_is_student_safe(detail, private_fragments):
+                    continue
+                rebuilt = {
+                    field: item[field]
+                    for field in ALGORITHM_EVIDENCE_STUDENT_KEYS
+                    if field in item and item[field] is not None
+                }
+                if not rebuilt:
+                    continue
+                if _value_contains_leak(rebuilt, hidden_private_fragments):
+                    continue
+                projected_evidence.append(rebuilt)
+            if projected_evidence:
+                projected["evidence"] = projected_evidence
+            continue
+
+        if key not in source or source[key] is None:
+            continue
+        value = source[key]
+        if isinstance(value, str):
+            projected[key] = _sanitize_text(value, hidden_private_fragments)
+        else:
+            projected[key] = value
+    return projected
 
 
 def _project_non_testing_findings(
