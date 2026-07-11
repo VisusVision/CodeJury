@@ -37,13 +37,20 @@ class RuntimeClassification:
     error_message_tr: str
 
 
-def _classify_stderr(stderr: str) -> RuntimeClassification | None:
+def _classify_known_stderr(stderr: str) -> RuntimeClassification | None:
     for error_type in _RUNTIME_ERROR_TYPES:
         if re.search(rf"\b{re.escape(error_type)}\b", stderr):
             return RuntimeClassification(
                 error_type=error_type,
                 error_message_tr=_ERROR_MESSAGES_TR[error_type],
             )
+    return None
+
+
+def _classify_stderr(stderr: str) -> RuntimeClassification | None:
+    known = _classify_known_stderr(stderr)
+    if known is not None:
+        return known
     if stderr.strip():
         return RuntimeClassification(
             error_type="UnknownRuntimeError",
@@ -52,7 +59,11 @@ def _classify_stderr(stderr: str) -> RuntimeClassification | None:
     return None
 
 
-def classify_runtime(raw: RawCaseResult) -> RuntimeClassification | None:
+def classify_runtime(
+    raw: RawCaseResult,
+    *,
+    expected_exit_code: int | None = None,
+) -> RuntimeClassification | None:
     if raw.timed_out:
         return RuntimeClassification(
             error_type="Timeout",
@@ -69,9 +80,16 @@ def classify_runtime(raw: RawCaseResult) -> RuntimeClassification | None:
             error_message_tr=_ERROR_MESSAGES_TR["CompilationError"],
         )
     if raw.actual_exit_code != 0:
-        stderr_classification = _classify_stderr(raw.actual_stderr)
-        if stderr_classification is not None:
-            return stderr_classification
+        known_stderr = _classify_known_stderr(raw.actual_stderr)
+        if known_stderr is not None:
+            return known_stderr
+        if expected_exit_code is not None and raw.actual_exit_code == expected_exit_code:
+            return None
+        if raw.actual_stderr.strip():
+            return RuntimeClassification(
+                error_type="UnknownRuntimeError",
+                error_message_tr=_ERROR_MESSAGES_TR["UnknownRuntimeError"],
+            )
         return RuntimeClassification(
             error_type="ExitMismatch",
             error_message_tr=_ERROR_MESSAGES_TR["ExitMismatch"],

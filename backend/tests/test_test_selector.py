@@ -551,6 +551,27 @@ async def test_two_insufficient_attempts_return_unavailable_with_empty_cases(
 
 
 @pytest.mark.asyncio
+async def test_medium_minimum_7_accepted(
+    context: AssignmentTestContext,
+    redis: FakeCacheRedis,
+) -> None:
+    seven_case_attempt = _attempt_with_cases(7, public=2, difficulty="medium")
+
+    selection = await _select(
+        context,
+        "python",
+        load_faculty=AsyncMock(return_value=[]),
+        store=_make_demo_store(),
+        redis=redis,
+        generate_once=AsyncMock(return_value=seven_case_attempt),
+    )
+
+    assert selection.test_evidence_status == "available"
+    assert selection.source == "auto_generated"
+    assert len(selection.cases) == 7
+
+
+@pytest.mark.asyncio
 async def test_one_insufficient_then_sufficient_attempt_persists_set(
     context: AssignmentTestContext,
     redis: FakeCacheRedis,
@@ -731,7 +752,7 @@ async def test_generation_exception_fails_soft_to_unavailable(
     assert selection.test_evidence_status == "unavailable"
     assert selection.source == "none"
     assert selection.cases == ()
-    assert selection.generation_attempts == 1
+    assert selection.generation_attempts == 2
 
 
 # --- Concurrency ---

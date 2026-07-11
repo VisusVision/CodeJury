@@ -18,7 +18,7 @@ import traceback
 import tracemalloc
 import unicodedata
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Literal, Optional
 from urllib.parse import urlparse, urlunparse
@@ -6617,7 +6617,7 @@ async def suggest_assignment_test_cases(assignment_id: str, principal: AuthPrinc
 
     try:
         result = await generate_and_verify_once(context)
-    except LLMInferenceError as exc:
+    except (LLMInferenceError, asyncio.TimeoutError, TimeoutError) as exc:
         raise HTTPException(
             status_code=503,
             detail="Test onerisi su an uretilemiyor.",
@@ -6733,6 +6733,12 @@ async def promote_generated_tests(
     pool = await _get_db_pool()
     async with pool.acquire() as conn:
         async with conn.transaction():
+            # Same assignment-scoped lock as insert_verified_set so a concurrent
+            # generator insert cannot reactivate a set after this promote UPDATE.
+            await conn.execute(
+                "SELECT pg_advisory_xact_lock(hashtext($1))",
+                aid,
+            )
             if req.mode == "replace":
                 await conn.execute(
                     "DELETE FROM public.assignment_test_cases WHERE assignment_id = $1::uuid",
@@ -6784,7 +6790,15 @@ async def promote_generated_tests(
                     json.dumps(row["oracle_validation"]) if row["oracle_validation"] is not None else None,
                     set_uid,
                 )
-    await store.deactivate_assignment(aid, reason="promoted")
+            await conn.execute(
+                """
+                UPDATE generated_test_sets
+                SET active = false, deactivated_at = $1
+                WHERE assignment_id = $2::uuid AND active = true
+                """,
+                datetime.now(timezone.utc),
+                uid,
+            )
     async with pool.acquire() as conn:
         rows = await conn.fetch(
             """

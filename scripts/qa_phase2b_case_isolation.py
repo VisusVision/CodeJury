@@ -94,11 +94,8 @@ def _run_smoke(*, manage_services: bool) -> int:
 
     started_by_script: list[str] = []
     if manage_services:
-        already_running = _running_compose_services()
-        to_start = [svc for svc in ("docker",) if svc not in already_running]
-        # Docker engine itself is required; compose file has no separate sandbox service.
-        if to_start:
-            started_by_script = to_start
+        # Docker engine must already be available; this script does not manage compose services.
+        started_by_script = []
 
     pool = None
     try:

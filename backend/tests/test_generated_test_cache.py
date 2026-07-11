@@ -195,6 +195,19 @@ def test_compute_cache_identity_has_no_student_code_parameter() -> None:
     assert "source_code" not in varnames
 
 
+def test_prompt_version_invalidates_cache(monkeypatch: pytest.MonkeyPatch) -> None:
+    from backend.core.config import settings
+
+    base = _context()
+    key_v1 = compute_cache_identity(base, "ollama", "qwen").cache_key
+    monkeypatch.setattr(settings, "test_generation_prompt_version", "test-generator-v2")
+    key_v2 = compute_cache_identity(base, "ollama", "qwen").cache_key
+    assert key_v1 != key_v2
+    monkeypatch.setattr(settings, "test_verifier_prompt_version", "test-verifier-v2")
+    key_v3 = compute_cache_identity(base, "ollama", "qwen").cache_key
+    assert key_v2 != key_v3
+
+
 # --- Redis lease tests ---
 
 
