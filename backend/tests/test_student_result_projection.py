@@ -1431,6 +1431,29 @@ class StudentResultProjectionTests(unittest.TestCase):
         serialized = json.dumps(out, ensure_ascii=False)
         self.assertNotIn(secret, serialized)
 
+    def test_formal_public_case_includes_status_and_source(self) -> None:
+        private = self._minimal_private_with_hidden_case({
+            "name": "square two",
+            "stdin": "2\n",
+            "expected_stdout": "4\n",
+            "actual_stdout": "5\n",
+            "passed": False,
+            "visibility": "public",
+            "status": "fail",
+            "source": "auto_generated",
+        })
+        private["testSource"] = "auto_generated"
+        private["testEvidenceStatus"] = "available"
+        private["formalPassed"] = 0
+        private["formalTotal"] = 1
+        private["testSetId"] = SENTINEL_HIDDEN_INPUT
+        projected = project_student_result(private)
+        case = _testing_agent(projected)["testResults"][0]
+        self.assertEqual(case["status"], "fail")
+        self.assertEqual(case["source"], "auto_generated")
+        self.assertEqual(projected["testSource"], "auto_generated")
+        self.assertNotIn("testSetId", projected)
+
 
 if __name__ == "__main__":
     unittest.main()
