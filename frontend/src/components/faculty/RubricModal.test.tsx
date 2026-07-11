@@ -11,6 +11,26 @@ vi.mock("@/i18n/LanguageContext", () => ({
   }),
 }));
 
+vi.mock("sonner", () => ({
+  toast: {
+    success: vi.fn(),
+    error: vi.fn(),
+  },
+}));
+
+vi.mock("./TestCaseEditor", () => ({
+  default: ({ onSaved }: { onSaved?: () => void }) => (
+    <div>
+      <button type="button" onClick={() => onSaved?.()}>
+        Manuel Test Ekle
+      </button>
+      <button type="button">AI Test Oner</button>
+      <input placeholder="Girdi (stdin)" readOnly />
+      <input placeholder="Beklenen cikti" readOnly />
+    </div>
+  ),
+}));
+
 vi.mock("@/services/api", () => ({
   getRubricByAssignment: vi.fn(async () => null),
   suggestRubric: vi.fn(),
@@ -21,16 +41,6 @@ vi.mock("@/services/api", () => ({
   getAssignmentQuestions: vi.fn(async () => []),
   updateAssignmentQuestions: vi.fn(),
   getAssignmentTestCases: vi.fn(async () => []),
-  replaceAssignmentTestCases: vi.fn(async (_assignmentId, rows) => rows),
-  suggestAssignmentTestCases: vi.fn(async () => [
-    {
-      name: "AI sample",
-      stdin: "3\n",
-      expected_stdout: "9\n",
-      visibility: "public",
-      source: "ai",
-    },
-  ]),
 }));
 
 describe("RubricModal assignment tests tab", () => {
@@ -38,7 +48,7 @@ describe("RubricModal assignment tests tab", () => {
     vi.clearAllMocks();
   });
 
-  test("shows manual and AI assignment test controls", async () => {
+  test("renders TestCaseEditor in the tests tab", async () => {
     render(
       <RubricModal
         assignment={{ id: "assignment-1", name: "Kare", description: "Sayinin karesini yazdir." }}
@@ -52,7 +62,6 @@ describe("RubricModal assignment tests tab", () => {
 
     await waitFor(() => expect(screen.getByText("Manuel Test Ekle")).toBeInTheDocument());
     expect(screen.getByText("AI Test Oner")).toBeInTheDocument();
-    fireEvent.click(screen.getByText("Manuel Test Ekle"));
     expect(screen.getByPlaceholderText("Girdi (stdin)")).toBeInTheDocument();
     expect(screen.getByPlaceholderText("Beklenen cikti")).toBeInTheDocument();
   });
