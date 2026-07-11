@@ -148,6 +148,7 @@ def _good_algorithm_payload() -> dict:
 class P0SandboxChainE2ETests(unittest.TestCase):
     def test_normalize_pipeline_test_cases_strips_provenance_and_files_fields_from_sandbox_payload(self):
         faculty_case = {
+            "id": "faculty-case-id",
             "name": "faculty case",
             "stdin": "2\n",
             "expected_stdout": "4\n",
@@ -175,6 +176,62 @@ class P0SandboxChainE2ETests(unittest.TestCase):
         self.assertEqual(case["name"], "faculty case")
         self.assertEqual(case["stdin"], "2\n")
         self.assertEqual(case["expected_stdout"], "4\n")
+
+    def test_executor_evaluates_formal_cases_independently_of_container_passed(self):
+        pool = MagicMock()
+        pool.is_ready = True
+        slot = MagicMock(url="http://localhost:8181")
+        pool.acquire.return_value = slot
+        resp = MagicMock()
+        resp.status_code = 200
+        resp.raise_for_status = MagicMock()
+        resp.json.return_value = {
+            "report": {
+                "execution": {
+                    "stdout": "",
+                    "stderr": "",
+                    "exit_code": 0,
+                    "compile_success": True,
+                },
+                "test_results": [
+                    {
+                        "id": "case-1",
+                        "name": "square",
+                        "actual_stdout": "5\n",
+                        "actual_stderr": "",
+                        "actual_exit_code": 0,
+                        "compile_success": True,
+                        "passed": True,
+                    }
+                ],
+                "static_analysis": {},
+                "code_metrics": {},
+                "summary": {},
+            }
+        }
+        test_cases = [
+            {
+                "id": "case-1",
+                "name": "square",
+                "stdin": "2\n",
+                "expected_stdout": "4\n",
+                "source": "manual",
+                "oracle": "teacher",
+            }
+        ]
+        with (
+            patch("backend.sandbox.pool_manager.wait_for_pool_ready", return_value=pool),
+            patch("requests.post", return_value=resp),
+        ):
+            result = run_in_sandbox(
+                "print(int(input()) ** 2)\n",
+                "python",
+                test_cases=test_cases,
+            )
+
+        evaluated = result["test_results"][0]
+        self.assertFalse(evaluated["passed"])
+        self.assertEqual(evaluated["status"], "fail")
 
     def test_uygun_csv_code_succeeds_when_fixtures_injected(self):
         files = infer_sandbox_files(
