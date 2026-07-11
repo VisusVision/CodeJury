@@ -67,6 +67,15 @@ class Settings(BaseSettings):
     test_generation_call_timeout_seconds: int = 45
     test_generation_total_timeout_seconds: int = 180
 
+    algorithm_expectation_schema_version: str = "algorithm-expectation-v1"
+    algorithm_expectation_extractor_prompt_version: str = "algorithm-extractor-v1"
+    algorithm_expectation_verifier_prompt_version: str = "algorithm-verifier-v1"
+    algorithm_expectation_lock_ttl_seconds: int = 180
+    algorithm_expectation_lock_wait_seconds: int = 30
+    algorithm_expectation_lock_poll_seconds: float = 0.2
+    algorithm_expectation_call_timeout_seconds: int = 45
+    algorithm_expectation_total_timeout_seconds: int = 180
+
     model_config = {"env_file": str(_ENV_FILE), "extra": "ignore"}
 
 
