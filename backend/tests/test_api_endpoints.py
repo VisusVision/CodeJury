@@ -851,16 +851,59 @@ class ApiEndpointTests(unittest.TestCase):
         self.assertEqual(request["test_cases"][0]["expected_stdout"], "49\n")
 
     def test_assignment_test_case_suggestions_are_ai_source_and_not_persisted(self):
-        csrf = self._login_teacher()
-        resp = self.client.post(
-            f"/api/assignments/{_DEMO_ASSIGNMENT_ID}/test-cases/suggest",
-            headers=self._csrf_headers(csrf),
+        from backend.testing.contracts import FormalTestCase, OracleValidation
+        from backend.testing.generator import GenerationAttemptResult
+
+        def _oracle():
+            return OracleValidation(
+                status="verified",
+                provider="ollama",
+                model="qwen2.5:7b",
+                schema_version="test-set-v1",
+                verified_at="2026-01-01T00:00:00+00:00",
+            )
+
+        cases = tuple(
+            FormalTestCase(
+                id=f"case-{index}",
+                name=f"case-{index}",
+                stdin=f"{index}\n",
+                expected_stdout=f"{index}\n",
+                visibility="public" if index < 2 else "hidden",
+                source="auto_generated",
+                oracle="llm_verified",
+                oracle_validation=_oracle(),
+            )
+            for index in range(8)
+        )
+        generation_result = GenerationAttemptResult(
+            cases=cases,
+            rejected=(),
+            provider="ollama",
+            model="qwen2.5:7b",
+            success=True,
         )
 
+        csrf = self._login_teacher()
+        with patch(
+            "frontend.backend.main.generate_and_verify_once",
+            new=AsyncMock(return_value=generation_result),
+        ):
+            resp = self.client.post(
+                f"/api/assignments/{_DEMO_ASSIGNMENT_ID}/test-cases/suggest",
+                headers=self._csrf_headers(csrf),
+            )
+
         self.assertEqual(resp.status_code, 200)
-        suggestions = resp.json()["suggestions"]
+        body = resp.json()
+        suggestions = body["suggestions"]
         self.assertGreaterEqual(len(suggestions), 1)
-        self.assertTrue(all(row["source"] == "ai" for row in suggestions))
+        self.assertTrue(
+            all(row["source"] in {"auto_generated", "ai_approved"} for row in suggestions)
+        )
+        self.assertFalse(body["persisted"])
+        self.assertIn("verified_count", body)
+        self.assertIn("difficulty", body)
 
         saved_resp = self.client.get(f"/api/assignments/{_DEMO_ASSIGNMENT_ID}/test-cases")
         self.assertEqual(saved_resp.status_code, 200)
