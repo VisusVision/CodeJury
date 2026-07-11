@@ -34,6 +34,20 @@ export interface ApiFinding {
   code?: string | null;
 }
 
+export interface ApiTestFixture {
+  name: string;
+  content: string;
+}
+
+export interface ApiOracleValidation {
+  status: string;
+  provider: string;
+  model: string;
+  schema_version?: string;
+  verified_at?: string;
+  reason?: string;
+}
+
 export interface ApiTestResult {
   name: string;
   input: string;
@@ -41,8 +55,23 @@ export interface ApiTestResult {
   actual: string;
   passed: boolean;
   visibility?: "public" | "hidden";
+  status?: string;
+  source?: string;
   matchPct?: number;
   diffDetail?: string;
+  errorType?: string;
+  errorMessageTr?: string;
+  actualStderr?: string;
+  files?: ApiTestFixture[];
+  oracleValidation?: ApiOracleValidation | null;
+  id?: string;
+}
+
+export interface ApiHiddenTestSummary {
+  passed: number;
+  failed: number;
+  error: number;
+  total: number;
 }
 
 export interface ApiAgentReport {
@@ -148,6 +177,14 @@ export interface ApiAnalysisResult {
   taskAlignment?: ApiTaskAlignment;
   reportStatus?: "preparing" | "ready";
   agentDiagnostics?: ApiAgentDiagnostics;
+  testSource?: string;
+  testEvidenceStatus?: "available" | "unavailable";
+  formalPassed?: number;
+  formalTotal?: number;
+  hiddenTestSummary?: ApiHiddenTestSummary;
+  testSetId?: string;
+  testSetHash?: string;
+  cacheVersion?: number;
 }
 
 interface AnalysisJobAccepted {
@@ -208,6 +245,8 @@ export interface Course {
   class_year?: number | null;
 }
 
+export type AssignmentDifficulty = "easy" | "medium" | "hard";
+
 export interface Assignment {
   id: string;
   course_id: string;
@@ -215,6 +254,24 @@ export interface Assignment {
   description: string | null;
   due_date?: string | null;
   created_at?: string;
+  difficulty?: AssignmentDifficulty;
+  difficulty_source?: "default" | "teacher" | "ai_selected" | "inferred";
+}
+
+export type TestSource = "manual" | "ai_approved" | "auto_generated";
+
+export interface TestFixture {
+  name: string;
+  content: string;
+}
+
+export interface OracleValidation {
+  status: "verified" | "rejected";
+  provider: string;
+  model: string;
+  schema_version: string;
+  verified_at: string;
+  reason: string;
 }
 
 export interface AssignmentTestCase {
@@ -225,8 +282,43 @@ export interface AssignmentTestCase {
   expected_stdout: string;
   expected_exit_code?: number;
   visibility: "public" | "hidden";
-  source: "manual" | "ai";
+  files: TestFixture[];
+  source: TestSource;
+  oracle?: "teacher" | "llm_verified";
+  oracle_validation?: OracleValidation | null;
+  generated_set_id?: string | null;
   display_order?: number;
+}
+
+export interface GeneratedTestSet {
+  id: string;
+  assignment_id: string;
+  cache_key: string;
+  version: number;
+  difficulty: AssignmentDifficulty;
+  cases: AssignmentTestCase[];
+  provider: string;
+  model: string;
+  schema_version: string;
+  prompt_version: string;
+  assignment_hash: string;
+  rubric_hash: string;
+  oracle_validation: OracleValidation[];
+  active: boolean;
+  created_at: string;
+  deactivated_at: string | null;
+}
+
+export interface PromoteGeneratedTestsRequest {
+  case_ids: string[];
+  mode: "append" | "replace";
+}
+
+export interface SuggestTestCasesResponse {
+  suggestions: AssignmentTestCase[];
+  verified_count: number;
+  difficulty: AssignmentDifficulty;
+  persisted: false;
 }
 
 export interface Teacher {
@@ -856,6 +948,8 @@ export async function createAssignment(payload: {
   name: string;
   description?: string | null;
   due_date?: string | null;
+  difficulty?: AssignmentDifficulty;
+  creation_mode?: "manual" | "ai_assistant";
 }): Promise<Assignment> {
   const response = await apiFetch(`${API_BASE_URL}/api/assignments`, {
     method: "POST",
@@ -877,6 +971,70 @@ export async function deleteAssignment(assignmentId: string): Promise<void> {
   }
 }
 
+function normalizeAssignmentTestCase(raw: unknown): AssignmentTestCase {
+  const record = (raw ?? {}) as Record<string, unknown>;
+  const legacySource = String(record.source ?? "manual");
+  const source: TestSource =
+    legacySource === "ai"
+      ? "ai_approved"
+      : legacySource === "manual" || legacySource === "ai_approved" || legacySource === "auto_generated"
+        ? legacySource
+        : "manual";
+  const filesRaw = record.files;
+  const files: TestFixture[] = Array.isArray(filesRaw)
+    ? filesRaw.map((item) => {
+        const file = (item ?? {}) as Record<string, unknown>;
+        return {
+          name: String(file.name ?? ""),
+          content: String(file.content ?? ""),
+        };
+      })
+    : [];
+  return {
+    id: record.id ? String(record.id) : undefined,
+    assignment_id: record.assignment_id ? String(record.assignment_id) : undefined,
+    name: String(record.name ?? ""),
+    stdin: String(record.stdin ?? ""),
+    expected_stdout: String(record.expected_stdout ?? ""),
+    expected_exit_code: Number(record.expected_exit_code ?? 0) || 0,
+    visibility: record.visibility === "public" ? "public" : "hidden",
+    files,
+    source,
+    oracle: record.oracle === "llm_verified" ? "llm_verified" : "teacher",
+    oracle_validation: (record.oracle_validation as OracleValidation | null | undefined) ?? null,
+    generated_set_id: record.generated_set_id ? String(record.generated_set_id) : null,
+    display_order: record.display_order != null ? Number(record.display_order) : undefined,
+  };
+}
+
+function normalizeGeneratedTestSet(raw: unknown): GeneratedTestSet {
+  const record = (raw ?? {}) as Record<string, unknown>;
+  const casesRaw = record.cases;
+  const cases = Array.isArray(casesRaw) ? casesRaw.map(normalizeAssignmentTestCase) : [];
+  const oracleRaw = record.oracle_validation;
+  const oracleValidation = Array.isArray(oracleRaw)
+    ? oracleRaw.map((item) => item as OracleValidation)
+    : [];
+  return {
+    id: String(record.id ?? ""),
+    assignment_id: String(record.assignment_id ?? ""),
+    cache_key: String(record.cache_key ?? ""),
+    version: Number(record.version ?? 1) || 1,
+    difficulty: (record.difficulty === "easy" || record.difficulty === "hard" ? record.difficulty : "medium") as AssignmentDifficulty,
+    cases,
+    provider: String(record.provider ?? ""),
+    model: String(record.model ?? ""),
+    schema_version: String(record.schema_version ?? ""),
+    prompt_version: String(record.prompt_version ?? ""),
+    assignment_hash: String(record.assignment_hash ?? ""),
+    rubric_hash: String(record.rubric_hash ?? ""),
+    oracle_validation: oracleValidation,
+    active: Boolean(record.active ?? true),
+    created_at: String(record.created_at ?? ""),
+    deactivated_at: record.deactivated_at ? String(record.deactivated_at) : null,
+  };
+}
+
 export async function getAssignmentTestCases(assignmentId: string): Promise<AssignmentTestCase[]> {
   const response = await apiFetch(`${API_BASE_URL}/api/assignments/${assignmentId}/test-cases`);
   if (!response.ok) {
@@ -884,7 +1042,7 @@ export async function getAssignmentTestCases(assignmentId: string): Promise<Assi
     throw new Error(`Test listesi hatasi (${response.status}): ${errorText}`);
   }
   const data = await response.json();
-  return Array.isArray(data) ? data as AssignmentTestCase[] : [];
+  return Array.isArray(data) ? data.map(normalizeAssignmentTestCase) : [];
 }
 
 export async function replaceAssignmentTestCases(
@@ -901,19 +1059,61 @@ export async function replaceAssignmentTestCases(
     throw new Error(`Test kaydetme hatasi (${response.status}): ${errorText}`);
   }
   const data = await response.json();
-  return Array.isArray(data) ? data as AssignmentTestCase[] : [];
+  return Array.isArray(data) ? data.map(normalizeAssignmentTestCase) : [];
 }
 
-export async function suggestAssignmentTestCases(assignmentId: string): Promise<AssignmentTestCase[]> {
+export async function getActiveGeneratedTestSet(assignmentId: string): Promise<GeneratedTestSet | null> {
+  const response = await apiFetch(`${API_BASE_URL}/api/assignments/${assignmentId}/generated-test-set`);
+  if (response.status === 404) {
+    return null;
+  }
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new Error(`Uretilen test seti hatasi (${response.status}): ${errorText}`);
+  }
+  const data = await response.json();
+  return normalizeGeneratedTestSet(data);
+}
+
+export async function promoteGeneratedTests(
+  assignmentId: string,
+  setId: string,
+  payload: PromoteGeneratedTestsRequest,
+): Promise<AssignmentTestCase[]> {
+  const response = await apiFetch(
+    `${API_BASE_URL}/api/assignments/${assignmentId}/generated-test-sets/${setId}/promote`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    },
+  );
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new Error(`Test aktarma hatasi (${response.status}): ${apiErrorMessage(errorText, "Testler aktarilamadi")}`);
+  }
+  const data = await response.json();
+  return Array.isArray(data) ? data.map(normalizeAssignmentTestCase) : [];
+}
+
+export async function suggestAssignmentTestCases(assignmentId: string): Promise<SuggestTestCasesResponse> {
   const response = await apiFetch(`${API_BASE_URL}/api/assignments/${assignmentId}/test-cases/suggest`, {
     method: "POST",
   });
   if (!response.ok) {
     const errorText = await response.text();
-    throw new Error(`Test onerisi hatasi (${response.status}): ${errorText}`);
+    throw new Error(apiErrorMessage(errorText, `Test onerisi hatasi (${response.status})`));
   }
   const data = await response.json();
-  return Array.isArray(data?.suggestions) ? data.suggestions as AssignmentTestCase[] : [];
+  const suggestions = Array.isArray(data?.suggestions) ? data.suggestions.map(normalizeAssignmentTestCase) : [];
+  const difficulty =
+    data?.difficulty === "easy" || data?.difficulty === "hard" ? data.difficulty : "medium";
+  return {
+    suggestions,
+    verified_count: Number(data?.verified_count ?? suggestions.length) || 0,
+    difficulty,
+    persisted: false,
+  };
 }
 
 export async function getRubrics(): Promise<Rubric[]> {
@@ -998,7 +1198,21 @@ export interface AssignmentSuggestion {
   description: string;
 }
 
-export type AssignmentDifficulty = "easy" | "medium" | "hard";
+export async function updateAssignmentDifficulty(
+  assignmentId: string,
+  difficulty: AssignmentDifficulty,
+): Promise<Assignment> {
+  const response = await apiFetch(`${API_BASE_URL}/api/assignments/${assignmentId}/difficulty`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ difficulty }),
+  });
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new Error(`Zorluk guncelleme hatasi (${response.status}): ${apiErrorMessage(errorText, "Zorluk guncellenemedi")}`);
+  }
+  return response.json();
+}
 
 export async function fetchAssignmentSuggestions(
   courseHint?: string,

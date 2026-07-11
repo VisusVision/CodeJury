@@ -11,12 +11,10 @@ import {
   getAssignmentQuestions,
   updateAssignmentQuestions,
   getAssignmentTestCases,
-  replaceAssignmentTestCases,
-  suggestAssignmentTestCases,
-  AssignmentTestCase,
   QuestionItem,
 } from "@/services/api";
 import { useTranslation } from "@/i18n/LanguageContext";
+import TestCaseEditor from "./TestCaseEditor";
 
 interface RubricCriterion {
   name: string;
@@ -94,11 +92,7 @@ const RubricModal = ({ assignment, open, onClose }: RubricModalProps) => {
   const [questionCreateLoading, setQuestionCreateLoading] = useState(false);
   const [questionSaveLoading, setQuestionSaveLoading] = useState(false);
 
-  // Assignment test states
-  const [testCases, setTestCases] = useState<AssignmentTestCase[]>([]);
-  const [testsLoading, setTestsLoading] = useState(false);
-  const [testSaveLoading, setTestSaveLoading] = useState(false);
-  const [testSuggestLoading, setTestSuggestLoading] = useState(false);
+  const [testCaseCount, setTestCaseCount] = useState(0);
 
   useEffect(() => {
     if (!open) return;
@@ -111,7 +105,6 @@ const RubricModal = ({ assignment, open, onClose }: RubricModalProps) => {
     const loadData = async () => {
       setLoading(true);
       setQuestionsLoading(true);
-      setTestsLoading(true);
       try {
         // Load rubric
         const rubricData = await getRubricByAssignment(assignment.id);
@@ -134,14 +127,13 @@ const RubricModal = ({ assignment, open, onClose }: RubricModalProps) => {
         setSelectedQuestionIds(selectedIds);
 
         const assignmentTests = await getAssignmentTestCases(assignment.id);
-        setTestCases(assignmentTests);
+        setTestCaseCount(assignmentTests.length);
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : t("faculty.rubricModal.loadError");
         toast.error(msg);
       } finally {
         setLoading(false);
         setQuestionsLoading(false);
-        setTestsLoading(false);
       }
     };
 
@@ -275,79 +267,6 @@ const RubricModal = ({ assignment, open, onClose }: RubricModalProps) => {
     }
   };
 
-  const addManualTestCase = () => {
-    setTestCases((prev) => [
-      ...prev,
-      {
-        name: `Test ${prev.length + 1}`,
-        stdin: "",
-        expected_stdout: "",
-        expected_exit_code: 0,
-        visibility: "public",
-        source: "manual",
-        display_order: prev.length + 1,
-      },
-    ]);
-  };
-
-  const updateTestCase = (index: number, field: keyof AssignmentTestCase, value: string | number) => {
-    setTestCases((prev) =>
-      prev.map((item, i) =>
-        i === index ? { ...item, [field]: value } : item,
-      ),
-    );
-  };
-
-  const removeTestCase = (index: number) => {
-    setTestCases((prev) => prev.filter((_, i) => i !== index));
-  };
-
-  const requestAiTestSuggestions = async () => {
-    setTestSuggestLoading(true);
-    try {
-      const suggestions = await suggestAssignmentTestCases(assignment.id);
-      setTestCases((prev) => [
-        ...prev,
-        ...suggestions.map((row, index) => ({
-          ...row,
-          display_order: prev.length + index + 1,
-        })),
-      ]);
-      toast.success(language === "tr" ? "AI test onerileri eklendi" : "AI test suggestions added");
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : (language === "tr" ? "Test onerisi alinamadi" : "Could not fetch test suggestions");
-      toast.error(msg);
-    } finally {
-      setTestSuggestLoading(false);
-    }
-  };
-
-  const saveTestCases = async () => {
-    const invalid = testCases.find((row) => !row.name.trim());
-    if (invalid) {
-      toast.error(language === "tr" ? "Test adi bos olamaz" : "Test name cannot be empty");
-      return;
-    }
-    setTestSaveLoading(true);
-    try {
-      const saved = await replaceAssignmentTestCases(
-        assignment.id,
-        testCases.map((row, index) => ({
-          ...row,
-          display_order: index + 1,
-          expected_exit_code: Number(row.expected_exit_code ?? 0) || 0,
-        })),
-      );
-      setTestCases(saved);
-      toast.success(language === "tr" ? "Testler kaydedildi" : "Tests saved");
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : (language === "tr" ? "Testler kaydedilemedi" : "Tests could not be saved");
-      toast.error(msg);
-    } finally {
-      setTestSaveLoading(false);
-    }
-  };
-
   const filteredQuestions = questions.filter((q) =>
     q.content.toLowerCase().includes(questionSearch.toLowerCase())
   );
@@ -441,7 +360,7 @@ const RubricModal = ({ assignment, open, onClose }: RubricModalProps) => {
                 : "text-muted-foreground border-transparent hover:text-foreground"
             }`}
           >
-            Testler ({testCases.length})
+            Testler ({testCaseCount})
           </button>
         </div>
 
@@ -657,99 +576,14 @@ const RubricModal = ({ assignment, open, onClose }: RubricModalProps) => {
           )}
 
           {activeTab === "tests" && (
-            <div className="p-5 space-y-4">
-              {testsLoading ? (
-                <div className="flex items-center justify-center py-12 text-muted-foreground text-sm">Testler yukleniyor...</div>
-              ) : (
-                <>
-                  <div className="flex items-center justify-between gap-3 rounded-xl border border-border bg-muted/20 p-3">
-                    <div className="space-y-1">
-                      <p className="text-xs font-medium text-foreground">HackerRank Testleri</p>
-                      <p className="text-[11px] text-muted-foreground">Public testler ogrenciye gorunur; hidden testler calisir ama girdi/cikti gizlenir.</p>
-                    </div>
-                    <div className="flex shrink-0 gap-2">
-                      <button
-                        type="button"
-                        onClick={addManualTestCase}
-                        className="flex items-center gap-1 rounded-lg border border-border px-3 py-1.5 text-sm font-medium text-foreground hover:bg-muted/50"
-                      >
-                        <Plus className="h-4 w-4" /> Manuel Test Ekle
-                      </button>
-                      <button
-                        type="button"
-                        onClick={requestAiTestSuggestions}
-                        disabled={testSuggestLoading}
-                        className="flex items-center gap-1 rounded-lg bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
-                      >
-                        {testSuggestLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Sparkles className="h-4 w-4" />}
-                        AI Test Oner
-                      </button>
-                    </div>
-                  </div>
-
-                  <div className="space-y-2.5">
-                    {testCases.length === 0 ? (
-                      <p className="rounded-lg border border-dashed border-border py-8 text-center text-xs text-muted-foreground">Kayitli test yok.</p>
-                    ) : (
-                      testCases.map((row, index) => (
-                        <div key={row.id || index} className="rounded-xl border border-border bg-card p-3 space-y-2">
-                          <div className="flex items-center gap-2">
-                            <input
-                              type="text"
-                              value={row.name}
-                              onChange={(e) => updateTestCase(index, "name", e.target.value)}
-                              className="min-w-0 flex-1 rounded-lg border border-input bg-background px-3 py-1.5 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
-                              placeholder="Test adi"
-                            />
-                            <select
-                              value={row.visibility}
-                              onChange={(e) => updateTestCase(index, "visibility", e.target.value as AssignmentTestCase["visibility"])}
-                              className="rounded-lg border border-input bg-background px-2 py-1.5 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
-                            >
-                              <option value="public">public</option>
-                              <option value="hidden">hidden</option>
-                            </select>
-                            <button
-                              type="button"
-                              onClick={() => removeTestCase(index)}
-                              className="text-muted-foreground hover:text-destructive"
-                            >
-                              <Trash2 className="h-4 w-4" />
-                            </button>
-                          </div>
-                          <div className="grid gap-2 md:grid-cols-2">
-                            <textarea
-                              value={row.stdin}
-                              onChange={(e) => updateTestCase(index, "stdin", e.target.value)}
-                              placeholder="Girdi (stdin)"
-                              rows={3}
-                              className="rounded-lg border border-input bg-background px-3 py-2 font-mono text-xs text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
-                            />
-                            <textarea
-                              value={row.expected_stdout}
-                              onChange={(e) => updateTestCase(index, "expected_stdout", e.target.value)}
-                              placeholder="Beklenen cikti"
-                              rows={3}
-                              className="rounded-lg border border-input bg-background px-3 py-2 font-mono text-xs text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
-                            />
-                          </div>
-                          <div className="flex items-center gap-2 text-xs text-muted-foreground">
-                            <span>Exit code</span>
-                            <input
-                              type="number"
-                              value={row.expected_exit_code ?? 0}
-                              onChange={(e) => updateTestCase(index, "expected_exit_code", parseInt(e.target.value, 10) || 0)}
-                              className="w-20 rounded-lg border border-input bg-background px-2 py-1 text-center text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
-                            />
-                            <span className="ml-auto">Kaynak: {row.source}</span>
-                          </div>
-                        </div>
-                      ))
-                    )}
-                  </div>
-                </>
-              )}
-            </div>
+            <TestCaseEditor
+              assignment={assignment}
+              language={language}
+              onSaved={() => {
+                void getAssignmentTestCases(assignment.id).then((rows) => setTestCaseCount(rows.length));
+                toast.success(language === "tr" ? "Testler kaydedildi" : "Tests saved");
+              }}
+            />
           )}
         </div>
 
@@ -803,20 +637,6 @@ const RubricModal = ({ assignment, open, onClose }: RubricModalProps) => {
           </div>
         )}
 
-        {activeTab === "tests" && !testsLoading && (
-          <div className="flex items-center justify-between p-4 border-t border-border shrink-0">
-            <p className="text-xs text-muted-foreground">{testCases.length} test senaryosu</p>
-            <button
-              type="button"
-              onClick={saveTestCases}
-              disabled={testSaveLoading}
-              className="flex items-center gap-1 px-3 py-1.5 rounded-lg bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90 transition-colors disabled:opacity-50"
-            >
-              {testSaveLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Check className="h-4 w-4" />}
-              Testleri Kaydet
-            </button>
-          </div>
-        )}
       </div>
     </div>
   );
