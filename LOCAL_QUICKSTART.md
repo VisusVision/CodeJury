@@ -233,3 +233,78 @@ CASE_FIXTURE_STATE_CROSSED_BOUNDARY=False
 FACULTY_TEST_TRIGGERED_GENERATOR=False
 GENERATION_FAILURE_CREATED_FORMAL_PASS=False
 ```
+
+---
+
+## 9. Faz 3 — Algoritma beklentisi ve karmaşıklık boşluğu
+
+### Python-first beklenti
+
+- Ödev düzeyinde **tek** doğrulanmış algoritma beklentisi yalnızca **Python** ödevlerinde otomatik üretilir.
+- Girdi: ödev başlığı, açıklama, onaylı rubrik, zorluk, şema/sürüm ve model kimliği — **öğrenci kodu asla dahil edilmez**.
+- Öğretmen beklentiyi yalnızca **salt okunur** görür (`GET /api/assignments/{id}/algorithm-expectation`); düzenleme veya mutasyon uç noktası yoktur.
+
+### Üretim akışı (extractor → verifier → cache)
+
+| Adım | Davranış |
+|------|----------|
+| Cache hit | Aynı `cache_key` için aktif kayıt veya exact-key reactivation |
+| Redis kilidi | Eşzamanlı çözümlemeler tek üretici paylaşır |
+| LLM başarısız | En fazla 2 deneme, ardından metindeki `O(...)` için deterministik fallback |
+| Tam başarısızlık | **Fail-soft:** `status=unknown`, beklenti yok, boşluk cezası yok |
+
+### AlgorithmAgent puanı ve MasterEvaluator
+
+- AlgorithmAgent skoru yalnızca kendi kartını etkiler; AST kanıtı ve boşluk kuralları LLM puanını üst sınırlar.
+- **AlgorithmAgent skoru nihai notu veya rubrik dağılımını değiştirmez** — `algorithmic_efficiency` hâlâ `code_quality` ajanına bağlıdır.
+
+### Öğrenci / öğretmen görünürlüğü
+
+| Rol | Görür | Görmez |
+|-----|-------|--------|
+| Öğrenci | `expectedComplexity`, `complexityGap`, `gapExplanation`, kısıtlı `evidence` | `expectationId`, `cacheKey`, provider/model, ham çıkarım meta verisi |
+| Öğretmen (sahip) | Tam kanıt + beklenti provenance | — |
+
+### Ayarlar (`.env`)
+
+```text
+ALGORITHM_EXPECTATION_SCHEMA_VERSION=algorithm-expectation-v1
+ALGORITHM_EXPECTATION_EXTRACTOR_PROMPT_VERSION=algorithm-extractor-v1
+ALGORITHM_EXPECTATION_VERIFIER_PROMPT_VERSION=algorithm-verifier-v1
+ALGORITHM_EXPECTATION_LOCK_TTL_SECONDS=180
+ALGORITHM_EXPECTATION_LOCK_WAIT_SECONDS=30
+ALGORITHM_EXPECTATION_LOCK_POLL_SECONDS=0.2
+ALGORITHM_EXPECTATION_CALL_TIMEOUT_SECONDS=45
+ALGORITHM_EXPECTATION_TOTAL_TIMEOUT_SECONDS=180
+```
+
+### Faz 3 QA komutları
+
+Önkoşul: `.env` içinde `DEMO_MODE=0`, Docker Desktop açık.
+
+```powershell
+$env:PYTHONPATH='.'
+$env:PYTHONIOENCODING='utf-8'
+
+# MasterEvaluator kablolaması (AlgorithmAgent skoru rubrik/finali etkilemez)
+C:\Python314\python.exe -m pytest -q backend/tests/test_phase3_master_wiring.py
+
+# Redis + PostgreSQL beklenti önbelleği, eşzamanlılık, gizlilik, adversarial defter
+C:\Python314\python.exe scripts/qa_phase3_algorithm_expectation.py --manage-services
+```
+
+`--manage-services`: Compose'ta çalışmayan Redis/PostgreSQL'i başlatır; önceden çalışan servisleri **durdurmaz**; `finally` ile önceki durumu geri yükler.
+
+Beklenen çıktı: `PASS` ve dokuz adversarial bayrak `False`:
+
+```text
+SECOND_EXPECTATION_GENERATOR_RAN=False
+STUDENT_CODE_APPEARED_IN_EXPECTATION_PROMPT=False
+DIFFERENT_STUDENTS_RECEIVED_DIFFERENT_EXPECTATION=False
+UNKNOWN_COMPLEXITY_RECEIVED_GAP_PENALTY=False
+LLM_OVERRULED_AST_LOWER_BOUND=False
+LLM_OVERRULED_SCORE_CAP=False
+STUDENT_EXPECTATION_PROVENANCE_LEAK=False
+ALGORITHM_SCORE_CHANGED_MASTER_RUBRIC=False
+TEACHER_EXPECTATION_MUTATION_ROUTE_EXISTS=False
+```
