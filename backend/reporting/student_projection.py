@@ -52,17 +52,25 @@ GENERIC_REDACTED_TEXT = "İçerik gizli test verisi barındırdığı için kald
 @dataclass(frozen=True)
 class HiddenFragments:
     strings: list[str]
+    token_strings: list[str]
     numbers: list[Decimal]
     has_nan: bool = False
 
 
-_NUMERIC_TOKEN_PATTERN = re.compile(
-    r"(?<![A-Za-z0-9_.])"
-    r"(?:[+-]?(?:\d+\.\d*|\.\d+|\d+)(?:[eE][+-]?\d+)?"
-    r"|[+-]?inf)"
-    r"(?![A-Za-z0-9_.])"
+_NUMERIC_LITERAL = (
+    r"[+-]?(?:(?:\d+\.\d*|\.\d+|\d+)(?:[eE][+-]?\d+)?|inf(?:inity)?)"
 )
-_NAN_TOKEN_PATTERN = re.compile(r"(?<![A-Za-z0-9_.])nan(?![A-Za-z0-9_.])")
+_NUMERIC_FULL_PATTERN = re.compile(rf"{_NUMERIC_LITERAL}\Z", re.IGNORECASE)
+_NUMERIC_TOKEN_PATTERN = re.compile(
+    rf"(?<![\w.]){_NUMERIC_LITERAL}(?![\w.])",
+    re.IGNORECASE,
+)
+_NAN_FULL_PATTERN = re.compile(r"[+-]?nan\Z", re.IGNORECASE)
+_NAN_TOKEN_PATTERN = re.compile(
+    r"(?<![\w.])[+-]?nan(?![\w.])",
+    re.IGNORECASE,
+)
+_SHORT_WORD_FRAGMENT_PATTERN = re.compile(r"\w{1,3}\Z")
 
 
 def project_student_result(private_result: dict[str, Any]) -> dict[str, Any]:
@@ -162,6 +170,7 @@ def _sanitize_top_level_value(
 
 def _collect_hidden_private_fragments(private_result: dict[str, Any]) -> HiddenFragments:
     string_fragments: list[str] = []
+    token_string_fragments: list[str] = []
     numeric_fragments: list[Decimal] = []
     has_nan = False
     for agent in private_result.get("agents", []) or []:
@@ -181,11 +190,13 @@ def _collect_hidden_private_fragments(private_result: dict[str, Any]) -> HiddenF
                 has_nan = _collect_hidden_leaves(
                     field_value,
                     string_fragments,
+                    token_string_fragments,
                     numeric_fragments,
                     has_nan,
                 ) or has_nan
     return HiddenFragments(
         strings=string_fragments,
+        token_strings=token_string_fragments,
         numbers=numeric_fragments,
         has_nan=has_nan,
     )
@@ -229,6 +240,7 @@ def _numeric_leaf_to_decimal(value: int | float) -> Decimal | None:
 def _collect_hidden_leaves(
     value: Any,
     string_out: list[str],
+    token_string_out: list[str],
     numeric_out: list[Decimal],
     has_nan: bool,
 ) -> bool:
@@ -236,7 +248,13 @@ def _collect_hidden_leaves(
     if isinstance(value, str):
         text = value.strip()
         if text:
-            string_out.append(text)
+            has_nan = _collect_hidden_string_fragment(
+                text,
+                string_out,
+                token_string_out,
+                numeric_out,
+                has_nan,
+            )
         return has_nan
     if _is_numeric_leaf(value):
         if isinstance(value, float) and value != value:
@@ -250,7 +268,13 @@ def _collect_hidden_leaves(
             if isinstance(k, str):
                 key_text = k.strip()
                 if key_text:
-                    string_out.append(key_text)
+                    has_nan = _collect_hidden_string_fragment(
+                        key_text,
+                        string_out,
+                        token_string_out,
+                        numeric_out,
+                        has_nan,
+                    )
             elif _is_numeric_leaf(k):
                 if isinstance(k, float) and k != k:
                     has_nan = True
@@ -258,12 +282,47 @@ def _collect_hidden_leaves(
                     decimal_key = _numeric_leaf_to_decimal(k)
                     if decimal_key is not None:
                         numeric_out.append(decimal_key)
-            has_nan = _collect_hidden_leaves(v, string_out, numeric_out, has_nan) or has_nan
+            has_nan = _collect_hidden_leaves(
+                v,
+                string_out,
+                token_string_out,
+                numeric_out,
+                has_nan,
+            ) or has_nan
         return has_nan
     if isinstance(value, list):
         for item in value:
-            has_nan = _collect_hidden_leaves(item, string_out, numeric_out, has_nan) or has_nan
+            has_nan = _collect_hidden_leaves(
+                item,
+                string_out,
+                token_string_out,
+                numeric_out,
+                has_nan,
+            ) or has_nan
         return has_nan
+    return has_nan
+
+
+def _collect_hidden_string_fragment(
+    text: str,
+    string_out: list[str],
+    token_string_out: list[str],
+    numeric_out: list[Decimal],
+    has_nan: bool,
+) -> bool:
+    """Classify a hidden string without weakening exact leak detection."""
+    if _NAN_FULL_PATTERN.fullmatch(text):
+        return True
+    if _NUMERIC_FULL_PATTERN.fullmatch(text):
+        try:
+            numeric_out.append(Decimal(text))
+            return has_nan
+        except InvalidOperation:
+            pass
+    if _SHORT_WORD_FRAGMENT_PATTERN.fullmatch(text):
+        token_string_out.append(text)
+    else:
+        string_out.append(text)
     return has_nan
 
 
@@ -284,11 +343,19 @@ def _message_contains_standalone_nan(message: str) -> bool:
     return _NAN_TOKEN_PATTERN.search(message) is not None
 
 
+def _message_contains_token_string(message: str, fragment: str) -> bool:
+    pattern = rf"(?<!\w){re.escape(fragment)}(?!\w)"
+    return re.search(pattern, message) is not None
+
+
 def _message_leaks_hidden_data(message: str, hidden_fragments: HiddenFragments) -> bool:
     if not message:
         return False
     for fragment in hidden_fragments.strings:
         if fragment and fragment in message:
+            return True
+    for fragment in hidden_fragments.token_strings:
+        if fragment and _message_contains_token_string(message, fragment):
             return True
     if _message_contains_numeric_fragment(message, hidden_fragments.numbers):
         return True

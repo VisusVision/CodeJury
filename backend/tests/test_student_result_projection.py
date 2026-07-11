@@ -1296,6 +1296,97 @@ class StudentResultProjectionTests(unittest.TestCase):
                 self.assertNotIn(token, serialized)
                 self.assertEqual(projected["summary"], GENERIC_REDACTED_TEXT)
 
+    def test_non_finite_json_and_case_variants_are_redacted(self) -> None:
+        """Python/JSON spellings of hidden non-finite values must never survive."""
+        for hidden_value, rendered in (
+            (float("inf"), "Infinity"),
+            (float("inf"), "INF"),
+            (float("-inf"), "-Infinity"),
+            (float("nan"), "NaN"),
+            (float("nan"), "NAN"),
+        ):
+            with self.subTest(rendered=rendered):
+                hidden_case = {
+                    "name": "non-finite-private-case",
+                    "input": "private-input-xyz",
+                    "expected": hidden_value,
+                    "passed": False,
+                    "visibility": "hidden",
+                }
+                private = self._minimal_private_with_numeric_hidden_case(
+                    hidden_case,
+                    summary=f"Hidden result was {rendered}",
+                )
+                projected = project_student_result(private)
+                self.assertEqual(projected["summary"], GENERIC_REDACTED_TEXT)
+
+    def test_unicode_identifier_does_not_count_as_standalone_numeric_token(self) -> None:
+        """Unicode letters adjacent to a number must block numeric-token matching."""
+        legitimate_summary = "Public identifiers α1 and sürümü1 remain valid."
+        hidden_case = {
+            "name": "unicode-identifier-private-case",
+            "input": "private-input-xyz",
+            "expected": 1,
+            "passed": False,
+            "visibility": "hidden",
+        }
+        private = self._minimal_private_with_numeric_hidden_case(
+            hidden_case,
+            summary=legitimate_summary,
+        )
+        projected = project_student_result(private)
+        self.assertEqual(projected["summary"], legitimate_summary)
+
+    def test_numeric_string_fragment_uses_numeric_token_matching(self) -> None:
+        """String-encoded numbers get numeric equality without substring false positives."""
+        hidden_case = {
+            "name": "numeric-string-private-case",
+            "input": "private-input-xyz",
+            "expected": "1",
+            "passed": False,
+            "visibility": "hidden",
+        }
+        legitimate_summary = "Score 100/100; scale 1e20; API version v1."
+        private = self._minimal_private_with_numeric_hidden_case(
+            hidden_case,
+            summary=legitimate_summary,
+        )
+        self.assertEqual(project_student_result(private)["summary"], legitimate_summary)
+
+        leaking = self._minimal_private_with_numeric_hidden_case(
+            hidden_case,
+            summary="Hidden expected result was 1.",
+        )
+        self.assertEqual(
+            project_student_result(leaking)["summary"],
+            GENERIC_REDACTED_TEXT,
+        )
+
+    def test_short_word_fragment_matches_token_not_unrelated_substring(self) -> None:
+        """A short private token must redact itself without corrupting larger words."""
+        hidden_case = {
+            "name": "h",
+            "input": "private-input-xyz",
+            "expected": 42,
+            "passed": False,
+            "visibility": "hidden",
+        }
+        legitimate_summary = "The public result is valid."
+        private = self._minimal_private_with_numeric_hidden_case(
+            hidden_case,
+            summary=legitimate_summary,
+        )
+        self.assertEqual(project_student_result(private)["summary"], legitimate_summary)
+
+        leaking = self._minimal_private_with_numeric_hidden_case(
+            hidden_case,
+            summary="Private case h failed.",
+        )
+        self.assertEqual(
+            project_student_result(leaking)["summary"],
+            GENERIC_REDACTED_TEXT,
+        )
+
     def test_comprehensive_invariant_no_sentinel_survives_in_serialized_output_regardless_of_location(
         self,
     ) -> None:
