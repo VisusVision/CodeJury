@@ -5,6 +5,7 @@ Supported languages: python, cpp, java
 """
 import os, sys, time, json, hashlib, ast
 from dataclasses import dataclass, field, asdict
+from pathlib import Path, PurePosixPath
 from typing import Optional
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -12,30 +13,148 @@ from core.executor import ResourceLimits, ExecutionResult
 from languages.runners import get_runner, StaticAnalysisResult
 
 
+ALLOWED_SUFFIXES = frozenset({".txt", ".csv", ".tsv", ".json"})
+MAX_FILES_PER_CASE = 10
+MAX_FILE_BYTES = 64 * 1024
+MAX_CASE_BYTES = 256 * 1024
+
+
+class FixturePolicyError(ValueError):
+    pass
+
+
+def validate_fixture_names(files: list[dict[str, str]]) -> list[dict[str, str]]:
+    if len(files) > MAX_FILES_PER_CASE:
+        raise FixturePolicyError(
+            f"case has {len(files)} fixture files; maximum is {MAX_FILES_PER_CASE}"
+        )
+
+    total_bytes = 0
+    validated: list[dict[str, str]] = []
+    for item in files:
+        name = str(item.get("name", "")).strip()
+        content = item.get("content")
+        if not name or content is None:
+            raise FixturePolicyError("fixture requires a non-empty name and content")
+
+        if "\\" in name or "\x00" in name:
+            raise FixturePolicyError(f"invalid fixture name: {name!r}")
+
+        path = PurePosixPath(name)
+        if path.is_absolute():
+            raise FixturePolicyError(f"absolute fixture path not allowed: {name!r}")
+        if ".." in path.parts:
+            raise FixturePolicyError(f"path traversal not allowed: {name!r}")
+
+        suffix = path.suffix.lower()
+        if suffix not in ALLOWED_SUFFIXES:
+            raise FixturePolicyError(
+                f"disallowed fixture suffix {suffix!r} for {name!r}"
+            )
+
+        file_bytes = len(str(content).encode("utf-8"))
+        if file_bytes > MAX_FILE_BYTES:
+            raise FixturePolicyError(
+                f"fixture {name!r} exceeds per-file byte limit ({file_bytes} > {MAX_FILE_BYTES})"
+            )
+
+        total_bytes += file_bytes
+        if total_bytes > MAX_CASE_BYTES:
+            raise FixturePolicyError(
+                f"case fixtures exceed total byte limit ({total_bytes} > {MAX_CASE_BYTES})"
+            )
+
+        validated.append({"name": name, "content": str(content)})
+
+    return validated
+
+
+def write_case_fixtures_safely(workdir: str, files: list[dict[str, str]]) -> None:
+    validated = validate_fixture_names(files)
+    root = Path(workdir).resolve(strict=False)
+
+    for item in validated:
+        destination = (root / PurePosixPath(item["name"])).resolve(strict=False)
+        if destination != root and root not in destination.parents:
+            raise FixturePolicyError(f"fixture escapes workdir: {item['name']!r}")
+
+        parent = destination.parent
+        if parent != root:
+            parent.mkdir(parents=True, exist_ok=True)
+            current = parent
+            while current != root:
+                if current.is_symlink():
+                    raise FixturePolicyError(
+                        f"fixture parent is a symlink: {item['name']!r}"
+                    )
+                current = current.parent
+
+        if destination.exists() and destination.is_symlink():
+            raise FixturePolicyError(f"fixture destination is a symlink: {item['name']!r}")
+
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        with open(destination, "x" if not destination.exists() else "w", encoding="utf-8") as handle:
+            handle.write(item["content"])
+
+
 # ── Data Models ───────────────────────────────────────────────────────────────
 
 @dataclass
 class TestCase:
+    id: str
     name: str
     stdin: Optional[str] = None
     expected_stdout: Optional[str] = None
     expected_exit_code: int = 0
+    visibility: str = "hidden"
+    files: list[dict[str, str]] = field(default_factory=list)
     description: str = ""
+
+
+def parse_execute_test_case(raw: dict, *, index: int) -> TestCase | None:
+    if not isinstance(raw, dict):
+        return None
+    try:
+        files: list[dict[str, str]] = []
+        for item in raw.get("files", []):
+            if not isinstance(item, dict):
+                continue
+            name = str(item.get("name", "")).strip()
+            if not name:
+                continue
+            files.append({"name": name, "content": str(item.get("content", ""))})
+
+        visibility = str(raw.get("visibility") or "hidden").strip().lower()
+        if visibility not in {"public", "hidden"}:
+            visibility = "hidden"
+
+        case_id = str(raw.get("id") or "").strip() or f"case-{index}"
+        return TestCase(
+            id=case_id,
+            name=str(raw.get("name") or f"test_{index}")[:80],
+            stdin=raw.get("stdin"),
+            expected_stdout=raw.get("expected_stdout"),
+            expected_exit_code=int(raw.get("expected_exit_code", 0)),
+            visibility=visibility,
+            files=files,
+            description=str(raw.get("description", "")),
+        )
+    except Exception:
+        return None
 
 
 @dataclass
 class TestCaseResult:
+    id: str
     name: str
-    passed: bool = False
-    description: str = ""
-    stdin: str = ""
     actual_stdout: str = ""
     actual_stderr: str = ""
-    expected_stdout: str = ""
     actual_exit_code: int = -1
-    expected_exit_code: int = 0
-    wall_time_ms: float = 0
-    error: str = ""
+    timed_out: bool = False
+    memory_exceeded: bool = False
+    compile_success: bool = False
+    wall_time_ms: float = 0.0
+    peak_memory_mb: float = 0.0
 
 
 @dataclass
@@ -160,7 +279,6 @@ class SandboxOrchestrator:
         report.submission_id = submission_id or f"sub_{report.code_hash}_{int(time.time())}"
         report.timestamp = time.time()
 
-        # Per-language memory limits
         MEMORY_BY_LANGUAGE = {
             "python": 512,
             "cpp":    128,
@@ -181,21 +299,27 @@ class SandboxOrchestrator:
             report.summary = {"error": str(e), "runnable": False}
             return report
 
-        exec_result = runner.run(code, extra_files=workdir_files, argv=argv)
+        fallback_files = list(workdir_files or [])
+        if test_cases:
+            any_case_files = any(tc.files for tc in test_cases)
+            if not any_case_files and fallback_files:
+                copied = validate_fixture_names(fallback_files)
+                for tc in test_cases:
+                    tc.files = list(copied)
+            exec_result = runner.run(code, argv=argv)
+        else:
+            exec_result = runner.run(code, extra_files=fallback_files or None, argv=argv)
         report.execution = exec_result.to_dict()
 
-        # Run test cases if provided
         test_results = []
         if test_cases:
             for tc in test_cases:
-                tcr = self._run_test_case(runner, code, tc)
+                tcr = self._run_test_case(runner, code, tc, argv=argv)
                 test_results.append(asdict(tcr))
-                if tcr.passed:
-                    report.tests_passed += 1
         report.tests_total = len(test_cases) if test_cases else 0
+        report.tests_passed = 0
         report.test_results = test_results
 
-        # Static analysis
         sa = runner.static_analysis(code)
         report.static_analysis = {
             "tool": sa.tool,
@@ -206,7 +330,6 @@ class SandboxOrchestrator:
             "error": sa.error,
         }
 
-        # Code metrics (Python uses AST; C++/Java use line-based analysis)
         lang = report.language
         if lang == "python":
             metrics = compute_python_metrics(code)
@@ -217,44 +340,37 @@ class SandboxOrchestrator:
         report.summary = self._build_summary(report, exec_result)
         return report
 
-    def _run_test_case(self, runner, code, tc):
+    def _run_test_case(self, runner, code, tc, argv=None):
         result = TestCaseResult(
+            id=tc.id,
             name=tc.name,
-            description=tc.description,
-            stdin=tc.stdin or "",
-            expected_stdout=tc.expected_stdout or "",
-            expected_exit_code=tc.expected_exit_code,
         )
+        extra_files: list[dict[str, str]] = []
         try:
-            er = runner.run(code, stdin_data=tc.stdin)
-            result.actual_stdout = er.stdout.strip()
-            result.actual_stderr = er.stderr.strip()
+            if tc.files:
+                extra_files = validate_fixture_names(tc.files)
+            er = runner.run(
+                code,
+                stdin_data=tc.stdin,
+                extra_files=extra_files or None,
+                argv=argv,
+            )
+            result.actual_stdout = er.stdout
+            result.actual_stderr = er.stderr
             result.actual_exit_code = er.exit_code
             result.wall_time_ms = er.wall_time_ms
-
-            if er.timed_out:
-                result.passed = False
-                result.error = "TIMEOUT"
-            elif er.memory_exceeded:
-                result.passed = False
-                result.error = "MEMORY_EXCEEDED"
-            elif er.exit_code != tc.expected_exit_code:
-                result.passed = False
-                err_tail = er.stderr.strip().splitlines()[-1] if er.stderr.strip() else ""
-                result.error = f"Exit code: expected={tc.expected_exit_code}, actual={er.exit_code}"
-                if err_tail:
-                    result.error += f"; {err_tail[:200]}"
-            elif tc.expected_stdout is not None:
-                exp = tc.expected_stdout.strip()
-                act = er.stdout.strip()
-                result.passed = (act == exp)
-                if not result.passed:
-                    result.error = f"Output mismatch — expected: {repr(exp[:100])}, actual: {repr(act[:100])}"
-            else:
-                result.passed = er.success
+            result.peak_memory_mb = getattr(er, "peak_memory_mb", 0.0)
+            result.timed_out = bool(er.timed_out)
+            result.memory_exceeded = bool(er.memory_exceeded)
+            result.compile_success = bool(getattr(er, "compile_success", True))
+        except FixturePolicyError as exc:
+            result.actual_stderr = str(exc)
+            result.actual_exit_code = 1
+            result.compile_success = False
         except Exception as e:
-            result.passed = False
-            result.error = str(e)
+            result.actual_stderr = str(e)
+            result.actual_exit_code = 1
+            result.compile_success = False
         return result
 
     def _build_summary(self, report, exec_result):

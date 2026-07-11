@@ -9,7 +9,7 @@ from urllib.parse import urlparse
 import threading
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from core.orchestrator import SandboxOrchestrator, TestCase
+from core.orchestrator import SandboxOrchestrator, TestCase, parse_execute_test_case
 from core.executor import ResourceLimits
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
@@ -130,26 +130,28 @@ class SandboxHandler(BaseHTTPRequestHandler):
         )
 
         test_cases = []
-        for tc in body.get("test_cases", []):
-            try:
-                test_cases.append(TestCase(
-                    name               = tc.get("name", f"test_{len(test_cases) + 1}"),
-                    stdin              = tc.get("stdin"),
-                    expected_stdout    = tc.get("expected_stdout"),
-                    expected_exit_code = int(tc.get("expected_exit_code", 0)),
-                    description        = tc.get("description", ""),
-                ))
-            except Exception:
-                pass
+        for index, tc in enumerate(body.get("test_cases", []), 1):
+            parsed = parse_execute_test_case(tc, index=index)
+            if parsed is not None:
+                test_cases.append(parsed)
 
         workdir_files = []
-        for item in body.get("files", []):
-            if not isinstance(item, dict):
-                continue
-            name = str(item.get("name", "")).strip()
-            if not name:
-                continue
-            workdir_files.append({"name": name, "content": str(item.get("content", ""))})
+        if not test_cases:
+            for item in body.get("files", []):
+                if not isinstance(item, dict):
+                    continue
+                name = str(item.get("name", "")).strip()
+                if not name:
+                    continue
+                workdir_files.append({"name": name, "content": str(item.get("content", ""))})
+        else:
+            for item in body.get("files", []):
+                if not isinstance(item, dict):
+                    continue
+                name = str(item.get("name", "")).strip()
+                if not name:
+                    continue
+                workdir_files.append({"name": name, "content": str(item.get("content", ""))})
 
         argv = [str(arg) for arg in body.get("argv", []) if str(arg).strip()]
 

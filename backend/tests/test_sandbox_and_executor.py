@@ -245,10 +245,20 @@ class RunInSandboxTests(unittest.TestCase):
         pool, _ = self._ready_pool_with_slot()
         resp = self._ok_response({
             "execution": {"exit_code": 0, "compile_success": True},
-            "test_results": [], "static_analysis": {},
-            "code_metrics": {}, "summary": {},
+            "test_results": [
+                {
+                    "id": "tc1",
+                    "name": "tc1",
+                    "actual_stdout": "25",
+                    "actual_exit_code": 0,
+                    "compile_success": True,
+                }
+            ],
+            "static_analysis": {},
+            "code_metrics": {},
+            "summary": {},
         })
-        test_cases = [{"name": "tc1", "stdin": "5", "expected_stdout": "25"}]
+        test_cases = [{"id": "tc1", "name": "tc1", "stdin": "5", "expected_stdout": "25"}]
         with (
             patch(_GET_POOL, return_value=pool),
             patch(_WAIT_FOR_POOL_READY, return_value=pool),
@@ -257,7 +267,10 @@ class RunInSandboxTests(unittest.TestCase):
             run_in_sandbox("print(int(input())**2)\n", "python", test_cases=test_cases)
 
         payload = mock_post.call_args.kwargs["json"]
-        self.assertIn(test_cases[0], payload["test_cases"])
+        sent = payload["test_cases"][0]
+        self.assertEqual(sent["id"], "tc1")
+        self.assertEqual(sent["stdin"], "5")
+        self.assertEqual(sent["expected_stdout"], "25")
         self.assertEqual(payload["language"], "python")
 
     def test_formal_test_passes_override_empty_stdin_smoke_error(self):
@@ -271,12 +284,14 @@ class RunInSandboxTests(unittest.TestCase):
             },
             "test_results": [
                 {
+                    "id": "tc1",
                     "name": "tc1",
                     "stdin": "5\n",
                     "passed": True,
                     "actual_stdout": "25",
                     "expected_stdout": "25\n",
                     "actual_exit_code": 0,
+                    "compile_success": True,
                 }
             ],
             "static_analysis": {},
@@ -291,7 +306,7 @@ class RunInSandboxTests(unittest.TestCase):
             result = run_in_sandbox(
                 "n=int(input())\nprint(n*n)\n",
                 "python",
-                test_cases=[{"name": "tc1", "stdin": "5\n", "expected_stdout": "25\n"}],
+                test_cases=[{"id": "tc1", "name": "tc1", "stdin": "5\n", "expected_stdout": "25\n"}],
             )
 
         self.assertEqual(result["exit_code"], 0)
@@ -308,6 +323,7 @@ class RunInSandboxTests(unittest.TestCase):
             },
             "test_results": [
                 {
+                    "id": "zero_division",
                     "name": "zero_division",
                     "stdin": "10\n0\n",
                     "passed": False,
@@ -315,6 +331,7 @@ class RunInSandboxTests(unittest.TestCase):
                     "actual_stderr": "Traceback...\nZeroDivisionError: division by zero",
                     "expected_stdout": "HATA\n",
                     "actual_exit_code": 1,
+                    "compile_success": True,
                     "error": "Exit code: expected=0, actual=1; ZeroDivisionError: division by zero",
                 }
             ],
@@ -330,7 +347,7 @@ class RunInSandboxTests(unittest.TestCase):
             result = run_in_sandbox(
                 "a=int(input())\nb=int(input())\nprint(a//b)\n",
                 "python",
-                test_cases=[{"name": "zero_division", "stdin": "10\n0\n", "expected_stdout": "HATA\n"}],
+                test_cases=[{"id": "zero_division", "name": "zero_division", "stdin": "10\n0\n", "expected_stdout": "HATA\n"}],
             )
 
         self.assertEqual(result["exit_code"], 1)
@@ -351,6 +368,189 @@ class RunInSandboxTests(unittest.TestCase):
 
         payload = mock_post.call_args.kwargs["json"]
         self.assertTrue(any(tc.get("stdin") == "merhaba" for tc in payload["test_cases"]))
+
+    def test_backend_authority_overrules_container_passed_when_output_wrong(self):
+        pool, _ = self._ready_pool_with_slot()
+        resp = self._ok_response({
+            "execution": {
+                "stdout": "",
+                "stderr": "",
+                "exit_code": 0,
+                "wall_time_ms": 5,
+                "peak_memory_mb": 1.0,
+                "compile_success": True,
+            },
+            "test_results": [
+                {
+                    "id": "case-1",
+                    "name": "square",
+                    "actual_stdout": "5\n",
+                    "actual_stderr": "",
+                    "actual_exit_code": 0,
+                    "timed_out": False,
+                    "memory_exceeded": False,
+                    "compile_success": True,
+                    "wall_time_ms": 2.0,
+                    "peak_memory_mb": 0.5,
+                    "passed": True,
+                }
+            ],
+            "static_analysis": {},
+            "code_metrics": {},
+            "summary": {},
+        })
+        test_cases = [
+            {
+                "id": "case-1",
+                "name": "square",
+                "stdin": "2\n",
+                "expected_stdout": "4\n",
+                "expected_exit_code": 0,
+                "visibility": "public",
+                "source": "manual",
+                "oracle": "teacher",
+            }
+        ]
+        with (
+            patch(_GET_POOL, return_value=pool),
+            patch(_WAIT_FOR_POOL_READY, return_value=pool),
+            patch(_REQUESTS_POST, return_value=resp),
+        ):
+            result = run_in_sandbox(
+                "print(int(input()) ** 2)\n",
+                "python",
+                test_cases=test_cases,
+            )
+
+        case = result["test_results"][0]
+        self.assertFalse(case["passed"])
+        self.assertEqual(case["status"], "fail")
+        self.assertEqual(case["actual_stdout"], "5\n")
+        self.assertEqual(result["exit_code"], 1)
+
+    def test_backend_authority_passes_whitespace_equivalent_despite_container_fail(self):
+        pool, _ = self._ready_pool_with_slot()
+        resp = self._ok_response({
+            "execution": {
+                "stdout": "",
+                "stderr": "",
+                "exit_code": 0,
+                "wall_time_ms": 5,
+                "peak_memory_mb": 1.0,
+                "compile_success": True,
+            },
+            "test_results": [
+                {
+                    "id": "case-1",
+                    "name": "square",
+                    "actual_stdout": "4\t\n",
+                    "actual_stderr": "",
+                    "actual_exit_code": 0,
+                    "timed_out": False,
+                    "memory_exceeded": False,
+                    "compile_success": True,
+                    "wall_time_ms": 2.0,
+                    "peak_memory_mb": 0.5,
+                    "passed": False,
+                }
+            ],
+            "static_analysis": {},
+            "code_metrics": {},
+            "summary": {},
+        })
+        test_cases = [
+            {
+                "id": "case-1",
+                "name": "square",
+                "stdin": "2\n",
+                "expected_stdout": "4  \n",
+                "expected_exit_code": 0,
+                "visibility": "public",
+                "source": "manual",
+                "oracle": "teacher",
+            }
+        ]
+        with (
+            patch(_GET_POOL, return_value=pool),
+            patch(_WAIT_FOR_POOL_READY, return_value=pool),
+            patch(_REQUESTS_POST, return_value=resp),
+        ):
+            result = run_in_sandbox(
+                "print(int(input()) ** 2)\n",
+                "python",
+                test_cases=test_cases,
+            )
+
+        case = result["test_results"][0]
+        self.assertTrue(case["passed"])
+        self.assertEqual(case["status"], "pass")
+        self.assertEqual(result["exit_code"], 0)
+
+    def test_duplicate_raw_case_ids_raise_invalid_response(self):
+        pool, _ = self._ready_pool_with_slot()
+        resp = self._ok_response({
+            "execution": {"exit_code": 0, "compile_success": True},
+            "test_results": [
+                {"id": "case-1", "name": "a", "actual_stdout": "1\n", "actual_exit_code": 0, "compile_success": True},
+                {"id": "case-1", "name": "b", "actual_stdout": "2\n", "actual_exit_code": 0, "compile_success": True},
+            ],
+            "static_analysis": {},
+            "code_metrics": {},
+            "summary": {},
+        })
+        test_cases = [{"id": "case-1", "name": "a", "stdin": "", "expected_stdout": "1\n"}]
+        with (
+            patch(_GET_POOL, return_value=pool),
+            patch(_WAIT_FOR_POOL_READY, return_value=pool),
+            patch(_REQUESTS_POST, return_value=resp),
+        ):
+            with self.assertRaises(SandboxUnavailableError) as ctx:
+                run_in_sandbox("print('x')\n", "python", test_cases=test_cases)
+        self.assertEqual(ctx.exception.code, "invalid_response")
+
+    def test_formal_payload_includes_case_id_visibility_and_files(self):
+        pool, _ = self._ready_pool_with_slot()
+        resp = self._ok_response({
+            "execution": {"exit_code": 0, "compile_success": True},
+            "test_results": [
+                {
+                    "id": "case-1",
+                    "name": "fixture case",
+                    "actual_stdout": "ok\n",
+                    "actual_exit_code": 0,
+                    "compile_success": True,
+                }
+            ],
+            "static_analysis": {},
+            "code_metrics": {},
+            "summary": {},
+        })
+        test_cases = [
+            {
+                "id": "case-1",
+                "name": "fixture case",
+                "stdin": "",
+                "expected_stdout": "ok\n",
+                "expected_exit_code": 0,
+                "visibility": "hidden",
+                "files": [{"name": "data.txt", "content": "seed"}],
+                "source": "auto_generated",
+                "oracle": "llm_verified",
+            }
+        ]
+        with (
+            patch(_GET_POOL, return_value=pool),
+            patch(_WAIT_FOR_POOL_READY, return_value=pool),
+            patch(_REQUESTS_POST, return_value=resp) as mock_post,
+        ):
+            run_in_sandbox("print('ok')\n", "python", test_cases=test_cases)
+
+        payload = mock_post.call_args.kwargs["json"]
+        sent = payload["test_cases"][0]
+        self.assertEqual(sent["id"], "case-1")
+        self.assertEqual(sent["visibility"], "hidden")
+        self.assertEqual(sent["files"], [{"name": "data.txt", "content": "seed"}])
+        self.assertEqual(payload["files"], [])
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

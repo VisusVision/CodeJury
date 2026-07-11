@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import unittest
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from backend.sandbox.errors import SandboxUnavailableError
 from backend.sandbox.executor import _simulate_sandbox, run_in_sandbox
@@ -132,6 +132,93 @@ class RunInSandboxPayloadTests(unittest.TestCase):
         with patch("backend.sandbox.pool_manager.wait_for_pool_ready", return_value=None):
             with self.assertRaises(SandboxUnavailableError):
                 run_in_sandbox(_CSV_CODE, "python", files=files)
+
+    def test_fallback_files_copied_into_each_case_when_cases_have_no_files(self):
+        pool = MagicMock()
+        pool.is_ready = True
+        slot = MagicMock(url="http://localhost:8181")
+        pool.acquire.return_value = slot
+        resp = MagicMock()
+        resp.status_code = 200
+        resp.raise_for_status = MagicMock()
+        resp.json.return_value = {
+            "report": {
+                "execution": {"exit_code": 0, "compile_success": True},
+                "test_results": [
+                    {
+                        "id": "case-1",
+                        "name": "read csv",
+                        "actual_stdout": "rows=2\n",
+                        "actual_exit_code": 0,
+                        "compile_success": True,
+                    }
+                ],
+                "static_analysis": {},
+                "code_metrics": {},
+                "summary": {},
+            }
+        }
+        files = infer_sandbox_files(assignment_brief="", source_code=_CSV_CODE)
+        test_cases = [
+            {"id": "case-1", "name": "read csv", "stdin": "", "expected_stdout": "rows=2\n"},
+        ]
+        with (
+            patch("backend.sandbox.pool_manager.get_pool", return_value=pool),
+            patch("backend.sandbox.pool_manager.wait_for_pool_ready", return_value=pool),
+            patch("requests.post", return_value=resp) as mock_post,
+        ):
+            run_in_sandbox(_CSV_CODE, "python", test_cases=test_cases, files=files)
+
+        payload = mock_post.call_args.kwargs["json"]
+        self.assertEqual(payload["files"], [])
+        self.assertEqual(payload["test_cases"][0]["files"], files)
+
+    def test_per_case_files_prevent_global_fallback_merge(self):
+        pool = MagicMock()
+        pool.is_ready = True
+        slot = MagicMock(url="http://localhost:8181")
+        pool.acquire.return_value = slot
+        resp = MagicMock()
+        resp.status_code = 200
+        resp.raise_for_status = MagicMock()
+        resp.json.return_value = {
+            "report": {
+                "execution": {"exit_code": 0, "compile_success": True},
+                "test_results": [
+                    {
+                        "id": "case-1",
+                        "name": "custom fixture",
+                        "actual_stdout": "rows=1\n",
+                        "actual_exit_code": 0,
+                        "compile_success": True,
+                    }
+                ],
+                "static_analysis": {},
+                "code_metrics": {},
+                "summary": {},
+            }
+        }
+        global_files = infer_sandbox_files(assignment_brief="", source_code=_CSV_CODE)
+        case_files = [{"name": "scores.csv", "content": "custom\n"}]
+        test_cases = [
+            {
+                "id": "case-1",
+                "name": "custom fixture",
+                "stdin": "",
+                "expected_stdout": "rows=1\n",
+                "files": case_files,
+            }
+        ]
+        with (
+            patch("backend.sandbox.pool_manager.get_pool", return_value=pool),
+            patch("backend.sandbox.pool_manager.wait_for_pool_ready", return_value=pool),
+            patch("requests.post", return_value=resp) as mock_post,
+        ):
+            run_in_sandbox(_CSV_CODE, "python", test_cases=test_cases, files=global_files)
+
+        payload = mock_post.call_args.kwargs["json"]
+        self.assertEqual(payload["files"], [])
+        self.assertEqual(payload["test_cases"][0]["files"], case_files)
 
 
 if __name__ == "__main__":
