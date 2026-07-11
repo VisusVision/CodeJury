@@ -20,7 +20,7 @@ import unicodedata
 import uuid
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Awaitable, Callable, Optional
+from typing import Any, Awaitable, Callable, Literal, Optional
 from urllib.parse import urlparse, urlunparse
 
 import asyncpg
@@ -62,6 +62,7 @@ from backend.auth.dependencies import (
 )
 from backend.auth.models import AuthPrincipal
 from backend.auth.policies import enforce_teacher_owner
+from backend.testing.difficulty import infer_assignment_difficulty, normalize_difficulty
 from backend.auth.sessions import UserLockUnavailable, hash_token, user_lock
 from backend.queue.analysis_jobs import (
     AnalysisJobNotFound,
@@ -637,6 +638,12 @@ class AssignmentCreateRequest(BaseModel):
     name: str
     description: str | None = None
     due_date: str | None = None
+    difficulty: str | None = None
+    creation_mode: Literal["manual", "ai_assistant"] = "manual"
+
+
+class AssignmentDifficultyUpdateRequest(BaseModel):
+    difficulty: str
 
 
 class AssignmentTestCaseIn(BaseModel):
@@ -3680,6 +3687,12 @@ async def _ensure_db_schema(pool: asyncpg.Pool) -> None:
         ALTER TABLE public.assignments
             ADD COLUMN IF NOT EXISTS created_by UUID NULL REFERENCES public.teachers(id) ON DELETE SET NULL;
 
+        ALTER TABLE public.assignments
+            ADD COLUMN IF NOT EXISTS difficulty TEXT NULL;
+
+        ALTER TABLE public.assignments
+            ADD COLUMN IF NOT EXISTS difficulty_source TEXT NULL;
+
         CREATE INDEX IF NOT EXISTS idx_assignments_created_by ON public.assignments(created_by);
 
         CREATE TABLE IF NOT EXISTS public.rubrics (
@@ -5802,23 +5815,25 @@ async def list_assignments(principal: AuthPrincipal = Depends(require_teacher)):
             for a in _DEMO_STORE["assignments"]
             if not a.get("created_by") or str(a["created_by"]) == principal.user_id
         ]
-        return sorted(
+        rows = sorted(
             [dict(a) for a in visible],
             key=lambda a: str(a.get("created_at") or ""),
             reverse=True,
         )
+        return [await _with_assignment_difficulty(row) for row in rows]
 
     pool = await _get_db_pool()
     rows = await pool.fetch(
         """
-        SELECT id, course_id, name, description, due_date, created_by, created_at
+        SELECT id, course_id, name, description, due_date, created_by, created_at,
+               difficulty, difficulty_source
         FROM public.assignments
         WHERE created_by = $1::uuid OR created_by IS NULL
         ORDER BY created_at DESC
         """,
         principal.user_id,
     )
-    return [dict(r) for r in rows]
+    return [await _with_assignment_difficulty(dict(r), pool) for r in rows]
 
 
 def _course_context_for_assignment_safety(course: dict[str, Any] | asyncpg.Record | None) -> str:
@@ -5842,6 +5857,66 @@ async def _ensure_assignment_safety(name: str, description: str | None, course_c
         raise HTTPException(status_code=400, detail=result.to_api_error())
 
 
+_VALID_DIFFICULTIES = frozenset({"easy", "medium", "hard"})
+
+
+def _validate_client_difficulty(raw: str) -> str:
+    value = str(raw).strip().lower()
+    if value not in _VALID_DIFFICULTIES:
+        raise HTTPException(status_code=400, detail="Geçersiz zorluk seviyesi")
+    return value
+
+
+def _resolve_create_difficulty(req: AssignmentCreateRequest) -> tuple[str, str]:
+    raw = req.difficulty
+    if raw is not None and str(raw).strip():
+        difficulty = _validate_client_difficulty(raw)
+        if req.creation_mode == "ai_assistant":
+            return difficulty, "ai_selected"
+        return difficulty, "teacher"
+    return "medium", "default"
+
+
+async def _with_assignment_difficulty(
+    assignment: dict[str, Any],
+    pool: asyncpg.Pool | None = None,
+) -> dict[str, Any]:
+    result = dict(assignment)
+    if result.get("difficulty") is not None:
+        return result
+
+    inferred = infer_assignment_difficulty(
+        title=str(result.get("name") or ""),
+        description=str(result.get("description") or ""),
+        rubric=[],
+    )
+    result["difficulty"] = inferred
+    result["difficulty_source"] = "inferred"
+
+    if _DEMO_MODE:
+        aid = str(result["id"])
+        for stored in _DEMO_STORE["assignments"]:
+            if str(stored.get("id")) == aid:
+                stored["difficulty"] = inferred
+                stored["difficulty_source"] = "inferred"
+                break
+        _save_demo_store_to_disk()
+        return result
+
+    if pool is None:
+        pool = await _get_db_pool()
+    await pool.execute(
+        """
+        UPDATE public.assignments
+        SET difficulty = $2, difficulty_source = 'inferred'
+        WHERE id = $1::uuid AND difficulty IS NULL
+        """,
+        result["id"],
+        inferred,
+    )
+    return result
+
+
 @app.post("/api/assignments")
 async def create_assignment(req: AssignmentCreateRequest, principal: AuthPrincipal = Depends(require_teacher)):
     name = req.name.strip()
@@ -5849,6 +5924,7 @@ async def create_assignment(req: AssignmentCreateRequest, principal: AuthPrincip
     if not name or not req.course_id:
         raise HTTPException(status_code=400, detail="Ödev adı ve ders zorunludur")
     description = req.description.strip() if req.description else None
+    difficulty, difficulty_source = _resolve_create_difficulty(req)
     if _DEMO_MODE:
         course = next((c for c in _DEMO_STORE["courses"] if c["id"] == req.course_id), None)
         if course is None:
@@ -5863,6 +5939,8 @@ async def create_assignment(req: AssignmentCreateRequest, principal: AuthPrincip
             "due_date": req.due_date,
             "created_by": principal.user_id,
             "created_at": _demo_now(),
+            "difficulty": difficulty,
+            "difficulty_source": difficulty_source,
         }
         _DEMO_STORE["assignments"].append(assignment)
         _save_demo_store_to_disk()
@@ -5886,15 +5964,20 @@ async def create_assignment(req: AssignmentCreateRequest, principal: AuthPrincip
         due_date = _parse_optional_datetime(req.due_date)
         row = await pool.fetchrow(
             """
-            INSERT INTO public.assignments (course_id, name, description, due_date, created_by)
-            VALUES ($1, $2, $3, $4, $5::uuid)
-            RETURNING id, course_id, name, description, due_date, created_by, created_at
+            INSERT INTO public.assignments (
+                course_id, name, description, due_date, created_by, difficulty, difficulty_source
+            )
+            VALUES ($1, $2, $3, $4, $5::uuid, $6, $7)
+            RETURNING id, course_id, name, description, due_date, created_by, created_at,
+                      difficulty, difficulty_source
             """,
             req.course_id,
             name,
             description,
             due_date,
             principal.user_id,
+            difficulty,
+            difficulty_source,
         )
         return dict(row)
     except asyncpg.ForeignKeyViolationError as exc:
@@ -5903,6 +5986,49 @@ async def create_assignment(req: AssignmentCreateRequest, principal: AuthPrincip
         raise
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Ödev oluşturma hatası: {exc}") from exc
+
+
+@app.patch("/api/assignments/{assignment_id}/difficulty")
+async def update_assignment_difficulty(
+    assignment_id: str,
+    req: AssignmentDifficultyUpdateRequest,
+    principal: AuthPrincipal = Depends(require_teacher),
+):
+    aid = assignment_id.strip()
+    difficulty = _validate_client_difficulty(req.difficulty)
+    if _DEMO_MODE:
+        assignment = next((a for a in _DEMO_STORE["assignments"] if str(a["id"]) == aid), None)
+        if assignment is None:
+            raise HTTPException(status_code=404, detail="Ödev bulunamadı")
+        enforce_teacher_owner(principal, assignment.get("created_by"), mutation=True)
+        assignment["difficulty"] = difficulty
+        assignment["difficulty_source"] = "teacher"
+        _save_demo_store_to_disk()
+        return dict(assignment)
+
+    uid = _parse_assignment_uuid_param(aid)
+    pool = await _get_db_pool()
+    row = await pool.fetchrow(
+        "SELECT created_by FROM public.assignments WHERE id = $1::uuid",
+        uid,
+    )
+    if row is None:
+        raise HTTPException(status_code=404, detail="Ödev bulunamadı")
+    enforce_teacher_owner(principal, row["created_by"], mutation=True)
+    updated = await pool.fetchrow(
+        """
+        UPDATE public.assignments
+        SET difficulty = $2, difficulty_source = 'teacher'
+        WHERE id = $1::uuid
+        RETURNING id, course_id, name, description, due_date, created_by, created_at,
+                  difficulty, difficulty_source
+        """,
+        uid,
+        difficulty,
+    )
+    if updated is None:
+        raise HTTPException(status_code=404, detail="Ödev bulunamadı")
+    return dict(updated)
 
 
 @app.delete("/api/assignments/{assignment_id}")
@@ -7621,7 +7747,8 @@ async def course_assignments(
             for a in _DEMO_STORE["assignments"]
             if a["course_id"] == course_id and a["id"] in approved_assignment_ids
         ]
-        return sorted(rows, key=lambda a: str(a.get("created_at") or ""), reverse=True)
+        enriched = [await _with_assignment_difficulty(row) for row in rows]
+        return sorted(enriched, key=lambda a: str(a.get("created_at") or ""), reverse=True)
 
     pool = await _get_db_pool()
     course_row = await pool.fetchrow(
@@ -7636,7 +7763,8 @@ async def course_assignments(
                 return []
     rows = await pool.fetch(
         """
-                SELECT a.id, a.course_id, a.name, a.description, a.due_date, a.created_by, a.created_at
+                SELECT a.id, a.course_id, a.name, a.description, a.due_date, a.created_by, a.created_at,
+                       a.difficulty, a.difficulty_source
                 FROM public.assignments a
                 WHERE a.course_id = $1
                     AND EXISTS (
@@ -7649,7 +7777,7 @@ async def course_assignments(
         """,
         course_id,
     )
-    return [dict(r) for r in rows]
+    return [await _with_assignment_difficulty(dict(r), pool) for r in rows]
 
 
 @app.get("/api/assignments/{assignment_id}")
@@ -7667,13 +7795,14 @@ async def assignment_detail(
         elif principal.role == "student":
             if not await _student_can_access_assignment(principal, aid):
                 raise HTTPException(status_code=404, detail="Odev bulunamadi")
-        return row
+        return await _with_assignment_difficulty(dict(row))
 
     uid = _parse_assignment_uuid_param(aid)
     pool = await _get_db_pool()
     row = await pool.fetchrow(
         """
-        SELECT id, course_id, name, description, due_date, created_by, created_at
+        SELECT id, course_id, name, description, due_date, created_by, created_at,
+               difficulty, difficulty_source
         FROM public.assignments
         WHERE id = $1::uuid
         LIMIT 1
@@ -7687,7 +7816,7 @@ async def assignment_detail(
     elif principal.role == "student":
         if not await _student_can_access_assignment(principal, aid):
             raise HTTPException(status_code=404, detail="Odev bulunamadi")
-    return dict(row)
+    return await _with_assignment_difficulty(dict(row), pool)
 
 
 @app.post("/api/upload-history")

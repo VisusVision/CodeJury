@@ -442,6 +442,63 @@ class TeacherAuthorizationTests(unittest.TestCase):
         self.assertEqual(own_course.status_code, 200)
         self.assertEqual(own_course.json()["created_by"], _DEMO_TEACHER_ID)
 
+    def test_update_assignment_difficulty_requires_owner(self):
+        csrf_a = self._login_teacher(self.client_a)
+        _, csrf_b = self._register_teacher_b()
+
+        dept_b = self.client_b.post(
+            "/api/departments",
+            json={"name": "Dept Difficulty"},
+            headers=self._csrf_headers(csrf_b),
+        )
+        course_b = self.client_b.post(
+            "/api/courses",
+            json={
+                "name": "Course Difficulty",
+                "code": "CD101",
+                "class_year": 1,
+                "department_id": dept_b.json()["id"],
+            },
+            headers=self._csrf_headers(csrf_b),
+        )
+        with patch.object(main, "_ensure_assignment_safety", new=AsyncMock(return_value=None)):
+            assignment_b = self.client_b.post(
+                "/api/assignments",
+                json={"course_id": course_b.json()["id"], "name": "Assignment Difficulty"},
+                headers=self._csrf_headers(csrf_b),
+            )
+        assignment_b_id = assignment_b.json()["id"]
+
+        with patch.object(main, "_ensure_assignment_safety", new=AsyncMock(return_value=None)):
+            own_assignment = self.client_a.post(
+                "/api/assignments",
+                json={"course_id": _DEMO_COURSE_ID, "name": "Own Difficulty Assignment"},
+                headers=self._csrf_headers(csrf_a),
+            )
+        own_assignment_id = own_assignment.json()["id"]
+
+        owner_resp = self.client_a.patch(
+            f"/api/assignments/{own_assignment_id}/difficulty",
+            json={"difficulty": "hard"},
+            headers=self._csrf_headers(csrf_a),
+        )
+        self.assertEqual(owner_resp.status_code, 200)
+        self.assertEqual(owner_resp.json()["difficulty_source"], "teacher")
+
+        cross_resp = self.client_a.patch(
+            f"/api/assignments/{assignment_b_id}/difficulty",
+            json={"difficulty": "hard"},
+            headers=self._csrf_headers(csrf_a),
+        )
+        self.assertEqual(cross_resp.status_code, 404)
+
+        anon_client = TestClient(main.app)
+        anon_resp = anon_client.patch(
+            f"/api/assignments/{own_assignment_id}/difficulty",
+            json={"difficulty": "hard"},
+        )
+        self.assertEqual(anon_resp.status_code, 401)
+
     def test_assignment_creation_respects_course_ownership(self):
         csrf_a = self._login_teacher(self.client_a)
         _, csrf_b = self._register_teacher_b()
