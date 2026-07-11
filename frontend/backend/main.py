@@ -204,6 +204,7 @@ _DEMO_STORE: dict[str, Any] = {
     ],
     "assignment_questions": {},
     "assignment_test_cases": [],
+    "generated_test_sets": [],
     "upload_history": [],
     "evaluations": [],
 }
@@ -3857,6 +3858,46 @@ async def _ensure_db_schema(pool: asyncpg.Pool) -> None:
 
         CREATE INDEX IF NOT EXISTS idx_assignment_test_cases_assignment_id
             ON public.assignment_test_cases(assignment_id, display_order ASC, created_at ASC);
+
+        CREATE TABLE IF NOT EXISTS public.generated_test_sets (
+            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            assignment_id UUID NOT NULL REFERENCES public.assignments(id) ON DELETE CASCADE,
+            cache_key TEXT NOT NULL,
+            version INTEGER NOT NULL,
+            assignment_hash TEXT NOT NULL DEFAULT '',
+            rubric_hash TEXT NOT NULL DEFAULT '',
+            difficulty TEXT NOT NULL,
+            schema_version TEXT NOT NULL,
+            prompt_version TEXT NOT NULL,
+            provider TEXT NOT NULL,
+            model TEXT NOT NULL,
+            cases JSONB NOT NULL,
+            oracle_validation JSONB NOT NULL DEFAULT '[]'::jsonb,
+            active BOOLEAN NOT NULL DEFAULT true,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+            deactivated_at TIMESTAMPTZ NULL,
+            UNIQUE (assignment_id, cache_key),
+            UNIQUE (assignment_id, version)
+        );
+
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_generated_test_sets_one_active
+            ON public.generated_test_sets(assignment_id) WHERE active = true;
+
+        CREATE INDEX IF NOT EXISTS idx_generated_test_sets_assignment_id
+            ON public.generated_test_sets(assignment_id, version DESC);
+
+        DO $$
+        BEGIN
+            IF NOT EXISTS (
+                SELECT 1 FROM pg_constraint
+                WHERE conname = 'assignment_test_cases_generated_set_id_fkey'
+                  AND conrelid = 'public.assignment_test_cases'::regclass
+            ) THEN
+                ALTER TABLE public.assignment_test_cases
+                    ADD CONSTRAINT assignment_test_cases_generated_set_id_fkey
+                    FOREIGN KEY (generated_set_id) REFERENCES public.generated_test_sets(id) ON DELETE SET NULL;
+            END IF;
+        END $$;
         """)
         rows = await pool.fetch(
             """
@@ -5957,6 +5998,26 @@ def _resolve_create_difficulty(req: AssignmentCreateRequest) -> tuple[str, str]:
     return "medium", "default"
 
 
+async def _get_generated_test_set_store():
+    from backend.testing.store import DemoGeneratedTestSetStore, PostgresGeneratedTestSetStore
+
+    if _DEMO_MODE:
+        return DemoGeneratedTestSetStore(_DEMO_STORE)
+    pool = await _get_db_pool()
+    return PostgresGeneratedTestSetStore(pool)
+
+
+async def _invalidate_generated_test_set(assignment_id: str) -> None:
+    try:
+        store = await _get_generated_test_set_store()
+        await store.deactivate_assignment(assignment_id, reason="assignment_mutation")
+    except Exception as exc:
+        print(
+            f"[testing] generated-set invalidation skipped for {assignment_id}: {exc}",
+            flush=True,
+        )
+
+
 async def _with_assignment_difficulty(
     assignment: dict[str, Any],
     pool: asyncpg.Pool | None = None,
@@ -6084,6 +6145,7 @@ async def update_assignment_difficulty(
         assignment["difficulty"] = difficulty
         assignment["difficulty_source"] = "teacher"
         _save_demo_store_to_disk()
+        await _invalidate_generated_test_set(aid)
         return dict(assignment)
 
     uid = _parse_assignment_uuid_param(aid)
@@ -6108,6 +6170,7 @@ async def update_assignment_difficulty(
     )
     if updated is None:
         raise HTTPException(status_code=404, detail="Ödev bulunamadı")
+    await _invalidate_generated_test_set(aid)
     return dict(updated)
 
 
@@ -6281,6 +6344,7 @@ async def replace_assignment_test_cases(
             row["updated_at"] = now
         _DEMO_STORE["assignment_test_cases"].extend(normalized)
         _save_demo_store_to_disk()
+        await _invalidate_generated_test_set(aid)
         return sorted(
             [_assignment_test_case_response(row) for row in normalized],
             key=lambda row: (row["display_order"], row["name"]),
@@ -6325,6 +6389,7 @@ async def replace_assignment_test_cases(
                     row["oracle_validation"],
                     row["generated_set_id"],
                 )
+    await _invalidate_generated_test_set(aid)
     return await list_assignment_test_cases(aid)
 
 
@@ -6433,6 +6498,7 @@ async def upsert_rubric(req: RubricUpsertRequest, principal: AuthPrincipal = Dep
             existing["status"] = req.status
             existing["updated_at"] = _demo_now()
             _save_demo_store_to_disk()
+            await _invalidate_generated_test_set(aid)
             return existing
 
         rubric = {
@@ -6446,6 +6512,7 @@ async def upsert_rubric(req: RubricUpsertRequest, principal: AuthPrincipal = Dep
         }
         _DEMO_STORE["rubrics"].append(rubric)
         _save_demo_store_to_disk()
+        await _invalidate_generated_test_set(aid)
         return rubric
 
     pool = await _get_db_pool()
@@ -6500,6 +6567,7 @@ async def upsert_rubric(req: RubricUpsertRequest, principal: AuthPrincipal = Dep
             raise HTTPException(status_code=400, detail="Geçersiz ödev veya öğretmen bilgisi") from exc
         except Exception as exc:
             raise HTTPException(status_code=500, detail=f"Rubrik oluşturma hatası: {exc}") from exc
+    await _invalidate_generated_test_set(str(auid))
     return dict(row)
 
 
@@ -6523,6 +6591,7 @@ async def update_rubric_status(
         row["status"] = req.status
         row["updated_at"] = _demo_now()
         _save_demo_store_to_disk()
+        await _invalidate_generated_test_set(aid)
         return row
 
     uid = _parse_assignment_uuid_param(aid)
@@ -6546,6 +6615,7 @@ async def update_rubric_status(
     )
     if row is None:
         raise HTTPException(status_code=404, detail="Rubrik bulunamadı")
+    await _invalidate_generated_test_set(aid)
     return dict(row)
 
 
