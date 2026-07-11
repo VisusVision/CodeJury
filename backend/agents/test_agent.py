@@ -304,6 +304,80 @@ def _compute_test_score(
     return max(0, min(100, score))
 
 
+_NON_FORMAL_TEST_NAMES = {
+    "Test #1",
+    "cli_usage",
+    "runtime",
+    "compilation",
+    "timeout",
+    "memory",
+    "stdin_smoke",
+    "stdin_run",
+    "Odev metniyle uyum",
+}
+
+
+def _is_formal_test_result(item: dict) -> bool:
+    if not isinstance(item, dict):
+        return False
+    if item.get("formal") is False:
+        return False
+    if item.get("formal") is True:
+        return True
+    name = str(item.get("test_name") or item.get("name") or "").strip()
+    if name.startswith(("static:", "security:")):
+        return False
+    if name in _NON_FORMAL_TEST_NAMES:
+        return False
+    visibility = str(item.get("visibility") or "").strip().lower()
+    return visibility in {"public", "hidden"}
+
+
+def _formal_test_stats(test_results: list) -> tuple[int, int]:
+    formal_results = [item for item in test_results if _is_formal_test_result(item)]
+    passed = sum(1 for item in formal_results if bool(item.get("passed")))
+    return passed, len(formal_results)
+
+
+def _apply_formal_score_contract(
+    payload: dict,
+    *,
+    test_evidence_status: str | None = None,
+    test_source: str | None = None,
+    test_set_id: str | None = None,
+    cache_version: int | None = None,
+) -> dict:
+    out = dict(payload)
+    formal_passed, formal_total = _formal_test_stats(list(out.get("test_results") or []))
+    evidence_status = str(test_evidence_status or "").strip().lower()
+    if evidence_status not in {"available", "unavailable"}:
+        evidence_status = "available" if formal_total > 0 else "unavailable"
+
+    out["formalPassed"] = formal_passed
+    out["formalTotal"] = formal_total
+    out["testEvidenceStatus"] = evidence_status
+    if test_source is not None:
+        out["testSource"] = str(test_source)
+    if test_set_id is not None:
+        out["testSetId"] = str(test_set_id)
+    if cache_version is not None:
+        out["cacheVersion"] = cache_version
+
+    if formal_total > 0:
+        formal_score = round(100 * formal_passed / formal_total)
+        out["formalScore"] = formal_score
+        out["score"] = formal_score
+    else:
+        out["formalScore"] = 0
+        out["score"] = min(40, int(out.get("score", 0) or 0))
+    return out
+
+
+def _payload_has_formal_cases(payload: dict) -> bool:
+    _, formal_total = _formal_test_stats(list(payload.get("test_results") or []))
+    return formal_total > 0
+
+
 def _recalculate_score_from_results(payload: dict) -> int:
     runtime_passed, runtime_failed, static_passed = _runtime_static_test_counts(
         payload.get("test_results") or []
@@ -336,7 +410,7 @@ def _apply_test_score_guardrails(
     task_alignment: dict | None,
 ) -> dict:
     out = dict(payload)
-    if out.get("service_runtime_accepted"):
+    if out.get("service_runtime_accepted") or _payload_has_formal_cases(out):
         return out
 
     out["score"] = _recalculate_score_from_results(out)
@@ -428,6 +502,8 @@ def _augment_with_static_coverage(payload: dict, source_code: str, language: str
     if not added:
         return out
 
+    for check in added:
+        check["formal"] = False
     out["test_results"] = existing + added
     out["passed_tests"] = int(out.get("passed_tests", 0) or 0) + len(added)
     out["total_tests"] = int(out.get("passed_tests", 0) or 0) + int(out.get("failed_tests", 0) or 0)
@@ -494,6 +570,7 @@ def _programmatic_from_sandbox_tests(
             "actual": actual[:200],
             "passed": ok,
             "match_pct": 100.0 if ok else 0.0,
+            "formal": bool(expected_cases),
         }
         visibility = visibility_by_name.get(name)
         if visibility:
@@ -546,6 +623,8 @@ def _programmatic_from_sandbox_tests(
     }
     if source_code:
         payload = _augment_with_static_coverage(payload, source_code, language)
+    if expected_cases:
+        payload = _apply_formal_score_contract(payload)
     return payload
 
 
@@ -773,7 +852,13 @@ class TestAgent(BaseAgent):
                 if isinstance(item, (str, int, float)) and str(item).strip()
             ][:8]
 
-        return llm_result
+        return _apply_formal_score_contract(
+            llm_result,
+            test_evidence_status=input_data.get("test_evidence_status"),
+            test_source=input_data.get("test_source"),
+            test_set_id=input_data.get("test_set_id"),
+            cache_version=input_data.get("cache_version"),
+        )
 
     def _programmatic_analysis(
         self,
@@ -799,7 +884,8 @@ class TestAgent(BaseAgent):
         def _finish(d: dict) -> dict:
             d["brief_code_alignment_factor"] = align_f
             d["brief_alignment_reasons"] = list(align_rs)
-            if source_code:
+            has_formal = _payload_has_formal_cases(d) or formal_expected_cases is not None
+            if source_code and not has_formal:
                 d = _apply_network_delivery_runtime_patch(
                     d,
                     source_code,
@@ -809,7 +895,12 @@ class TestAgent(BaseAgent):
                     stderr=str(stderr or ""),
                     align_f=align_f,
                 )
-            if source_code and d.get("runs_successfully") and int(d.get("failed_tests", 0) or 0) == 0:
+            if (
+                source_code
+                and d.get("runs_successfully")
+                and int(d.get("failed_tests", 0) or 0) == 0
+                and not has_formal
+            ):
                 d = _augment_with_static_coverage(d, source_code, language)
             if source_code:
                 d = _apply_test_score_guardrails(
@@ -819,7 +910,7 @@ class TestAgent(BaseAgent):
                     align_f,
                     task_alignment,
                 )
-            return d
+            return _apply_formal_score_contract(d)
 
         compilation = sandbox.get("compilation_success", True)
         exit_code = sandbox.get("exit_code", 0)
@@ -878,7 +969,7 @@ class TestAgent(BaseAgent):
                 "performance_notes": f"Timeout ({exec_time}ms)",
                 "score": 5,
             })
-        if timeout and service_program:
+        if timeout and service_program and formal_expected_cases is None:
             # API/server assignments often keep the process alive intentionally.
             return _finish({
                 "compilation_success": True,
@@ -901,6 +992,7 @@ class TestAgent(BaseAgent):
             and compilation
             and exit_code != 0
             and "serve_forever" in (source_code or "").lower()
+            and formal_expected_cases is None
         ):
             return _finish({
                 "compilation_success": True,
@@ -930,7 +1022,7 @@ class TestAgent(BaseAgent):
                 "performance_notes": f"Bellek asimi ({peak_mem:.1f}MB)",
                 "score": 5,
             })
-        if mem_exceeded and service_program:
+        if mem_exceeded and service_program and formal_expected_cases is None:
             return _finish({
                 "compilation_success": True,
                 "runs_successfully": True,
@@ -947,7 +1039,7 @@ class TestAgent(BaseAgent):
                 "service_runtime_accepted": True,
             })
 
-        if cli_usage_exit:
+        if cli_usage_exit and formal_expected_cases is None:
             return _finish({
                 "compilation_success": True,
                 "runs_successfully": True,
@@ -1012,6 +1104,7 @@ class TestAgent(BaseAgent):
                     "actual": tc_actual[:200],
                     "passed": case_passed,
                     "match_pct": comparison["match_percentage"],
+                    "formal": True,
                 }
 
                 if case_passed:
@@ -1330,6 +1423,8 @@ def _apply_network_delivery_runtime_patch(
     align_f: float = 1.0,
 ) -> dict:
     """HTTP sunucu/istemci teslimlerinde sandbox ag kisitlarini yumusat."""
+    if _payload_has_formal_cases(payload):
+        return payload
     service = _looks_like_service_program(source_code, language)
     client = _looks_like_http_client_program(source_code, language)
     if not service and not client:
