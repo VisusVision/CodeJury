@@ -58,6 +58,15 @@ class Settings(BaseSettings):
     auth_cookie_secure: bool = False
     cors_allowed_origins: str = "http://localhost:8080,http://127.0.0.1:8080"
 
+    test_generation_schema_version: str = "test-set-v1"
+    test_generation_prompt_version: str = "test-generator-v1"
+    test_verifier_prompt_version: str = "test-verifier-v1"
+    test_generation_lock_ttl_seconds: int = 180
+    test_generation_lock_wait_seconds: int = 30
+    test_generation_lock_poll_seconds: float = 0.2
+    test_generation_call_timeout_seconds: int = 45
+    test_generation_total_timeout_seconds: int = 180
+
     model_config = {"env_file": str(_ENV_FILE), "extra": "ignore"}
 
 

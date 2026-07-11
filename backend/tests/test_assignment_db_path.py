@@ -264,6 +264,33 @@ class AssignmentDbPathTests(unittest.TestCase):
         self.assertIn("oracle_validation", pool.sql)
         self.assertIn("generated_set_id", pool.sql)
 
+    def test_ensure_db_schema_includes_generated_test_sets_table(self):
+        class FakePool:
+            def __init__(self):
+                self.sql = None
+
+            async def execute(self, sql, *args):
+                if self.sql is None:
+                    self.sql = sql
+                return "OK"
+
+            async def fetch(self, query, *args):
+                return []
+
+        pool = FakePool()
+
+        async def run_case():
+            await main._ensure_db_schema(pool)
+
+        asyncio.run(run_case())
+
+        self.assertIsNotNone(pool.sql)
+        self.assertIn("public.generated_test_sets", pool.sql)
+        self.assertIn("cache_key", pool.sql)
+        self.assertIn("version", pool.sql)
+        self.assertIn("active", pool.sql)
+        self.assertIn("generated_set_id", pool.sql)
+
 
 if __name__ == "__main__":
     unittest.main()
