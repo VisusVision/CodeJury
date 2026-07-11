@@ -6375,29 +6375,42 @@ async def _resolve_algorithm_expectation(
     if not assignment_id or not str(assignment_id).strip():
         return await _unknown_algorithm_expectation_resolution()
 
-    test_ctx = await _build_assignment_test_context(
-        assignment_id,
-        assignment_brief=brief,
-        faculty_rubric_criteria=rubric,
-    )
-    resolved_difficulty = (
-        normalize_difficulty(difficulty) if difficulty else test_ctx.difficulty
-    )
-    context = AlgorithmExpectationContext(
-        assignment_id=test_ctx.assignment_id,
-        title=test_ctx.title,
-        description=test_ctx.description or (brief or "").strip(),
-        rubric=tuple(test_ctx.rubric),
-        difficulty=resolved_difficulty,
-    )
-    store = await _get_algorithm_expectation_store()
-    redis = await _get_testing_redis_client()
-    return await resolve_expectation(
-        context,
-        store=store,
-        redis=redis,
-        generate_once=extract_and_verify_once,
-    )
+    try:
+        test_ctx = await _build_assignment_test_context(
+            assignment_id,
+            assignment_brief=brief,
+            faculty_rubric_criteria=rubric,
+        )
+        resolved_difficulty = (
+            normalize_difficulty(difficulty) if difficulty else test_ctx.difficulty
+        )
+        context = AlgorithmExpectationContext(
+            assignment_id=test_ctx.assignment_id,
+            title=test_ctx.title,
+            description=test_ctx.description or (brief or "").strip(),
+            rubric=tuple(test_ctx.rubric),
+            difficulty=resolved_difficulty,
+        )
+        store = await _get_algorithm_expectation_store()
+        redis = await _get_testing_redis_client()
+        return await resolve_expectation(
+            context,
+            store=store,
+            redis=redis,
+            generate_once=extract_and_verify_once,
+        )
+    except HTTPException as exc:
+        print(
+            f"[algorithm_expectation] resolve skipped for {assignment_id}: {exc.detail}",
+            flush=True,
+        )
+        return await _unknown_algorithm_expectation_resolution()
+    except Exception as exc:
+        print(
+            f"[algorithm_expectation] resolve failed for {assignment_id}: {exc}",
+            flush=True,
+        )
+        return await _unknown_algorithm_expectation_resolution()
 
 
 async def _invalidate_algorithm_expectation(assignment_id: str) -> None:

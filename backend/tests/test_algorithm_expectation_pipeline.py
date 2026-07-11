@@ -288,6 +288,32 @@ async def test_assignment_less_returns_unknown_without_expectation_store() -> No
 
 
 @pytest.mark.asyncio
+async def test_resolve_expectation_db_unavailable_returns_unknown_fail_soft() -> None:
+    from fastapi import HTTPException
+
+    with patch.object(main, "_DEMO_MODE", False):
+        with patch.object(
+            main,
+            "_build_assignment_test_context",
+            new=AsyncMock(
+                side_effect=HTTPException(
+                    status_code=500,
+                    detail="Veritabani baglantisi hazir degil",
+                )
+            ),
+        ):
+            result = await main._resolve_algorithm_expectation(
+                _ASSIGNMENT_ID,
+                "Implement binary search.",
+                [{"name": "Correctness"}],
+                "medium",
+            )
+
+    assert result.status == "unknown"
+    assert result.expectation is None
+
+
+@pytest.mark.asyncio
 async def test_difficulty_mutation_deactivates_cached_expectation() -> None:
     context = _context(difficulty="easy")
     store = _make_demo_store()
