@@ -99,3 +99,28 @@ def test_evaluation_marks_runtime_exception_as_error() -> None:
     assert evaluated.status == "error"
     assert evaluated.passed is False
     assert evaluated.error_type == "ZeroDivisionError"
+
+
+def test_evaluation_passes_matching_nonzero_exit_code() -> None:
+    evaluated = evaluate_case(
+        _formal_case(expected_exit_code=1, expected_stdout=""),
+        _raw_result(actual_exit_code=1, actual_stdout="", container_passed=False),
+    )
+    assert evaluated.status == "pass"
+    assert evaluated.passed is True
+    assert evaluated.error_type is None
+
+
+def test_evaluation_passes_matching_nonzero_exit_with_warning_stderr() -> None:
+    evaluated = evaluate_case(
+        _formal_case(expected_exit_code=1, expected_stdout=""),
+        _raw_result(
+            actual_exit_code=1,
+            actual_stdout="",
+            actual_stderr="warning: unused import",
+            container_passed=False,
+        ),
+    )
+    assert evaluated.status == "pass"
+    assert evaluated.passed is True
+    assert evaluated.error_type is None

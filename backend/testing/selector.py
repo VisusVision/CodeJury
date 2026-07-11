@@ -21,15 +21,9 @@ from backend.testing.contracts import (
     GeneratedTestSet,
     TestSelection,
 )
+from backend.testing.difficulty import TARGETS
 from backend.testing.generator import GenerationAttemptResult
 from backend.testing.store import GeneratedTestSetStore
-
-TARGETS = {
-    "easy": {"target": 5, "minimum": 4, "public": 1},
-    "medium": {"target": 8, "minimum": 7, "public": 2},
-    "hard": {"target": 12, "minimum": 10, "public": 2},
-}
-
 
 def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -94,7 +88,7 @@ def _attempt_is_sufficient(
     policy = TARGETS[difficulty]
     public_cases = [case for case in cases if case.visibility == "public"]
     hidden_cases = [case for case in cases if case.visibility == "hidden"]
-    hidden_needed = policy["target"] - policy["public"]
+    hidden_needed = max(0, policy["minimum"] - policy["public"])
     return (
         len(cases) >= policy["minimum"]
         and len(public_cases) >= policy["public"]
@@ -211,10 +205,7 @@ async def _generate_under_lock(
                 try:
                     attempt = await generate_once(context)
                 except Exception:
-                    return _unavailable(
-                        cache_key=cache_key,
-                        generation_attempts=generation_attempts,
-                    )
+                    continue
 
                 if not _attempt_is_sufficient(attempt.cases, context.difficulty):
                     continue

@@ -7,11 +7,8 @@ import secrets
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 
+from backend.core.config import settings
 from backend.testing.contracts import AssignmentDifficulty
-
-_SCHEMA_VERSION = "test-set-v1"
-_GENERATOR_PROMPT_VERSION = "test-generator-v1"
-_VERIFIER_PROMPT_VERSION = "test-verifier-v1"
 
 _RELEASE_LOCK_SCRIPT = """
 if redis.call("get", KEYS[1]) == ARGV[1] then
@@ -79,9 +76,9 @@ def compute_cache_identity(
         "difficulty": context.difficulty,
         "provider": provider,
         "model": model,
-        "schema_version": _SCHEMA_VERSION,
-        "generator_prompt_version": _GENERATOR_PROMPT_VERSION,
-        "verifier_prompt_version": _VERIFIER_PROMPT_VERSION,
+        "schema_version": settings.test_generation_schema_version,
+        "generator_prompt_version": settings.test_generation_prompt_version,
+        "verifier_prompt_version": settings.test_verifier_prompt_version,
     }
     canonical = json.dumps(payload, sort_keys=True, ensure_ascii=False)
     cache_key = hashlib.sha256(canonical.encode()).hexdigest()

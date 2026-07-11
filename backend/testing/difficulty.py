@@ -4,6 +4,12 @@ from __future__ import annotations
 
 from backend.testing.contracts import AssignmentDifficulty
 
+TARGETS: dict[AssignmentDifficulty, dict[str, int]] = {
+    "easy": {"target": 5, "minimum": 4, "public": 1},
+    "medium": {"target": 8, "minimum": 7, "public": 2},
+    "hard": {"target": 12, "minimum": 10, "public": 2},
+}
+
 _VALID_DIFFICULTIES = frozenset({"easy", "medium", "hard"})
 
 _COMPLEXITY_KEYWORDS: tuple[str, ...] = (

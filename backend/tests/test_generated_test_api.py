@@ -313,6 +313,25 @@ def test_suggest_returns_503_on_llm_failure_without_write(api_client):
     assert saved.json() == []
 
 
+def test_suggest_returns_503_on_timeout_without_write(api_client):
+    api_client["reset_store"]()
+    csrf = api_client["login_teacher"]()
+
+    with patch(
+        "frontend.backend.main.generate_and_verify_once",
+        new=AsyncMock(side_effect=TimeoutError()),
+    ):
+        resp = api_client["client"].post(
+            f"/api/assignments/{_DEMO_ASSIGNMENT_ID}/test-cases/suggest",
+            headers=api_client["csrf_headers"](csrf),
+        )
+
+    assert resp.status_code == 503
+    saved = api_client["client"].get(f"/api/assignments/{_DEMO_ASSIGNMENT_ID}/test-cases")
+    assert saved.status_code == 200
+    assert saved.json() == []
+
+
 def test_suggest_returns_503_on_insufficient_generation_without_write(api_client):
     api_client["reset_store"]()
     csrf = api_client["login_teacher"]()

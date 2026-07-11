@@ -301,8 +301,14 @@ class AssignmentDbPathTests(unittest.TestCase):
             def __init__(self):
                 self.calls: list[tuple[str, tuple]] = []
                 self.in_transaction = False
+                self.deactivate_during_transaction = False
+                self.advisory_lock_during_transaction = False
 
             async def execute(self, query, *args):
+                if "pg_advisory_xact_lock" in query and self.in_transaction:
+                    self.advisory_lock_during_transaction = True
+                if "UPDATE generated_test_sets" in query and self.in_transaction:
+                    self.deactivate_during_transaction = True
                 self.calls.append((query, args))
                 return "DELETE 0"
 
@@ -416,11 +422,22 @@ class AssignmentDbPathTests(unittest.TestCase):
 
         asyncio.run(run_case())
         self.assertFalse(pool.conn.in_transaction)
+        self.assertTrue(pool.conn.advisory_lock_during_transaction)
+        self.assertTrue(pool.conn.deactivate_during_transaction)
+        self.assertTrue(
+            any("pg_advisory_xact_lock" in call[0] for call in pool.conn.calls)
+        )
         self.assertTrue(
             any("DELETE FROM public.assignment_test_cases" in call[0] for call in pool.conn.calls)
         )
         self.assertTrue(
             any("INSERT INTO public.assignment_test_cases" in call[0] for call in pool.conn.calls)
+        )
+        self.assertTrue(
+            any(
+                "UPDATE generated_test_sets" in call[0] and "active = false" in call[0]
+                for call in pool.conn.calls
+            )
         )
 
 

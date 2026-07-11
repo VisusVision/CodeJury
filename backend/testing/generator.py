@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
@@ -8,12 +9,19 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
+from backend.core.config import settings
 from backend.llm.ollama_client import ChatJsonResult, chat_json_with_metadata
 from backend.testing.cache import AssignmentTestContext
 from backend.testing.contracts import FormalTestCase, OracleValidation, TestFixture
-from backend.testing.fixture_policy import FixturePolicyError, validate_case_fixtures
-
-_SCHEMA_VERSION = "test-set-v1"
+from backend.testing.difficulty import TARGETS
+from backend.testing.fixture_policy import (
+    ALLOWED_SUFFIXES,
+    MAX_CASE_BYTES,
+    MAX_FILE_BYTES,
+    MAX_FILES_PER_CASE,
+    FixturePolicyError,
+    validate_case_fixtures,
+)
 
 GENERATOR_SYSTEM_PROMPT = (
     "You are an expert programming assignment test-case generator. "
@@ -73,14 +81,22 @@ class GenerationAttemptResult:
 
 def build_generator_prompt(context: AssignmentTestContext) -> str:
     rubric_text = json.dumps(context.rubric, ensure_ascii=False, indent=2)
+    policy = TARGETS[context.difficulty]
+    allowed_suffixes = ", ".join(sorted(ALLOWED_SUFFIXES))
     return (
         f"Assignment title: {context.title}\n"
         f"Description: {context.description}\n"
         f"Difficulty: {context.difficulty}\n"
         f"Rubric:\n{rubric_text}\n\n"
-        "Generate a reasonable set of test cases covering typical, edge, and boundary "
+        f"Target verified case count: {policy['target']}\n"
+        f"Minimum verified case count: {policy['minimum']}\n"
+        f"Required public case count: {policy['public']}\n"
+        f"Fixture limits: at most {MAX_FILES_PER_CASE} files per case, "
+        f"{MAX_FILE_BYTES} bytes per file, {MAX_CASE_BYTES} bytes total per case; "
+        f"allowed suffixes: {allowed_suffixes}; UTF-8 text only; safe relative POSIX paths.\n\n"
+        "Generate deterministic stdin/stdout test cases covering typical, edge, and boundary "
         "behaviors for this assignment. Each case must include stdin, expected_stdout, "
-        "visibility (public or hidden), and optional fixture files with safe relative paths."
+        "expected_exit_code, visibility (public or hidden), and optional fixture files."
     )
 
 
@@ -119,7 +135,12 @@ async def generate_and_verify_once(
     *,
     chat: Callable[..., Awaitable[ChatJsonResult]] = chat_json_with_metadata,
 ) -> GenerationAttemptResult:
-    generator_result = await chat(
+    timeout_seconds = settings.test_generation_call_timeout_seconds
+
+    async def _call_chat(**kwargs: object) -> ChatJsonResult:
+        return await asyncio.wait_for(chat(**kwargs), timeout=timeout_seconds)
+
+    generator_result = await _call_chat(
         system_prompt=GENERATOR_SYSTEM_PROMPT,
         user_prompt=build_generator_prompt(context),
         schema_hint=GeneratorResponse.model_json_schema(),
@@ -152,7 +173,7 @@ async def generate_and_verify_once(
 
     for index, candidate in enumerate(generator_response.cases):
         case_id = str(index)
-        verifier_result = await chat(
+        verifier_result = await _call_chat(
             system_prompt=VERIFIER_SYSTEM_PROMPT,
             user_prompt=build_verifier_prompt(context, candidate, case_id),
             schema_hint=VerifierDecision.model_json_schema(),
@@ -178,6 +199,16 @@ async def generate_and_verify_once(
                     "case_id": case_id,
                     "name": candidate.name,
                     "reason": "invalid_verifier_response",
+                }
+            )
+            continue
+
+        if decision.case_id != case_id:
+            rejected.append(
+                {
+                    "case_id": case_id,
+                    "name": candidate.name,
+                    "reason": "verifier_case_id_mismatch",
                 }
             )
             continue
@@ -231,9 +262,9 @@ async def generate_and_verify_once(
             oracle="llm_verified",
             oracle_validation=OracleValidation(
                 status="verified",
-                provider=generator_result.provider,
-                model=generator_result.model,
-                schema_version=_SCHEMA_VERSION,
+                provider=verifier_result.provider,
+                model=verifier_result.model,
+                schema_version=settings.test_generation_schema_version,
                 verified_at=_utc_now_iso(),
                 reason="",
             ),

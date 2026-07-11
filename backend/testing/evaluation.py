@@ -33,7 +33,7 @@ def evaluate_case(case: FormalTestCase, raw: RawCaseResult) -> EvaluatedTestCase
             error_type = classification.error_type
             error_message_tr = classification.error_message_tr
     elif raw.actual_exit_code != case.expected_exit_code:
-        classification = classify_runtime(raw)
+        classification = classify_runtime(raw, expected_exit_code=case.expected_exit_code)
         if classification is not None and classification.error_type != "ExitMismatch":
             status = "error"
             passed = False
@@ -43,7 +43,7 @@ def evaluate_case(case: FormalTestCase, raw: RawCaseResult) -> EvaluatedTestCase
             status = "fail"
             passed = False
     else:
-        classification = classify_runtime(raw)
+        classification = classify_runtime(raw, expected_exit_code=case.expected_exit_code)
         if classification is not None:
             status = "error"
             passed = False

@@ -115,3 +115,25 @@ def test_compile_failure_wins_before_runtime_parsing() -> None:
     )
     assert classification is not None
     assert classification.error_type == "CompilationError"
+
+
+def test_matching_nonzero_exit_allows_benign_stderr_warnings() -> None:
+    assert (
+        classify_runtime(
+            raw_case(actual_exit_code=1, actual_stderr="warning: deprecated api"),
+            expected_exit_code=1,
+        )
+        is None
+    )
+
+
+def test_matching_nonzero_exit_still_reports_known_exception() -> None:
+    classification = classify_runtime(
+        raw_case(
+            actual_exit_code=1,
+            actual_stderr="Traceback...\nZeroDivisionError: division by zero",
+        ),
+        expected_exit_code=1,
+    )
+    assert classification is not None
+    assert classification.error_type == "ZeroDivisionError"
