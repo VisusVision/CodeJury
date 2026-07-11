@@ -203,6 +203,94 @@ class AnalysisJobStoreTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("expected", hidden_case)
         self.assertNotIn("actual", hidden_case)
 
+    async def test_progress_and_completed_persist_formal_student_projection(self):
+        await create_analysis_job(self.store, {"file_name": "main.py"}, owner=DEFAULT_OWNER)
+        private_result = {
+            "totalScore": 75,
+            "maxScore": 100,
+            "rubric": {},
+            "agents": [
+                {
+                    "id": "testing",
+                    "name": "Testing",
+                    "summary": "Formal tests",
+                    "score": 50,
+                    "maxScore": 100,
+                    "findings": [],
+                    "testResults": [
+                        {
+                            "name": "public case",
+                            "stdin": "2\n",
+                            "expected_stdout": "4\n",
+                            "actual_stdout": "4\n",
+                            "passed": True,
+                            "visibility": "public",
+                            "status": "pass",
+                            "source": "auto_generated",
+                        },
+                        {
+                            "name": "hidden case",
+                            "stdin": "secret",
+                            "expected_stdout": "secret",
+                            "actual_stdout": "wrong",
+                            "passed": False,
+                            "visibility": "hidden",
+                            "status": "fail",
+                            "source": "auto_generated",
+                        },
+                    ],
+                }
+            ],
+            "fileName": "main.py",
+            "executionTimeMs": 100,
+            "memoryUsageMb": 1.0,
+            "peakMemoryMb": 1.0,
+            "analysisEngine": "agentgrade-v1",
+            "summary": "Progress report",
+            "strengths": [],
+            "weaknesses": [],
+            "recommendations": [],
+            "taskAlignment": {},
+            "reportStatus": "preparing",
+            "testSource": "auto_generated",
+            "testEvidenceStatus": "available",
+            "formalPassed": 1,
+            "formalTotal": 2,
+            "testSetId": "set-private-only",
+            "testSetHash": "cache-private-only",
+            "cacheVersion": 2,
+        }
+
+        await mark_analysis_job_running(self.store, "job-123")
+        await update_analysis_job_result(
+            self.store,
+            "job-123",
+            private_result,
+            report_status="preparing",
+        )
+        running_job = await get_analysis_job(self.store, "job-123")
+        student_running = running_job["student_result"]
+        self.assertEqual(student_running["testSource"], "auto_generated")
+        self.assertEqual(student_running["formalPassed"], 1)
+        self.assertNotIn("testSetId", student_running)
+        public_case = student_running["agents"][0]["testResults"][0]
+        self.assertEqual(public_case["status"], "pass")
+        self.assertEqual(public_case["source"], "auto_generated")
+        hidden_case = student_running["agents"][0]["testResults"][1]
+        self.assertEqual(set(hidden_case.keys()), {"name", "visibility", "status", "passed"})
+        self.assertEqual(
+            student_running["hiddenTestSummary"],
+            {"passed": 0, "failed": 1, "error": 0, "total": 1},
+        )
+
+        await mark_analysis_job_completed(self.store, "job-123", private_result | {"reportStatus": "ready"})
+        completed_job = await get_analysis_job(self.store, "job-123")
+        student_completed = completed_job["student_result"]
+        self.assertEqual(completed_job["private_result"]["testSetId"], "set-private-only")
+        self.assertEqual(student_completed["testEvidenceStatus"], "available")
+        self.assertNotIn("testSetHash", student_completed)
+        self.assertEqual(student_completed["hiddenTestSummary"]["total"], 1)
+
     async def test_failed_update_stores_safe_error(self):
         await create_analysis_job(self.store, {"file_name": "main.py"}, owner=DEFAULT_OWNER)
 

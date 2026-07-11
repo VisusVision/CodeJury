@@ -1,4 +1,5 @@
 import inspect
+import json
 import unittest
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -32,22 +33,58 @@ STUDENT_PROFILE = {
 
 HIDDEN_TEST_PRIVATE_RESULT = {
     "totalScore": 70,
+    "maxScore": 100,
+    "rubric": {},
     "agents": [
         {
             "id": "testing",
             "name": "Testing",
+            "summary": "Hidden formal test",
+            "score": 0,
+            "maxScore": 100,
+            "findings": [],
             "testResults": [
                 {
+                    "id": "hidden-case-id",
                     "name": "hidden1",
                     "visibility": "hidden",
-                    "input": "secret input value",
-                    "expected": "secret expected value",
-                    "actual": "wrong output",
+                    "stdin": "secret input value",
+                    "expected_stdout": "secret expected value",
+                    "actual_stdout": "wrong output",
+                    "actual_stderr": "secret stderr",
                     "passed": False,
+                    "status": "fail",
+                    "source": "auto_generated",
+                    "files": [{"name": "secret.csv", "content": "secret fixture"}],
+                    "oracle_validation": {
+                        "status": "verified",
+                        "provider": "ollama",
+                        "model": "llama-private",
+                        "schema_version": "v1",
+                        "verified_at": "2026-07-11T00:00:00Z",
+                    },
                 }
             ],
         }
     ],
+    "fileName": "main.py",
+    "executionTimeMs": 100,
+    "memoryUsageMb": 1.0,
+    "peakMemoryMb": 1.0,
+    "analysisEngine": "agentgrade-v1",
+    "summary": "Hidden test report",
+    "strengths": [],
+    "weaknesses": [],
+    "recommendations": [],
+    "taskAlignment": {},
+    "reportStatus": "ready",
+    "testSource": "auto_generated",
+    "testEvidenceStatus": "available",
+    "formalPassed": 0,
+    "formalTotal": 1,
+    "testSetId": "generated-set-private",
+    "testSetHash": "cache-key-private",
+    "cacheVersion": 4,
 }
 
 
@@ -138,6 +175,9 @@ class AnalysisJobAuthorizationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response["result"], stored_job["student_result"])
         hidden_case = response["result"]["agents"][0]["testResults"][0]
         self.assertNotIn("input", hidden_case)
+        self.assertEqual(response["result"]["testSource"], "auto_generated")
+        self.assertNotIn("testSetId", response["result"])
+        self.assertNotIn("llama-private", json.dumps(response["result"]))
 
     async def test_cross_student_read_returns_404(self):
         owner = AnalysisJobOwner(
@@ -179,7 +219,8 @@ class AnalysisJobAuthorizationTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(response["result"], stored_job["private_result"])
         hidden_case = response["result"]["agents"][0]["testResults"][0]
-        self.assertEqual(hidden_case["input"], "secret input value")
+        self.assertEqual(hidden_case["stdin"], "secret input value")
+        self.assertEqual(response["result"]["testSetId"], "generated-set-private")
 
     async def test_other_teacher_reads_404(self):
         owner = AnalysisJobOwner(
@@ -276,8 +317,11 @@ class AnalysisJobAuthorizationTests(unittest.IsolatedAsyncioTestCase):
         student_hidden = student_response["result"]["agents"][0]["testResults"][0]
         teacher_hidden = teacher_response["result"]["agents"][0]["testResults"][0]
         self.assertNotIn("input", student_hidden)
-        self.assertEqual(teacher_hidden["input"], "secret input value")
+        self.assertNotIn("stdin", student_hidden)
+        self.assertEqual(teacher_hidden["stdin"], "secret input value")
         self.assertEqual(student_response["report_status"], "preparing")
+        self.assertEqual(student_response["result"]["formalTotal"], 1)
+        self.assertNotIn("testSetHash", student_response["result"])
 
 
 if __name__ == "__main__":

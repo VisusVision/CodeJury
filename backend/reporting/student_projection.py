@@ -26,6 +26,19 @@ STUDENT_TOP_LEVEL_KEYS = frozenset({
     "relevanceScoreWarning",
     "taskAlignment",
     "reportStatus",
+    "testSource",
+    "testEvidenceStatus",
+    "formalPassed",
+    "formalTotal",
+    "hiddenTestSummary",
+})
+
+PRIVATE_TOP_LEVEL_FRAGMENT_KEYS = frozenset({
+    "testSetId",
+    "testSetHash",
+    "cacheVersion",
+    "generationAttempts",
+    "formalScore",
 })
 
 AGENT_KEYS = frozenset({"id", "name", "summary", "score", "maxScore", "findings", "testResults"})
@@ -37,16 +50,27 @@ PUBLIC_TEST_KEYS = frozenset({
     "actual",
     "passed",
     "visibility",
+    "status",
+    "source",
     "matchPct",
     "diffDetail",
 })
 HIDDEN_TEST_KEYS = frozenset({"name", "visibility", "status", "passed"})
 
-SAFE_HIDDEN_METADATA_KEYS = frozenset({"visibility", "status", "passed"})
-SAFE_HIDDEN_STATUS_VALUES = frozenset({"passed", "failed", "error"})
+SAFE_HIDDEN_METADATA_KEYS = frozenset({"visibility", "status", "passed", "source"})
+SAFE_HIDDEN_STATUS_VALUES = frozenset({"passed", "failed", "error", "pass", "fail"})
 
 GENERIC_HIDDEN_FAILURE_MESSAGE = "Hidden test basarisiz."
 GENERIC_REDACTED_TEXT = "İçerik gizli test verisi barındırdığı için kaldırıldı."
+
+STUDENT_SAFE_TEST_SOURCE_VALUES = frozenset({
+    "faculty",
+    "auto_generated",
+    "none",
+    "manual",
+    "ai_approved",
+})
+STUDENT_SAFE_TEST_EVIDENCE_STATUS_VALUES = frozenset({"available", "unavailable"})
 
 
 @dataclass(frozen=True)
@@ -83,8 +107,8 @@ def project_student_result(private_result: dict[str, Any]) -> dict[str, Any]:
 
     projected: dict[str, Any] = {}
     for key in STUDENT_TOP_LEVEL_KEYS:
-        if key == "agents":
-            if projected_agents:
+        if key in {"agents", "hiddenTestSummary"}:
+            if key == "agents" and projected_agents:
                 projected["agents"] = projected_agents
             continue
         if key not in private_result:
@@ -94,7 +118,11 @@ def project_student_result(private_result: dict[str, Any]) -> dict[str, Any]:
             continue
         projected[key] = _sanitize_top_level_value(key, value, hidden_private_fragments)
     redacted = _deep_redact(projected, hidden_private_fragments)
-    return _restore_synthetic_hidden_test_fields(redacted, projected_agents)
+    restored = _restore_synthetic_hidden_test_fields(redacted, projected_agents)
+    hidden_summary = _compute_hidden_test_summary(restored.get("agents"))
+    if hidden_summary is not None:
+        restored["hiddenTestSummary"] = hidden_summary
+    return restored
 
 
 def _sanitize_text(value: str, hidden_fragments: HiddenFragments) -> str:
@@ -163,6 +191,14 @@ def _sanitize_top_level_value(
         return _deep_sanitize_list(value, hidden_fragments)
     if key in ("strengths", "weaknesses", "recommendations"):
         return _sanitize_string_list(value, hidden_fragments)
+    if key == "testSource" and isinstance(value, str) and value in STUDENT_SAFE_TEST_SOURCE_VALUES:
+        return value
+    if (
+        key == "testEvidenceStatus"
+        and isinstance(value, str)
+        and value in STUDENT_SAFE_TEST_EVIDENCE_STATUS_VALUES
+    ):
+        return value
     if key in ("rubric", "taskAlignment"):
         return _deep_redact(value, hidden_fragments)
     return value
@@ -194,12 +230,58 @@ def _collect_hidden_private_fragments(private_result: dict[str, Any]) -> HiddenF
                     numeric_fragments,
                     has_nan,
                 ) or has_nan
+    has_nan = _collect_top_level_private_provenance(
+        private_result,
+        string_fragments,
+        token_string_fragments,
+        numeric_fragments,
+        has_nan,
+    )
     return HiddenFragments(
         strings=string_fragments,
         token_strings=token_string_fragments,
         numbers=numeric_fragments,
         has_nan=has_nan,
     )
+
+
+def _collect_top_level_private_provenance(
+    private_result: dict[str, Any],
+    string_out: list[str],
+    token_string_out: list[str],
+    numeric_out: list[Decimal],
+    has_nan: bool,
+) -> bool:
+    """Collect redactable fragments from private top-level provenance fields."""
+    for key in PRIVATE_TOP_LEVEL_FRAGMENT_KEYS:
+        if key not in private_result:
+            continue
+        value = private_result[key]
+        if key == "cacheVersion" and _is_numeric_leaf(value):
+            if isinstance(value, float) and value != value:
+                has_nan = True
+            else:
+                decimal_value = _numeric_leaf_to_decimal(value)
+                if decimal_value is not None:
+                    numeric_out.append(decimal_value)
+            continue
+        has_nan = _collect_hidden_leaves(
+            value,
+            string_out,
+            token_string_out,
+            numeric_out,
+            has_nan,
+        ) or has_nan
+    for prov_key in ("oracleValidation", "oracle_validation"):
+        if prov_key in private_result:
+            has_nan = _collect_hidden_leaves(
+                private_result[prov_key],
+                string_out,
+                token_string_out,
+                numeric_out,
+                has_nan,
+            ) or has_nan
+    return has_nan
 
 
 def _is_safe_hidden_metadata_value(field_key: str, field_value: Any) -> bool:
@@ -217,6 +299,12 @@ def _is_safe_hidden_metadata_value(field_key: str, field_value: Any) -> bool:
             return True
         if isinstance(field_value, str):
             return field_value.strip().lower() in {"true", "false"}
+    if field_key == "source":
+        return isinstance(field_value, str) and field_value in {
+            "manual",
+            "ai_approved",
+            "auto_generated",
+        }
     return False
 
 
@@ -471,7 +559,48 @@ def _project_test_results(test_results: Any) -> list[dict[str, Any]]:
 
 
 def _project_public_test_case(case: dict[str, Any]) -> dict[str, Any]:
-    return {key: case[key] for key in PUBLIC_TEST_KEYS if key in case}
+    projected: dict[str, Any] = {}
+    if "name" in case:
+        projected["name"] = case["name"]
+    input_value = case.get("input", case.get("stdin"))
+    if input_value is not None:
+        projected["input"] = input_value
+    expected_value = case.get("expected", case.get("expected_stdout"))
+    if expected_value is not None:
+        projected["expected"] = expected_value
+    actual_value = case.get("actual", case.get("actual_stdout"))
+    if actual_value is not None:
+        projected["actual"] = actual_value
+    for key in ("passed", "visibility", "status", "source", "matchPct", "diffDetail"):
+        if key in case:
+            projected[key] = case[key]
+    if "status" not in projected:
+        projected["status"] = "pass" if bool(case.get("passed")) else "fail"
+    return projected
+
+
+def _compute_hidden_test_summary(agents: Any) -> dict[str, int] | None:
+    if not isinstance(agents, list):
+        return None
+    hidden_cases: list[dict[str, Any]] = []
+    for agent in agents:
+        if not isinstance(agent, dict) or agent.get("id") != "testing":
+            continue
+        for case in agent.get("testResults", []) or []:
+            if isinstance(case, dict) and case.get("visibility") == "hidden":
+                hidden_cases.append(case)
+    if not hidden_cases:
+        return None
+    summary = {"passed": 0, "failed": 0, "error": 0, "total": len(hidden_cases)}
+    for case in hidden_cases:
+        status = str(case.get("status") or "").strip().lower()
+        if status in {"passed", "pass"}:
+            summary["passed"] += 1
+        elif status in {"failed", "fail"}:
+            summary["failed"] += 1
+        elif status == "error":
+            summary["error"] += 1
+    return summary
 
 
 def _project_hidden_test_case(case: dict[str, Any], hidden_index: int) -> dict[str, Any]:
@@ -485,7 +614,14 @@ def _project_hidden_test_case(case: dict[str, Any], hidden_index: int) -> dict[s
 
 
 def _hidden_test_status(case: dict[str, Any], passed: bool) -> str:
+    explicit_status = str(case.get("status") or "").strip().lower()
+    if explicit_status == "error":
+        return "error"
     if passed:
+        return "passed"
+    if explicit_status in {"fail", "failed"}:
+        return "failed"
+    if explicit_status in {"pass", "passed"}:
         return "passed"
     if _hidden_case_has_error_signal(case):
         return "error"
@@ -542,7 +678,10 @@ def _restore_synthetic_hidden_test_fields(
                 continue
             if original_case.get("visibility") != "hidden":
                 continue
-            for field in ("name", "visibility", "status", "passed"):
-                if field in original_case:
-                    redacted_case[field] = original_case[field]
+            redacted_case.clear()
+            redacted_case.update({
+                field: original_case[field]
+                for field in ("name", "visibility", "status", "passed")
+                if field in original_case
+            })
     return redacted
