@@ -59,7 +59,8 @@ def _source_has_pop_zero(source: str) -> bool:
 
 def _membership_lookup_line(source: str) -> int | None:
     for index, line in enumerate(source.splitlines(), start=1):
-        if re.search(r"\bin\s+[A-Za-z_]\w*\b", line):
+        code = line.split("#", 1)[0]
+        if re.search(r"\bin\s+[A-Za-z_]\w*\b", code):
             return index
     return None
 
