@@ -132,6 +132,11 @@ def sanitize_diagnostic(text: str) -> str:
     return "\n".join(sanitized_lines)
 
 
+def _console_safe(text: str) -> str:
+    encoding = getattr(sys.stdout, "encoding", None) or "utf-8"
+    return text.encode(encoding, errors="replace").decode(encoding, errors="replace")
+
+
 def _combined_output(result: subprocess.CompletedProcess[str]) -> str:
     parts = [result.stdout or "", result.stderr or ""]
     return "\n".join(part for part in parts if part)
@@ -147,7 +152,7 @@ def _print_failure(spec: ReleaseCommand, *, exit_code: int, output: str, timed_o
     tail = "\n".join(diagnostic.splitlines()[-_DIAGNOSTIC_LINE_LIMIT:])
     if tail.strip():
         print("diagnostic:", flush=True)
-        print(tail, flush=True)
+        print(_console_safe(tail), flush=True)
 
 
 def _run_command(spec: ReleaseCommand) -> tuple[int, str, bool]:

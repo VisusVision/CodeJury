@@ -308,6 +308,15 @@ def test_failure_diagnostic_capped_at_twenty_lines(release_module, capsys) -> No
     assert "line-9" not in captured.out
 
 
+def test_console_safe_replaces_unencodable_characters(release_module) -> None:
+    text = "pool fail \ufffd Turkish: baslatılamadi"
+    safe = release_module._console_safe(text)
+    assert isinstance(safe, str)
+    # Round-trip through the active stdout encoding must succeed.
+    encoding = getattr(sys.stdout, "encoding", None) or "utf-8"
+    safe.encode(encoding)
+
+
 def test_service_state_mismatch_fails_release(release_module, capsys) -> None:
     evidence = Path("evidence.json")
     run_mock = MagicMock(return_value=MagicMock(returncode=0, stdout="", stderr=""))
