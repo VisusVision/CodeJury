@@ -156,11 +156,21 @@ class EvidenceAnalyzeTests(unittest.IsolatedAsyncioTestCase):
 class MasterEvaluatorGuardTests(unittest.TestCase):
     def test_alignment_score_cap_thresholds(self):
         cap = MasterEvaluatorAgent._alignment_score_cap
-        self.assertEqual(cap(0.15), 28.0)
-        self.assertEqual(cap(0.25), 35.0)
-        self.assertEqual(cap(0.40), 42.0)
-        self.assertEqual(cap(0.60), 65.0)
-        self.assertEqual(cap(0.85), 100.0)
+        cases = (
+            (0.0, 18.0),
+            (0.179999, 18.0),
+            (0.18, 28.0),
+            (0.299999, 28.0),
+            (0.30, 42.0),
+            (0.449999, 42.0),
+            (0.45, 65.0),
+            (0.699999, 65.0),
+            (0.70, 100.0),
+            (1.0, 100.0),
+        )
+        for factor, expected in cases:
+            with self.subTest(factor=factor):
+                self.assertEqual(cap(factor), expected)
 
     def test_off_topic_alignment_caps_final_score(self):
         result = {

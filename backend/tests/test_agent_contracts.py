@@ -1844,8 +1844,9 @@ def fetch_status(url):
         )
 
         self.assertTrue(result["safe"])
-        self.assertLessEqual(result["risk_level"], "low")
-        self.assertGreaterEqual(result["score"], 90)
+        self.assertIn(result["risk_level"], {"safe", "low"})
+        self.assertEqual(result["critical_count"], 0)
+        self.assertEqual(result["high_count"], 0)
 
 
 class QualityGuidelineSeniorityContractTests(unittest.TestCase):
