@@ -1,11 +1,16 @@
 from __future__ import annotations
 
+import math
 import re
+import uuid
 from collections import Counter
 from collections.abc import Mapping, Sequence
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+
+from backend.algorithm_analysis.contracts import AlgorithmEvidence, GapResult
+from backend.algorithm_analysis.scoring import apply_algorithm_score_guardrail
 
 
 REQUIRED_CHECKS = (
@@ -40,6 +45,17 @@ REQUIRED_AGENT_IDS = frozenset({
     "master",
 })
 
+REQUIRED_PRESENTATION_AGENT_IDS = frozenset({
+    "testing",
+    "quality",
+    "algorithm",
+    "seniority",
+    "guideline",
+    "security",
+    "ai_authorship",
+    "evidence",
+})
+
 STUDENT_FORBIDDEN_KEYS = frozenset({
     "stdin",
     "input",
@@ -64,6 +80,14 @@ STUDENT_FORBIDDEN_KEYS = frozenset({
     "verificationReason",
 })
 
+_PUBLIC_TEST_IO_KEYS = frozenset({"input", "expected", "actual"})
+_GAP_STATUSES = frozenset({
+    "better_than_expected",
+    "matches_expected",
+    "worse_than_expected",
+    "unknown",
+})
+
 _DIAGNOSTIC_GUARDRAIL_FIELDS = frozenset({
     "score",
     "llm_status",
@@ -76,13 +100,48 @@ _ALGORITHM_AUTHORITY_FIELDS = (
     "complexityGap",
     "gapSteps",
 )
-_SAFE_CONSOLE_VALUE = re.compile(r"^[A-Za-z0-9_.:/+\-]*$")
+
+_STRICT_MODEL_CONFIG = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+_SAFE_PROVIDER_PATTERN = re.compile(r"^[a-z][a-z0-9\-]{0,31}$")
+_SAFE_MODEL_PATTERN = re.compile(r"^[a-z0-9][a-z0-9/._\-]{0,63}$")
+_UNSAFE_STRING_MARKERS = (
+    "password",
+    "token",
+    "secret",
+    "cookie",
+    "authorization",
+    "bearer",
+    "csrf",
+    "prompt",
+    "browser",
+    "document",
+    "payload",
+    "private",
+    "raw",
+    "dom",
+    "source",
+)
+
+
+def _validate_phase4a_run_id(value: str) -> str:
+    prefix = "phase4a-"
+    if not value.startswith(prefix) or value != f"{prefix}{value[len(prefix):]}":
+        raise ValueError("run_id must use phase4a- prefix without extra segments")
+    uuid_part = value[len(prefix):]
+    try:
+        parsed = uuid.UUID(uuid_part, version=4)
+    except ValueError as exc:
+        raise ValueError("run_id must contain a valid UUIDv4") from exc
+    if str(parsed) != uuid_part:
+        raise ValueError("run_id UUID must be lowercase")
+    return value
 
 
 class Phase4ABrowserEvidence(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True)
+    model_config = _STRICT_MODEL_CONFIG
 
-    run_id: str = Field(pattern=r"^phase4a-[0-9a-f-]{36}$")
+    run_id: str
     assignment_id: str
     job_ids: tuple[str, str, str]
     teacher_journey_passed: bool
@@ -90,9 +149,14 @@ class Phase4ABrowserEvidence(BaseModel):
     unauthorized_checks_passed: bool
     screenshots: tuple[str, ...] = ()
 
+    @field_validator("run_id")
+    @classmethod
+    def validate_run_id(cls, value: str) -> str:
+        return _validate_phase4a_run_id(value)
+
 
 class Phase4ACheck(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True)
+    model_config = _STRICT_MODEL_CONFIG
 
     name: str
     safe_value: bool | int | str
@@ -101,12 +165,17 @@ class Phase4ACheck(BaseModel):
 
 
 class Phase4AReleaseLedger(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True)
+    model_config = _STRICT_MODEL_CONFIG
 
     run_id: str
     provider: str
     model: str
     checks: tuple[Phase4ACheck, ...]
+
+    @field_validator("run_id")
+    @classmethod
+    def validate_run_id(cls, value: str) -> str:
+        return _validate_phase4a_run_id(value)
 
     @model_validator(mode="after")
     def require_each_release_check_once(self) -> "Phase4AReleaseLedger":
@@ -118,7 +187,7 @@ class Phase4AReleaseLedger(BaseModel):
 
 
 class Phase4AAnalysisAudit(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True)
+    model_config = _STRICT_MODEL_CONFIG
 
     agent_contract_failed: bool
     formal_authority_overridden: bool
@@ -147,6 +216,17 @@ def _items_by_id(value: Any) -> tuple[dict[str, Mapping[str, Any]], bool]:
     return items, invalid
 
 
+def _presentation_contract(
+    private_agents: Mapping[str, Mapping[str, Any]],
+    student_agents: Mapping[str, Mapping[str, Any]],
+) -> bool:
+    if set(private_agents) != REQUIRED_PRESENTATION_AGENT_IDS:
+        return True
+    if set(student_agents) != REQUIRED_PRESENTATION_AGENT_IDS:
+        return True
+    return False
+
+
 def _diagnostic_contract(private_result: Mapping[str, Any]) -> tuple[dict[str, Mapping[str, Any]], bool]:
     diagnostics = private_result.get("agentDiagnostics")
     if not isinstance(diagnostics, Mapping):
@@ -162,6 +242,19 @@ def _diagnostic_contract(private_result: Mapping[str, Any]) -> tuple[dict[str, M
         if not isinstance(agent.get("guardrail_flags"), (list, tuple)):
             invalid = True
     return agents, invalid
+
+
+def _valid_audited_score(score: Any) -> bool:
+    return (
+        isinstance(score, int)
+        and not isinstance(score, bool)
+        and 0 <= score <= 100
+        and math.isfinite(score)
+    )
+
+
+def _valid_no_formal_testing_score(score: Any) -> bool:
+    return _valid_audited_score(score) and score <= 40
 
 
 def _valid_formal_totals(result: Mapping[str, Any]) -> tuple[int, int] | None:
@@ -180,18 +273,93 @@ def _valid_formal_totals(result: Mapping[str, Any]) -> tuple[int, int] | None:
     return passed, total
 
 
-def _score_matches(*values: Any) -> bool:
-    if not values:
-        return False
-    first = values[0]
-    if not isinstance(first, (int, float)) or isinstance(first, bool):
-        return False
-    return all(
-        isinstance(value, (int, float))
-        and not isinstance(value, bool)
-        and value == first
-        for value in values[1:]
+def _gap_from_algorithm_result(
+    algorithm_result: Mapping[str, Any],
+    *,
+    guardrail_flags: Sequence[Any],
+) -> GapResult | None:
+    status = algorithm_result.get("complexityGap")
+    if status not in _GAP_STATUSES:
+        return None
+    steps = algorithm_result.get("gapSteps")
+    if steps is not None and (not isinstance(steps, int) or isinstance(steps, bool)):
+        return None
+    approach_mismatch = "algorithm_approach_mismatch" in guardrail_flags
+    explanation = algorithm_result.get("gapExplanation")
+    return GapResult(
+        status=status,  # type: ignore[arg-type]
+        steps=steps if isinstance(steps, int) else None,
+        approach_mismatch=approach_mismatch,
+        explanation=str(explanation or ""),
     )
+
+
+def _evidence_from_algorithm_result(
+    algorithm_result: Mapping[str, Any],
+) -> tuple[AlgorithmEvidence, ...]:
+    raw = algorithm_result.get("evidence")
+    if not isinstance(raw, (list, tuple)):
+        return ()
+    parsed: list[AlgorithmEvidence] = []
+    for item in raw:
+        if not isinstance(item, Mapping):
+            continue
+        kind = item.get("kind")
+        line = item.get("line")
+        detail = item.get("detail")
+        confidence = item.get("confidence")
+        if not isinstance(kind, str) or not isinstance(line, int) or isinstance(line, bool):
+            continue
+        if not isinstance(detail, str) or not isinstance(confidence, (int, float)) or isinstance(confidence, bool):
+            continue
+        try:
+            parsed.append(
+                AlgorithmEvidence(
+                    kind=kind,
+                    line=line,
+                    detail=detail,
+                    confidence=float(confidence),
+                )
+            )
+        except ValueError:
+            continue
+    return tuple(parsed)
+
+
+def _expected_algorithm_score(
+    private_algorithm: Mapping[str, Any],
+    diagnostic: Mapping[str, Any],
+) -> int | None:
+    algorithm_result = private_algorithm.get("algorithmResult")
+    if not isinstance(algorithm_result, Mapping):
+        return None
+    guardrail_flags = tuple(
+        flag
+        for flag in (diagnostic.get("guardrail_flags") or private_algorithm.get("guardrail_flags") or ())
+        if isinstance(flag, str)
+    )
+    gap = _gap_from_algorithm_result(algorithm_result, guardrail_flags=guardrail_flags)
+    if gap is None:
+        return None
+
+    base_score = algorithm_result.get("programmatic_base_score")
+    if not _valid_audited_score(base_score):
+        base_score = private_algorithm.get("score")
+    if not _valid_audited_score(base_score):
+        return None
+
+    llm_score = private_algorithm.get("score")
+    if not _valid_audited_score(llm_score):
+        llm_score = base_score
+
+    evidence = _evidence_from_algorithm_result(algorithm_result)
+    decision = apply_algorithm_score_guardrail(
+        int(base_score),
+        int(llm_score),
+        gap,
+        evidence,
+    )
+    return decision.score
 
 
 def _formal_authority_was_overridden(
@@ -210,18 +378,23 @@ def _formal_authority_was_overridden(
     testing_diagnostic = diagnostics.get("testing")
     if private_testing is None or student_testing is None or testing_diagnostic is None:
         return True
-    if not _score_matches(
+
+    scores = (
         private_testing.get("score"),
         student_testing.get("score"),
         testing_diagnostic.get("score"),
-    ):
+    )
+    if not all(_valid_audited_score(score) for score in scores):
         return True
+    if len({score for score in scores}) != 1:
+        return True
+
     passed, total = private_totals
+    score = scores[0]
     if total > 0:
         formal_score = round(100 * passed / total)
-        return private_testing.get("score") != formal_score
-    score = private_testing.get("score")
-    return not isinstance(score, (int, float)) or isinstance(score, bool) or score > 40
+        return score != formal_score
+    return not _valid_no_formal_testing_score(score)
 
 
 def _algorithm_guardrail_was_overridden(
@@ -238,12 +411,19 @@ def _algorithm_guardrail_was_overridden(
     student_result = student_algorithm.get("algorithmResult")
     if not isinstance(private_result, Mapping) or not isinstance(student_result, Mapping):
         return True
-    if not _score_matches(
+
+    scores = (
         private_algorithm.get("score"),
         student_algorithm.get("score"),
         diagnostic.get("score"),
-    ):
+    )
+    if not all(_valid_audited_score(score) for score in scores):
         return True
+
+    expected_score = _expected_algorithm_score(private_algorithm, diagnostic)
+    if expected_score is None or any(score != expected_score for score in scores):
+        return True
+
     return any(
         field not in private_result
         or field not in student_result
@@ -252,17 +432,56 @@ def _algorithm_guardrail_was_overridden(
     )
 
 
-def _contains_forbidden_key(value: Any) -> bool:
+def _is_public_test_case(case: Mapping[str, Any]) -> bool:
+    return str(case.get("visibility") or "").strip().lower() == "public"
+
+
+def _contains_forbidden_key(value: Any, *, allow_public_test_io: bool = False) -> bool:
     if isinstance(value, Mapping):
         for key, nested in value.items():
             if isinstance(key, str) and key in STUDENT_FORBIDDEN_KEYS:
+                if allow_public_test_io and key in _PUBLIC_TEST_IO_KEYS:
+                    continue
                 return True
-            if _contains_forbidden_key(nested):
+            if _contains_forbidden_key(nested, allow_public_test_io=allow_public_test_io):
                 return True
         return False
     if _is_sequence(value):
-        return any(_contains_forbidden_key(item) for item in value)
+        return any(_contains_forbidden_key(item, allow_public_test_io=allow_public_test_io) for item in value)
     return False
+
+
+def _student_private_data_leak(student_result: Mapping[str, Any]) -> bool:
+    agents = student_result.get("agents")
+    if _is_sequence(agents):
+        for agent in agents:
+            if not isinstance(agent, Mapping):
+                if _contains_forbidden_key(agent):
+                    return True
+                continue
+            agent_id = agent.get("id")
+            if agent_id == "testing":
+                test_results = agent.get("testResults")
+                if _is_sequence(test_results):
+                    for case in test_results:
+                        if not isinstance(case, Mapping):
+                            if _contains_forbidden_key(case):
+                                return True
+                            continue
+                        allow_public_io = _is_public_test_case(case)
+                        if _contains_forbidden_key(case, allow_public_test_io=allow_public_io):
+                            return True
+                agent_without_results = {
+                    key: value for key, value in agent.items() if key != "testResults"
+                }
+                if _contains_forbidden_key(agent_without_results):
+                    return True
+                continue
+            if _contains_forbidden_key(agent):
+                return True
+        remainder = {key: value for key, value in student_result.items() if key != "agents"}
+        return _contains_forbidden_key(remainder)
+    return _contains_forbidden_key(student_result)
 
 
 def _high_entropy_sentinel(value: Any) -> str | None:
@@ -288,6 +507,25 @@ def _contains_sentinel(value: Any, sentinels: tuple[str, ...]) -> bool:
     return False
 
 
+def _string_is_unsafe(value: str) -> bool:
+    if not value or len(value) > 160:
+        return True
+    if any(marker in value.lower() for marker in _UNSAFE_STRING_MARKERS):
+        return True
+    if any(char in value for char in ("\n", "\r", "\t", "=", ";", "|", "<", ">", "{", "}", "[", "]")):
+        return True
+    if _high_entropy_sentinel(value) is not None:
+        return True
+    return False
+
+
+def _safe_provider_or_model(value: str, *, kind: str) -> bool:
+    if _string_is_unsafe(value):
+        return False
+    pattern = _SAFE_PROVIDER_PATTERN if kind == "provider" else _SAFE_MODEL_PATTERN
+    return pattern.fullmatch(value) is not None
+
+
 def audit_analysis_pair(
     private_result: Mapping[str, Any],
     student_result: Mapping[str, Any],
@@ -306,6 +544,7 @@ def audit_analysis_pair(
         diagnostic_invalid,
         private_agents_invalid,
         student_agents_invalid,
+        _presentation_contract(private_agents, student_agents),
         private_algorithm is None,
         student_algorithm is None,
         private_algorithm is not None
@@ -321,7 +560,7 @@ def audit_analysis_pair(
         for raw in private_sentinels
         if (sentinel := _high_entropy_sentinel(raw)) is not None
     )
-    student_private_data_leak = _contains_forbidden_key(student_result) or (
+    student_private_data_leak = _student_private_data_leak(student_result) or (
         bool(sentinels) and _contains_sentinel(student_result, sentinels)
     )
 
@@ -348,23 +587,30 @@ def _console_value(value: bool | int | str) -> str:
         return str(value).lower()
     if isinstance(value, int):
         return str(value)
-    if len(value) <= 160 and _SAFE_CONSOLE_VALUE.fullmatch(value):
-        return value
     return "REDACTED"
 
 
 def safe_ledger_lines(ledger: Phase4AReleaseLedger) -> tuple[str, ...]:
+    provider = ledger.provider if _safe_provider_or_model(ledger.provider, kind="provider") else "REDACTED"
+    model = ledger.model if _safe_provider_or_model(ledger.model, kind="model") else "REDACTED"
     lines = [
-        f"PROVIDER={_console_value(ledger.provider)}",
-        f"MODEL={_console_value(ledger.model)}",
+        f"PROVIDER={provider}",
+        f"MODEL={model}",
     ]
-    lines.extend(f"{check.name}={_console_value(check.safe_value)}" for check in ledger.checks)
+    for check in ledger.checks:
+        safe_value = check.safe_value
+        if isinstance(safe_value, str):
+            rendered = "REDACTED"
+        else:
+            rendered = _console_value(safe_value)
+        lines.append(f"{check.name}={rendered}")
     return tuple(lines)
 
 
 __all__ = [
     "REQUIRED_AGENT_IDS",
     "REQUIRED_CHECKS",
+    "REQUIRED_PRESENTATION_AGENT_IDS",
     "STUDENT_FORBIDDEN_KEYS",
     "Phase4AAnalysisAudit",
     "Phase4ABrowserEvidence",
