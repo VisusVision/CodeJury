@@ -1574,7 +1574,8 @@ async def _generate_resource_recommendations(
         schema_hint=_RESOURCE_RECOMMENDATION_SCHEMA,
         temperature=0.15,
         num_predict=2048,
-        model=settings.ollama_coder_model,
+        model=settings.ollama_general_model,
+        role="general",
         use_cache=False,
     )
     cards = payload.get("resources", []) if isinstance(payload, dict) else []
@@ -7383,6 +7384,7 @@ async def suggest_rubric(req: RubricSuggestionRequest, principal: AuthPrincipal 
         temperature=0.32,
         num_predict=_rubric_num_predict_for_count(criterion_count),
         model=_llm_cfg.ollama_general_model,
+        role="general",
     )
     if not result:
         raise HTTPException(
@@ -7455,6 +7457,7 @@ async def assignment_assistant_example(
             temperature=0.25,
             num_predict=1400,
             model=_llm_cfg.ollama_general_model,
+            role="general",
             use_cache=True,
         )
         if isinstance(result, dict) and result.get("example"):
@@ -7568,7 +7571,7 @@ async def assignment_assistant_suggestions(
             temperature=0.28 if direct_suggestion else 0.38,
             num_predict=4096,
             model=_llm_cfg.ollama_general_model,
-            provider_override="ollama",
+            role="general",
             use_cache=not bool(req.prefer_fresh),
         )
     except Exception as exc:
@@ -7624,7 +7627,7 @@ async def assignment_assistant_suggestions(
                 temperature=0.32,
                 num_predict=4096,
                 model=_llm_cfg.ollama_general_model,
-                provider_override="ollama",
+                role="general",
                 use_cache=False,
             )
             retry_list = _suggestions_list_from_llm(retry_result) if isinstance(retry_result, dict) else None

@@ -16,6 +16,211 @@ class _DummyAgent(BaseAgent):
 
 
 class OllamaModelRoutingTests(unittest.IsolatedAsyncioTestCase):
+    async def test_equal_logical_models_route_by_explicit_role(self):
+        with (
+            patch.object(settings, "ollama_general_model", "shared-local"),
+            patch.object(settings, "ollama_coder_model", "shared-local"),
+            patch.object(settings, "llm_general_provider", "nvidia_nim"),
+            patch.object(settings, "llm_coder_provider", "ollama"),
+            patch.object(settings, "nvidia_nim_api_key", "secret"),
+            patch(
+                "backend.llm.ollama_client._do_nvidia_nim_request",
+                new=AsyncMock(return_value={"general": True}),
+            ) as nim,
+            patch(
+                "backend.llm.ollama_client._do_request",
+                new=AsyncMock(return_value={"coder": True}),
+            ) as ollama,
+        ):
+            general = await chat_json(
+                system_prompt="Return JSON.",
+                user_prompt="{}",
+                model="shared-local",
+                role="general",
+                use_cache=False,
+            )
+            coder = await chat_json(
+                system_prompt="Return JSON.",
+                user_prompt="{}",
+                model="shared-local",
+                role="coder",
+                use_cache=False,
+            )
+
+        self.assertEqual(general, {"general": True})
+        self.assertEqual(coder, {"coder": True})
+        nim.assert_awaited_once()
+        ollama.assert_awaited_once()
+
+    async def test_equal_logical_models_chat_text_routes_by_explicit_role(self):
+        with (
+            patch.object(settings, "ollama_general_model", "shared-local"),
+            patch.object(settings, "ollama_coder_model", "shared-local"),
+            patch.object(settings, "llm_general_provider", "nvidia_nim"),
+            patch.object(settings, "llm_coder_provider", "ollama"),
+            patch.object(settings, "nvidia_nim_api_key", "secret"),
+            patch(
+                "backend.llm.ollama_client._do_nvidia_nim_text_request",
+                new=AsyncMock(return_value="general"),
+            ) as nim,
+            patch(
+                "backend.llm.ollama_client._do_ollama_text_request",
+                new=AsyncMock(return_value="coder"),
+            ) as ollama,
+        ):
+            general = await chat_text(
+                [{"role": "user", "content": "hello"}],
+                model="shared-local",
+                role="general",
+            )
+            coder = await chat_text(
+                [{"role": "user", "content": "hello"}],
+                model="shared-local",
+                role="coder",
+            )
+
+        self.assertEqual(general, "general")
+        self.assertEqual(coder, "coder")
+        nim.assert_awaited_once()
+        ollama.assert_awaited_once()
+
+    async def test_equal_logical_models_coder_role_selects_nim_coder_model(self):
+        with (
+            patch.object(settings, "ollama_general_model", "shared-local"),
+            patch.object(settings, "ollama_coder_model", "shared-local"),
+            patch.object(settings, "llm_general_provider", "ollama"),
+            patch.object(settings, "llm_coder_provider", "nvidia_nim"),
+            patch.object(settings, "nvidia_nim_api_key", "secret"),
+            patch.object(settings, "nvidia_nim_general_model", "nim-general"),
+            patch.object(settings, "nvidia_nim_coder_model", "nim-coder"),
+            patch(
+                "backend.llm.ollama_client._do_nvidia_nim_request",
+                new=AsyncMock(return_value={"coder": True}),
+            ) as nim,
+        ):
+            result = await chat_json(
+                system_prompt="Return JSON.",
+                user_prompt="{}",
+                model="shared-local",
+                role="coder",
+                use_cache=False,
+            )
+
+        self.assertEqual(result, {"coder": True})
+        self.assertEqual(nim.await_args.args[0]["model"], "nim-coder")
+
+    async def test_equal_logical_models_general_role_enforces_nim_token_floor(self):
+        with (
+            patch.object(settings, "ollama_general_model", "shared-local"),
+            patch.object(settings, "ollama_coder_model", "shared-local"),
+            patch.object(settings, "llm_general_provider", "nvidia_nim"),
+            patch.object(settings, "llm_coder_provider", "ollama"),
+            patch.object(settings, "nvidia_nim_api_key", "secret"),
+            patch.object(settings, "nvidia_nim_num_predict", 8192),
+            patch(
+                "backend.llm.ollama_client._do_nvidia_nim_request",
+                new=AsyncMock(return_value={"general": True}),
+            ) as nim,
+        ):
+            await chat_json(
+                system_prompt="Return JSON.",
+                user_prompt="{}",
+                model="shared-local",
+                role="general",
+                num_predict=1440,
+                use_cache=False,
+            )
+
+        self.assertEqual(nim.await_args.args[0]["max_tokens"], 8192)
+
+    async def test_equal_logical_models_without_role_default_to_general(self):
+        with (
+            patch.object(settings, "ollama_general_model", "shared-local"),
+            patch.object(settings, "ollama_coder_model", "shared-local"),
+            patch.object(settings, "llm_general_provider", "nvidia_nim"),
+            patch.object(settings, "llm_coder_provider", "ollama"),
+            patch.object(settings, "nvidia_nim_api_key", "secret"),
+            patch(
+                "backend.llm.ollama_client._do_nvidia_nim_request",
+                new=AsyncMock(return_value={"general": True}),
+            ) as nim,
+            patch(
+                "backend.llm.ollama_client._do_request",
+                new=AsyncMock(return_value={"coder": True}),
+            ) as ollama,
+        ):
+            result = await chat_json(
+                system_prompt="Return JSON.",
+                user_prompt="{}",
+                model="shared-local",
+                use_cache=False,
+            )
+
+        self.assertEqual(result, {"general": True})
+        nim.assert_awaited_once()
+        ollama.assert_not_awaited()
+
+    async def test_distinct_logical_models_preserve_legacy_coder_inference(self):
+        with (
+            patch.object(settings, "ollama_general_model", "general-local"),
+            patch.object(settings, "ollama_coder_model", "coder-local"),
+            patch.object(settings, "llm_general_provider", "ollama"),
+            patch.object(settings, "llm_coder_provider", "nvidia_nim"),
+            patch.object(settings, "nvidia_nim_api_key", "secret"),
+            patch.object(settings, "nvidia_nim_coder_model", "nim-coder"),
+            patch(
+                "backend.llm.ollama_client._do_nvidia_nim_request",
+                new=AsyncMock(return_value={"coder": True}),
+            ) as nim,
+        ):
+            result = await chat_json(
+                system_prompt="Return JSON.",
+                user_prompt="{}",
+                model="coder-local",
+                use_cache=False,
+            )
+
+        self.assertEqual(result, {"coder": True})
+        self.assertEqual(nim.await_args.args[0]["model"], "nim-coder")
+
+    async def test_equal_logical_model_roles_do_not_share_cache_entries(self):
+        from backend.llm import ollama_client
+
+        ollama_client._cache.clear()
+        with (
+            patch.object(settings, "ollama_general_model", "shared-local"),
+            patch.object(settings, "ollama_coder_model", "shared-local"),
+            patch.object(settings, "llm_general_provider", "nvidia_nim"),
+            patch.object(settings, "llm_coder_provider", "ollama"),
+            patch.object(settings, "nvidia_nim_api_key", "secret"),
+            patch.object(settings, "nvidia_nim_general_model", "shared-upstream"),
+            patch(
+                "backend.llm.ollama_client._do_nvidia_nim_request",
+                new=AsyncMock(return_value={"general": True}),
+            ) as nim,
+            patch(
+                "backend.llm.ollama_client._do_request",
+                new=AsyncMock(return_value={"coder": True}),
+            ) as ollama,
+        ):
+            general = await chat_json(
+                system_prompt="Role-separated cache.",
+                user_prompt="same prompt",
+                model="shared-local",
+                role="general",
+            )
+            coder = await chat_json(
+                system_prompt="Role-separated cache.",
+                user_prompt="same prompt",
+                model="shared-local",
+                role="coder",
+            )
+
+        self.assertEqual(general, {"general": True})
+        self.assertEqual(coder, {"coder": True})
+        nim.assert_awaited_once()
+        ollama.assert_awaited_once()
+
     async def test_chat_json_sends_explicit_model_to_ollama_payload(self):
         with (
             patch.object(settings, "llm_provider", "ollama"),
@@ -30,6 +235,7 @@ class OllamaModelRoutingTests(unittest.IsolatedAsyncioTestCase):
                 system_prompt="Return JSON.",
                 user_prompt="{}",
                 model="qwen2.5-coder:7b",
+                role="coder",
                 use_cache=False,
             )
 
@@ -39,6 +245,7 @@ class OllamaModelRoutingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(meta["provider"], "ollama")
         self.assertEqual(meta["model"], "qwen2.5-coder:7b")
         self.assertEqual(meta["result_status"], "ok")
+        self.assertEqual(meta["role"], "coder")
         self.assertNotIn("user_prompt", meta)
 
     async def test_chat_json_uses_json_format_for_ollama_schema_hint(self):
@@ -57,6 +264,7 @@ class OllamaModelRoutingTests(unittest.IsolatedAsyncioTestCase):
                 user_prompt="{}",
                 schema_hint=schema_hint,
                 model="qwen2.5-coder:7b",
+                role="coder",
                 use_cache=False,
             )
 
@@ -81,6 +289,7 @@ class OllamaModelRoutingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["llm_status"], "ok")
         self.assertEqual(result["guardrail_flags"], [])
         self.assertEqual(chat.await_args.kwargs["model"], settings.ollama_coder_model)
+        self.assertEqual(chat.await_args.kwargs["role"], "coder")
 
     async def test_base_agent_marks_repaired_required_key_responses(self):
         agent = _DummyAgent()
@@ -134,6 +343,7 @@ class OllamaModelRoutingTests(unittest.IsolatedAsyncioTestCase):
             )
 
         self.assertEqual(chat.await_args.kwargs["model"], settings.ollama_general_model)
+        self.assertEqual(chat.await_args.kwargs["role"], "general")
 
     async def test_chat_json_routes_coder_model_to_nvidia_nim_payload(self):
         with (
@@ -152,6 +362,7 @@ class OllamaModelRoutingTests(unittest.IsolatedAsyncioTestCase):
                 system_prompt="Return JSON.",
                 user_prompt='{"code":"print(1)"}',
                 model=settings.ollama_coder_model,
+                role="coder",
                 use_cache=False,
             )
 
@@ -181,6 +392,7 @@ class OllamaModelRoutingTests(unittest.IsolatedAsyncioTestCase):
                 system_prompt="Return JSON.",
                 user_prompt="{}",
                 num_predict=128,
+                role="general",
                 use_cache=False,
             )
             self.assertEqual(request.await_args.args[0]["max_tokens"], 3072)
@@ -189,6 +401,7 @@ class OllamaModelRoutingTests(unittest.IsolatedAsyncioTestCase):
                 system_prompt="Return JSON.",
                 user_prompt="{}",
                 num_predict=6000,
+                role="general",
                 use_cache=False,
             )
             self.assertEqual(request.await_args.args[0]["max_tokens"], 6000)
@@ -208,6 +421,7 @@ class OllamaModelRoutingTests(unittest.IsolatedAsyncioTestCase):
             result = await chat_text(
                 [{"role": "user", "content": "Kisa cevap ver."}],
                 model=settings.ollama_general_model,
+                role="general",
             )
 
         self.assertEqual(result, "Merhaba")
@@ -234,6 +448,7 @@ class OllamaModelRoutingTests(unittest.IsolatedAsyncioTestCase):
             result = await chat_json(
                 system_prompt="Return JSON.",
                 user_prompt="{}",
+                role="general",
                 use_cache=False,
             )
 
@@ -263,6 +478,7 @@ class OllamaModelRoutingTests(unittest.IsolatedAsyncioTestCase):
             result = await chat_json(
                 system_prompt="Return JSON.",
                 user_prompt="{}",
+                role="general",
                 use_cache=False,
             )
 
@@ -290,6 +506,7 @@ class OllamaModelRoutingTests(unittest.IsolatedAsyncioTestCase):
         ):
             result = await chat_text(
                 messages=[{"role": "user", "content": "hello"}],
+                role="general",
             )
 
         self.assertEqual(result, "local answer")
@@ -319,12 +536,14 @@ class OllamaModelRoutingTests(unittest.IsolatedAsyncioTestCase):
                 system_prompt="Return JSON.",
                 user_prompt="{}",
                 model=settings.ollama_general_model,
+                role="general",
                 use_cache=False,
             )
             coder = await chat_json(
                 system_prompt="Return JSON.",
                 user_prompt="{}",
                 model=settings.ollama_coder_model,
+                role="coder",
                 use_cache=False,
             )
 
@@ -352,6 +571,7 @@ class OllamaModelRoutingTests(unittest.IsolatedAsyncioTestCase):
                 system_prompt="Return JSON.",
                 user_prompt="{}",
                 model=settings.ollama_coder_model,
+                role="coder",
                 temperature=0.28,
                 use_cache=False,
             )
@@ -416,6 +636,7 @@ class NimTokenFloorTests(unittest.IsolatedAsyncioTestCase):
                 user_prompt="{}",
                 num_predict=1440,
                 model=settings.ollama_general_model,
+                role="general",
                 use_cache=False,
             )
 
@@ -441,6 +662,7 @@ class GptOssClientTests(unittest.IsolatedAsyncioTestCase):
                 user_prompt="{}",
                 num_predict=512,
                 model=settings.ollama_general_model,
+                role="general",
                 use_cache=False,
             )
 
@@ -465,6 +687,7 @@ class GptOssClientTests(unittest.IsolatedAsyncioTestCase):
             await chat_text(
                 [{"role": "user", "content": "hi"}],
                 model=settings.ollama_general_model,
+                role="general",
             )
 
         self.assertIsNotNone(text_request.await_args)
@@ -489,6 +712,7 @@ class ChatJsonMetadataConcurrencyTests(unittest.IsolatedAsyncioTestCase):
                 system_prompt="sys",
                 user_prompt="usr",
                 model="qwen2.5-coder:7b",
+                role="coder",
                 use_cache=False,
             )
 
@@ -496,6 +720,7 @@ class ChatJsonMetadataConcurrencyTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.data, {"value": 42})
         self.assertEqual(result.provider, "ollama")
         self.assertEqual(result.model, "qwen2.5-coder:7b")
+        self.assertEqual(result.role, "coder")
         self.assertFalse(result.fallback_used)
 
     async def test_chat_json_with_metadata_concurrent_calls_do_not_cross_contaminate(self):
@@ -530,6 +755,7 @@ class ChatJsonMetadataConcurrencyTests(unittest.IsolatedAsyncioTestCase):
                     system_prompt="sys",
                     user_prompt="ollama",
                     model=ollama_model,
+                    role="general",
                     use_cache=False,
                 ),
                 chat_json_with_metadata(
@@ -537,6 +763,7 @@ class ChatJsonMetadataConcurrencyTests(unittest.IsolatedAsyncioTestCase):
                     user_prompt="nim",
                     provider_override="nvidia_nim",
                     model=ollama_model,
+                    role="general",
                     use_cache=False,
                 ),
             )
@@ -566,6 +793,7 @@ class ChatJsonMetadataConcurrencyTests(unittest.IsolatedAsyncioTestCase):
             await chat_json_with_metadata(
                 system_prompt="sys",
                 user_prompt="usr",
+                role="general",
                 use_cache=False,
             )
             after = get_llm_diagnostics_snapshot()
@@ -586,6 +814,7 @@ class ChatJsonMetadataConcurrencyTests(unittest.IsolatedAsyncioTestCase):
                 system_prompt="Return JSON.",
                 user_prompt="{}",
                 model="qwen2.5-coder:7b",
+                role="coder",
                 use_cache=False,
             )
 

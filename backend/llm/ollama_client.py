@@ -18,13 +18,15 @@ import re
 import time
 from collections import OrderedDict
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Literal
 
 import httpx
 
 from backend.core.config import settings
 
 logger = logging.getLogger(__name__)
+
+LLMRole = Literal["general", "coder"]
 
 
 @dataclass(frozen=True)
@@ -37,6 +39,7 @@ class ChatJsonResult:
     cache_hit: bool = False
     max_tokens: int = 0
     fallback_reason: str = ""
+    role: LLMRole = "general"
 
 _client: httpx.AsyncClient | None = None
 _semaphore: asyncio.Semaphore | None = None
@@ -63,6 +66,7 @@ def _record_call_metadata(**metadata: Any) -> None:
         "response_format",
         "max_tokens",
         "fallback_reason",
+        "role",
     }
     _last_call_metadata = {key: value for key, value in metadata.items() if key in allowed}
 
@@ -121,34 +125,39 @@ def _llm_provider() -> str:
     return _normalize_provider(settings.llm_provider) or "ollama"
 
 
-def _provider_for_model(model: str | None) -> str:
+def _resolve_role(model: str | None, role: LLMRole | None) -> LLMRole:
+    if role in {"general", "coder"}:
+        return role
+    if (
+        model is not None
+        and settings.ollama_coder_model != settings.ollama_general_model
+        and model == settings.ollama_coder_model
+    ):
+        return "coder"
+    return "general"
+
+
+def _provider_for_role(role: LLMRole) -> str:
     default = _llm_provider()
-    general_provider = _normalize_provider(settings.llm_general_provider) or default
-    coder_provider = _normalize_provider(settings.llm_coder_provider) or default
-    if model == settings.ollama_coder_model:
-        return coder_provider
-    if model is None or model == settings.ollama_general_model:
-        return general_provider
-    return default
+    if role == "coder":
+        return _normalize_provider(settings.llm_coder_provider) or default
+    return _normalize_provider(settings.llm_general_provider) or default
 
 
 def _provider_is_nvidia_nim(provider: str) -> bool:
     return provider in {"nvidia_nim", "nim", "nvidia"}
 
 
-def _select_nim_model(model: str | None) -> str:
-    if model is None or model == settings.ollama_general_model:
-        return settings.nvidia_nim_general_model
-    if model == settings.ollama_coder_model:
-        return settings.nvidia_nim_coder_model
+def _model_for_role(role: LLMRole, *, nim: bool) -> str:
+    if nim:
+        return settings.nvidia_nim_coder_model if role == "coder" else settings.nvidia_nim_general_model
+    return settings.ollama_coder_model if role == "coder" else settings.ollama_general_model
+
+
+def _local_model_for_request(model: str | None, role: LLMRole) -> str:
+    if model is None or model in {settings.ollama_general_model, settings.ollama_coder_model}:
+        return _model_for_role(role, nim=False)
     return model
-
-
-def _ollama_model_for_request(model: str | None) -> str:
-    """Map a logical model choice back to a local Ollama model name."""
-    if model == settings.ollama_coder_model:
-        return settings.ollama_coder_model
-    return settings.ollama_general_model
 
 
 def _is_gpt_oss_model(model: str | None) -> bool:
@@ -162,13 +171,19 @@ def _ollama_predict_for_model(model: str | None, num_predict: int | None) -> int
     return base
 
 
-def _ollama_inference_options(model: str, temperature: float, num_predict: int) -> dict[str, Any]:
+def _ollama_inference_options(
+    model: str,
+    temperature: float,
+    num_predict: int,
+    *,
+    role: LLMRole,
+) -> dict[str, Any]:
     """Ollama /api/chat options; coder model gets AgentGrade Modelfile tuning."""
     options: dict[str, Any] = {
         "temperature": temperature,
         "num_predict": num_predict,
     }
-    if model == settings.ollama_coder_model:
+    if role == "coder":
         options.update(
             {
                 "temperature": settings.ollama_coder_temperature,
@@ -209,11 +224,12 @@ def _cache_key(
     temperature: float,
     model: str,
     schema_hint: dict[str, Any] | None = None,
+    role: LLMRole = "general",
 ) -> str:
     schema_part = ""
     if schema_hint:
         schema_part = json.dumps(schema_hint, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
-    raw = f"{model}:{temperature}:{schema_part}:{system_prompt}:{user_prompt}"
+    raw = f"{role}:{model}:{temperature}:{schema_part}:{system_prompt}:{user_prompt}"
     return hashlib.sha256(raw.encode()).hexdigest()
 
 
@@ -458,13 +474,19 @@ async def _chat_json_request(
     num_predict: int | None = None,
     *,
     model: str | None = None,
+    role: LLMRole | None = None,
     use_cache: bool = True,
     provider_override: str | None = None,
 ) -> ChatJsonResult:
-    provider = _normalize_provider(provider_override) or _provider_for_model(model)
+    resolved_role = _resolve_role(model, role)
+    provider = _normalize_provider(provider_override) or _provider_for_role(resolved_role)
     provider_is_nim = _provider_is_nvidia_nim(provider)
     provider_name = "nvidia_nim" if provider_is_nim else "ollama"
-    selected_model = _select_nim_model(model) if provider_is_nim else (model or settings.ollama_general_model)
+    selected_model = (
+        _model_for_role(resolved_role, nim=True)
+        if provider_is_nim
+        else _local_model_for_request(model, resolved_role)
+    )
     if provider_is_nim:
         # Reasoning modelleri (orn. DeepSeek) max_tokens butcesinin bir kismini dusunmeye
         # harcar; cagiranin istedigi degeri NIM tabaniyla yukseltip JSON'in kirpilmasini onle.
@@ -472,7 +494,14 @@ async def _chat_json_request(
         predict = max(int(num_predict), nim_floor) if num_predict is not None else nim_floor
     else:
         predict = _ollama_predict_for_model(selected_model, num_predict)
-    cache_key = _cache_key(f"{system_prompt}|np={predict}", user_prompt, temperature, selected_model, schema_hint)
+    cache_key = _cache_key(
+        f"{system_prompt}|np={predict}",
+        user_prompt,
+        temperature,
+        selected_model,
+        schema_hint,
+        resolved_role,
+    )
     if use_cache:
         cached = _cache_get(cache_key)
         if cached is not None:
@@ -483,6 +512,7 @@ async def _chat_json_request(
                 fallback_used=False,
                 cache_hit=True,
                 max_tokens=predict,
+                role=resolved_role,
             )
 
     messages = [
@@ -508,13 +538,18 @@ async def _chat_json_request(
             fallback_reason = "missing_api_key"
 
         if result is None:
-            ollama_model = _ollama_model_for_request(model)
+            ollama_model = _local_model_for_request(model, resolved_role)
             ollama_predict = _ollama_predict_for_model(ollama_model, num_predict)
             ollama_payload = {
                 "model": ollama_model,
                 "messages": messages,
                 "stream": False,
-                "options": _ollama_inference_options(ollama_model, temperature, ollama_predict),
+                "options": _ollama_inference_options(
+                    ollama_model,
+                    temperature,
+                    ollama_predict,
+                    role=resolved_role,
+                ),
                 "format": "json",
                 "keep_alive": "30m",
             }
@@ -535,7 +570,12 @@ async def _chat_json_request(
             "model": selected_model,
             "messages": messages,
             "stream": False,
-            "options": _ollama_inference_options(selected_model, temperature, predict),
+            "options": _ollama_inference_options(
+                selected_model,
+                temperature,
+                predict,
+                role=resolved_role,
+            ),
             "format": "json",
             "keep_alive": "30m",
         }
@@ -554,6 +594,7 @@ async def _chat_json_request(
         error=error,
         max_tokens=predict,
         fallback_reason=fallback_reason,
+        role=resolved_role,
     )
 
 
@@ -565,6 +606,7 @@ async def chat_json(
     num_predict: int | None = None,
     *,
     model: str | None = None,
+    role: LLMRole | None = None,
     use_cache: bool = True,
     provider_override: str | None = None,
 ) -> dict | None:
@@ -584,6 +626,7 @@ async def chat_json(
         temperature,
         num_predict,
         model=model,
+        role=role,
         use_cache=use_cache,
         provider_override=provider_override,
     )
@@ -596,6 +639,7 @@ async def chat_json(
             result_status="ok",
             response_format="json",
             max_tokens=result.max_tokens,
+            role=result.role,
         )
         return result.data
 
@@ -613,6 +657,7 @@ async def chat_json(
         response_format="json",
         max_tokens=result.max_tokens,
         fallback_reason=metadata_fallback,
+        role=result.role,
     )
     return result.data
 
@@ -625,6 +670,7 @@ async def chat_json_with_metadata(
     num_predict: int | None = None,
     *,
     model: str | None = None,
+    role: LLMRole | None = None,
     use_cache: bool = True,
     provider_override: str | None = None,
 ) -> ChatJsonResult:
@@ -635,6 +681,7 @@ async def chat_json_with_metadata(
             model=model or "",
             fallback_used=False,
             error="ollama_disabled",
+            role=_resolve_role(model, role),
         )
     return await _chat_json_request(
         system_prompt,
@@ -643,6 +690,7 @@ async def chat_json_with_metadata(
         temperature,
         num_predict,
         model=model,
+        role=role,
         use_cache=use_cache,
         provider_override=provider_override,
     )
@@ -654,6 +702,7 @@ async def chat_text(
     temperature: float = 0.45,
     num_predict: int | None = None,
     model: str | None = None,
+    role: LLMRole | None = None,
 ) -> str | None:
     """Ollama chat — düz metin (JSON formatı yok). Eğitim asistanı ve sohbet botları için.
 
@@ -664,10 +713,15 @@ async def chat_text(
     if not messages:
         return None
 
+    resolved_role = _resolve_role(model, role)
     predict = num_predict if num_predict is not None else min(int(settings.ollama_num_predict), 2048)
-    provider_is_nim = _provider_is_nvidia_nim(_provider_for_model(model))
+    provider_is_nim = _provider_is_nvidia_nim(_provider_for_role(resolved_role))
     provider_name = "nvidia_nim" if provider_is_nim else "ollama"
-    selected_model = _select_nim_model(model) if provider_is_nim else (model or settings.ollama_general_model)
+    selected_model = (
+        _model_for_role(resolved_role, nim=True)
+        if provider_is_nim
+        else _local_model_for_request(model, resolved_role)
+    )
     if not provider_is_nim:
         predict = _ollama_predict_for_model(selected_model, num_predict)
 
@@ -697,16 +751,22 @@ async def chat_text(
                 result_status="ok",
                 response_format="text",
                 max_tokens=nim_predict,
+                role=resolved_role,
             )
             return text_result
 
-        ollama_model = _ollama_model_for_request(model)
+        ollama_model = _local_model_for_request(model, resolved_role)
         ollama_predict = _ollama_predict_for_model(ollama_model, num_predict)
         ollama_payload: dict[str, Any] = {
             "model": ollama_model,
             "messages": messages,
             "stream": False,
-            "options": _ollama_inference_options(ollama_model, temperature, ollama_predict),
+            "options": _ollama_inference_options(
+                ollama_model,
+                temperature,
+                ollama_predict,
+                role=resolved_role,
+            ),
             "keep_alive": "30m",
         }
         _apply_gpt_oss_chat_options(ollama_payload, json_mode=False)
@@ -723,6 +783,7 @@ async def chat_text(
                 response_format="text",
                 max_tokens=ollama_predict,
                 fallback_reason=fallback_reason,
+                role=resolved_role,
             )
             logger.info("[ollama] nvidia-nim text request fell back to local Ollama")
             return text_result
@@ -736,6 +797,7 @@ async def chat_text(
             response_format="text",
             max_tokens=predict,
             fallback_reason=fallback_reason or "empty_response",
+            role=resolved_role,
         )
         return None
 
@@ -743,7 +805,12 @@ async def chat_text(
         "model": selected_model,
         "messages": messages,
         "stream": False,
-        "options": _ollama_inference_options(selected_model, temperature, predict),
+        "options": _ollama_inference_options(
+            selected_model,
+            temperature,
+            predict,
+            role=resolved_role,
+        ),
         "keep_alive": "30m",
     }
     _apply_gpt_oss_chat_options(payload, json_mode=False)
@@ -758,6 +825,7 @@ async def chat_text(
             result_status="ok",
             response_format="text",
             max_tokens=predict,
+            role=resolved_role,
         )
         return text_result
 
@@ -770,5 +838,6 @@ async def chat_text(
         response_format="text",
         max_tokens=predict,
         fallback_reason="empty_or_failed",
+        role=resolved_role,
     )
     return None

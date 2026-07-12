@@ -537,6 +537,7 @@ Rules:
                 temperature=0.1,
                 num_predict=512,
                 model=settings.ollama_general_model,
+                role="general",
                 use_cache=False,
             )
         except Exception:
