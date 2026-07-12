@@ -90,7 +90,8 @@ def _run_smoke(*, manage_services: bool) -> int:
     os.environ["SANDBOX_POOL_OWNER"] = owner_id
     os.environ.setdefault("SANDBOX_IMAGE", "agentgrade-sandbox:phase2b")
     os.environ.setdefault("SANDBOX_POOL_SIZE", "1")
-    os.environ.setdefault("SANDBOX_POOL_BASE_PORT", "8281")
+    # Avoid the live analysis-worker pool range (8281+) used by dev-worker containers.
+    os.environ.setdefault("SANDBOX_POOL_BASE_PORT", "8481")
 
     started_by_script: list[str] = []
     if manage_services:
