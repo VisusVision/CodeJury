@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import copy
+import json
 import math
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -285,6 +287,49 @@ def test_browser_evidence_accepts_valid_uuidv4_run_id() -> None:
         student_journey_passed=True,
         unauthorized_checks_passed=True,
     )
+
+
+def _normalize_browser_evidence_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    normalized = dict(payload)
+    for field in ("job_ids", "screenshots"):
+        value = normalized.get(field)
+        if isinstance(value, list):
+            normalized[field] = tuple(value)
+    return normalized
+
+
+_BROWSER_EVIDENCE_EXAMPLE_FORBIDDEN = (
+    "username",
+    "password",
+    "cookie",
+    "csrf",
+    "authorization",
+    "bearer",
+    "token",
+    "secret",
+    "credential",
+    "prompt",
+    "dom",
+    "stdin",
+    "stderr",
+    "source_code",
+    "expected_stdout",
+    "oracle",
+    "extractorprovider",
+    "verifierprovider",
+    "input",
+    "expected",
+    "actual",
+)
+
+
+def test_browser_evidence_example_is_valid_and_secret_free() -> None:
+    example_path = Path("docs/examples/phase4a-browser-evidence.example.json")
+    payload = json.loads(example_path.read_text(encoding="utf-8"))
+    evidence = Phase4ABrowserEvidence.model_validate(_normalize_browser_evidence_payload(payload))
+    serialized = evidence.model_dump_json().lower()
+    for term in _BROWSER_EVIDENCE_EXAMPLE_FORBIDDEN:
+        assert term not in serialized, term
 
 
 def test_browser_evidence_requires_exactly_three_jobs() -> None:
