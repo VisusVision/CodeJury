@@ -425,11 +425,23 @@ def _algorithm_guardrail_was_overridden(
         return True
 
     return any(
-        field not in private_result
-        or field not in student_result
-        or private_result[field] != student_result[field]
+        not _algorithm_authority_field_matches(private_result, student_result, field)
         for field in _ALGORITHM_AUTHORITY_FIELDS
     )
+
+
+def _algorithm_authority_field_matches(
+    private_result: Mapping[str, Any],
+    student_result: Mapping[str, Any],
+    field: str,
+) -> bool:
+    """Student projection may omit null authority fields; treat that as equal."""
+    if field not in private_result:
+        return False
+    private_value = private_result[field]
+    if field not in student_result:
+        return private_value is None
+    return student_result[field] == private_value
 
 
 def _is_public_test_case(case: Mapping[str, Any]) -> bool:
