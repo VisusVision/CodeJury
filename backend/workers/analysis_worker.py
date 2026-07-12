@@ -26,7 +26,7 @@ from backend.queue.analysis_jobs import (
     update_analysis_job_result,
 )
 from backend.sandbox.errors import SandboxUnavailableError
-from backend.sandbox.pool_manager import get_pool, reinitialize_pool, shutdown_pool
+from backend.sandbox.pool_manager import get_pool, initialize_pool, reinitialize_pool, shutdown_pool
 
 logger = logging.getLogger(__name__)
 
@@ -222,6 +222,10 @@ async def consume_analysis_jobs(
 
 async def amain() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+    from frontend.backend.main import _startup_db
+
+    await _startup_db()
+    await asyncio.to_thread(initialize_pool)
     redis = create_redis_client(settings.redis_url)
     await redis.ping()
     store = AnalysisJobStore(

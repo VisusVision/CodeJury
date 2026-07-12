@@ -651,6 +651,7 @@ def merge_algorithm_results(
             ),
             "issues": _dedupe_algorithm_issues(programmatic_issues + llm_issues)[:10],
             "score": decision.score,
+            "programmatic_base_score": base_score,
             "actual_family": actual_time.family if actual_time else "unknown",
             "actual_confidence": evidence.actual_confidence,
             "expected_approach": evidence.expected.expected_approach,
