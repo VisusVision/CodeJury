@@ -2727,7 +2727,7 @@ def _is_generic_assignment_title(title: str) -> bool:
     return len(words) <= 3 and not any(
         token in folded
         for token in (
-            "csv", "api", "log", "stack", "sqlite", "kitap", "kutuphane",
+            "csv", "api", "log", "stack", "sqlite", "hash", "kitap", "kutuphane",
             "frekans", "client", "endpoint", "lifo", "sayi",
         )
     )
@@ -7373,8 +7373,8 @@ async def suggest_rubric(req: RubricSuggestionRequest, principal: AuthPrincipal 
         "Rubrik yalnizca bu odev icin gecerli olmali. Her kriter aciklamasinda odevde gecen "
         "somut terimleri (dosya, sinif, endpoint, rapor sutunu, CLI argumani, vb.) kullan.\n"
         f"Istenen kriter sayisi: {criterion_count}\n"
-        f"Tam {criterion_count} kriter uret; max_score toplami tam 100 olmali.\n"
-        f"Her max_score {_RUBRIC_MIN_POINTS}–{_RUBRIC_MAX_POINTS} arasi tam sayi."
+        f"Produce exactly {criterion_count} criteria; max_score total must be exactly 100.\n"
+        f"Her max_score {_RUBRIC_MIN_POINTS}-{_RUBRIC_MAX_POINTS} arasi tam sayi."
     )
 
     result = await chat_json(
@@ -7383,12 +7383,11 @@ async def suggest_rubric(req: RubricSuggestionRequest, principal: AuthPrincipal 
         temperature=0.32,
         num_predict=_rubric_num_predict_for_count(criterion_count),
         model=_llm_cfg.ollama_general_model,
-        provider_override="ollama",
     )
     if not result:
         raise HTTPException(
             status_code=502,
-            detail="LLM rubrik JSON üretilemedi. Ollama ve modeli kontrol edin.",
+            detail="Aktif LLM provider rubrik JSON uretemedi.",
         )
     try:
         criteria = _criteria_from_llm_payload(result, criterion_count)
