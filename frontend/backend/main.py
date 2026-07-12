@@ -3276,9 +3276,34 @@ def _parse_class_year(raw_value: int | None) -> int:
 
 
 async def _get_db_pool() -> asyncpg.Pool:
-        if _DB_POOL is None:
-                raise HTTPException(status_code=500, detail="Veritabani baglantisi hazir degil")
+    """Return the shared asyncpg pool, lazily creating it for worker processes.
+
+    The API process normally initializes ``_DB_POOL`` on startup. Analysis workers
+    import this module without FastAPI lifespan events, and ``ANALYSIS_WORKER_RELOAD``
+    can reset module globals — so a missing pool must be created fail-open here
+    rather than raising a 500 that aborts formal-test selection.
+    """
+    global _DB_POOL
+    if _DB_POOL is not None:
         return _DB_POOL
+    if _DEMO_MODE:
+        raise HTTPException(status_code=500, detail="Veritabani baglantisi hazir degil")
+    last_error: Exception | None = None
+    for attempt in range(5):
+        try:
+            await _ensure_database_exists(_DATABASE_URL)
+            _DB_POOL = await asyncpg.create_pool(dsn=_DATABASE_URL, min_size=1, max_size=5)
+            await _ensure_db_schema(_DB_POOL)
+            return _DB_POOL
+        except Exception as exc:
+            last_error = exc
+            _DB_POOL = None
+            if attempt < 4:
+                await asyncio.sleep(0.5)
+    raise HTTPException(
+        status_code=500,
+        detail="Veritabani baglantisi hazir degil",
+    ) from last_error
 
 
 def _demo_now() -> str:
@@ -3403,6 +3428,23 @@ def _tr_lower(value: str) -> str:
 
 def _tr_upper(value: str) -> str:
     return value.translate(str.maketrans({"i": "İ", "ı": "I"})).upper()
+
+
+def _normalize_assignment_display_name(value: str) -> str:
+    """Title-case assignment names while preserving phase4a-<uuid> run-id tokens.
+
+    Release cleanup ownership requires names to start with the exact lowercase
+    ``phase4a-<UUIDv4>`` prefix. Blind ``str.capitalize()`` turns that into
+    ``Phase4a-...`` and breaks fail-closed cleanup.
+    """
+    words: list[str] = []
+    for word in value.split():
+        lowered = word.lower()
+        if lowered.startswith("phase4a-"):
+            words.append(lowered)
+        else:
+            words.append(word.capitalize())
+    return " ".join(words)
 
 
 def _title_case_tr(value: str) -> str:
@@ -4217,6 +4259,20 @@ def _pipeline_test_provenance(test_cases: list[dict[str, Any]]) -> dict[str, Any
     return provenance
 
 
+def _pipeline_formal_totals_from_test_agent(test_agent: dict[str, Any]) -> dict[str, int]:
+    """Copy authoritative formal test counters from TestAgent output onto pipeline results."""
+
+    def _non_bool_int(value: Any) -> int:
+        if isinstance(value, int) and not isinstance(value, bool):
+            return max(0, value)
+        return 0
+
+    return {
+        "formalPassed": _non_bool_int(test_agent.get("formalPassed")),
+        "formalTotal": _non_bool_int(test_agent.get("formalTotal")),
+    }
+
+
 def _normalize_legacy_test_case_source(value: Any) -> str:
     source = str(value or "manual").strip().lower()
     return "ai_approved" if source == "ai" else source
@@ -4939,6 +4995,7 @@ async def _run_analysis_pipeline_body(
         "taskAlignment": task_alignment,
         "reportStatus": "preparing",
         **test_provenance,
+        **_pipeline_formal_totals_from_test_agent(ta if isinstance(ta, dict) else {}),
         "agentDiagnostics": _build_agent_diagnostics(
             {
                 "code_quality": cq,
@@ -6525,7 +6582,7 @@ def _algorithm_result_from_output(alg: dict[str, Any]) -> dict[str, Any]:
             entry["confidence"] = item.get("confidence")
         evidence.append(entry)
 
-    return {
+    result = {
         "detectedAlgorithms": list(alg.get("detected_algorithms") or []),
         "dataStructures": list(alg.get("data_structures") or []),
         "timeComplexity": str(alg.get("time_complexity") or "unknown"),
@@ -6544,6 +6601,10 @@ def _algorithm_result_from_output(alg: dict[str, Any]) -> dict[str, Any]:
         "recommendedApproach": str(alg.get("recommended_approach") or ""),
         "evidence": evidence,
     }
+    base_score = alg.get("programmatic_base_score")
+    if isinstance(base_score, int) and not isinstance(base_score, bool):
+        result["programmatic_base_score"] = base_score
+    return result
 
 
 def _promoted_assignment_test_case(
@@ -6624,8 +6685,7 @@ async def _with_assignment_difficulty(
 
 @app.post("/api/assignments")
 async def create_assignment(req: AssignmentCreateRequest, principal: AuthPrincipal = Depends(require_teacher)):
-    name = req.name.strip()
-    name = " ".join(word.capitalize() for word in name.split())
+    name = _normalize_assignment_display_name(req.name.strip())
     if not name or not req.course_id:
         raise HTTPException(status_code=400, detail="Ödev adı ve ders zorunludur")
     description = req.description.strip() if req.description else None

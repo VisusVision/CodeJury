@@ -18,6 +18,17 @@ _TEACHER_PRINCIPAL = AuthPrincipal(
 
 
 class AssignmentDbPathTests(unittest.TestCase):
+    def test_normalize_assignment_display_name_preserves_phase4a_run_id_prefix(self):
+        run_id = "phase4a-11111111-1111-4111-8111-111111111111"
+        self.assertEqual(
+            main._normalize_assignment_display_name(f"{run_id} two sum"),
+            f"{run_id} Two Sum",
+        )
+        self.assertEqual(
+            main._normalize_assignment_display_name(f"PHASE4A-{run_id[8:]} release soak"),
+            f"phase4a-{run_id[8:]} Release Soak",
+        )
+
     def test_create_assignment_db_insert_uses_four_values_for_four_placeholders(self):
         class FakePool:
             def __init__(self):

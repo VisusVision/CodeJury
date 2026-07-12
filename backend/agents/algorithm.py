@@ -107,6 +107,7 @@ class AlgorithmAgent(BaseAgent):
             evidence.evidence,
         )
         programmatic["score"] = decision.score
+        programmatic["programmatic_base_score"] = evidence.programmatic_base_score
         programmatic["guardrail_flags"] = list(decision.guardrail_flags)
         source_lines = source.splitlines()
         if source_lines:

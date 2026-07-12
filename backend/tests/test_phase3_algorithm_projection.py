@@ -343,6 +343,41 @@ class Phase3AlgorithmProjectionTests(unittest.TestCase):
         self.assertEqual(result["expectationVersion"], 3)
         self.assertEqual(result["evidence"][0]["confidence"], 0.8)
 
+    def test_algorithm_result_from_output_preserves_programmatic_base_score(self):
+        alg = {
+            "detected_algorithms": ["hash_lookup"],
+            "data_structures": ["dict"],
+            "time_complexity": "O(n^2)",
+            "space_complexity": "O(1)",
+            "expected_complexity": "O(n)",
+            "complexity_gap": "worse_than_expected",
+            "gap_steps": 2,
+            "gap_explanation": "Two steps worse.",
+            "recommended_approach": "Hash map.",
+            "evidence": [],
+            "score": 45,
+            "programmatic_base_score": 90,
+        }
+        result = main._algorithm_result_from_output(alg)
+        self.assertEqual(result["programmatic_base_score"], 90)
+
+    def test_algorithm_result_from_output_omits_programmatic_base_score_when_invalid(self):
+        alg = {
+            "detected_algorithms": ["hash_lookup"],
+            "time_complexity": "O(n)",
+            "space_complexity": "O(1)",
+            "expected_complexity": "O(n)",
+            "complexity_gap": "matches_expected",
+            "gap_steps": 0,
+            "gap_explanation": "",
+            "recommended_approach": "",
+            "evidence": [],
+            "score": 90,
+            "programmatic_base_score": True,
+        }
+        result = main._algorithm_result_from_output(alg)
+        self.assertNotIn("programmatic_base_score", result)
+
 
 if __name__ == "__main__":
     unittest.main()

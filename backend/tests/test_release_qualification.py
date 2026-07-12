@@ -21,6 +21,7 @@ from backend.ops.release_qualification import (
     safe_ledger_lines,
 )
 from backend.reporting.student_projection import project_student_result
+from frontend.backend import main
 
 
 RUN_ID = "phase4a-11111111-1111-4111-8111-111111111111"
@@ -626,3 +627,70 @@ def test_analysis_pair_rejects_only_explicit_high_entropy_sentinels_in_values() 
     student["summary"] = f"Accidental leak: {PRIVATE_SENTINEL}"
     audit = audit_analysis_pair(private, student, private_sentinels=(PRIVATE_SENTINEL,))
     assert audit.student_private_data_leak is True
+
+
+def test_pipeline_formal_totals_from_test_agent_output() -> None:
+    totals = main._pipeline_formal_totals_from_test_agent({"formalPassed": 3, "formalTotal": 4})
+    assert totals == {"formalPassed": 3, "formalTotal": 4}
+    assert main._pipeline_formal_totals_from_test_agent({}) == {"formalPassed": 0, "formalTotal": 0}
+    assert main._pipeline_formal_totals_from_test_agent({"formalPassed": True, "formalTotal": 2}) == {
+        "formalPassed": 0,
+        "formalTotal": 2,
+    }
+
+
+def _pipeline_shaped_private_result(*, algorithm_score: int = 45) -> dict[str, object]:
+    private = _production_private_result(algorithm_score=algorithm_score)
+    alg_output = {
+        "detected_algorithms": ["nested_iteration"],
+        "data_structures": [],
+        "time_complexity": "O(n^2)",
+        "space_complexity": "O(1)",
+        "expected_complexity": "O(n)",
+        "expected_approach": "linear scan",
+        "expected_families": ["single_pass"],
+        "expected_source": "verified_expectation",
+        "expected_confidence": 0.9,
+        "expectation_version": 1,
+        "complexity_gap": "worse_than_expected",
+        "gap_steps": 2,
+        "gap_explanation": "Two steps worse than expected.",
+        "recommended_approach": "Use a hash map.",
+        "evidence": [],
+        "issues": [],
+        "score": algorithm_score,
+        "programmatic_base_score": 90,
+        "llm_status": "ok",
+        "confidence": 0.9,
+        "guardrail_flags": ["algorithm_gap_multi_step_worse"],
+    }
+    algorithm_agent = next(agent for agent in private["agents"] if agent["id"] == "algorithm")
+    algorithm_agent["score"] = algorithm_score
+    algorithm_agent["algorithmResult"] = main._algorithm_result_from_output(alg_output)
+    algorithm_agent["guardrail_flags"] = ["algorithm_gap_multi_step_worse"]
+    diagnostic = next(
+        agent for agent in private["agentDiagnostics"]["agents"] if agent["id"] == "algorithm"
+    )
+    diagnostic["score"] = algorithm_score
+    diagnostic["guardrail_flags"] = ["algorithm_gap_multi_step_worse"]
+    private["formalPassed"] = 1
+    private["formalTotal"] = 2
+    return private
+
+
+def test_analysis_pair_accepts_pipeline_shaped_guardrailed_algorithm() -> None:
+    private = _pipeline_shaped_private_result()
+    student = project_student_result(copy.deepcopy(private))
+    audit = audit_analysis_pair(private, student)
+    assert audit.agent_contract_failed is False
+    assert audit.formal_authority_overridden is False
+    assert audit.algorithm_guardrail_overridden is False
+
+
+def test_analysis_pair_flags_missing_programmatic_base_score_in_pipeline_projection() -> None:
+    private = _pipeline_shaped_private_result()
+    algorithm = next(agent for agent in private["agents"] if agent["id"] == "algorithm")
+    algorithm["algorithmResult"].pop("programmatic_base_score", None)
+    student = project_student_result(copy.deepcopy(private))
+    audit = audit_analysis_pair(private, student)
+    assert audit.algorithm_guardrail_overridden is True
