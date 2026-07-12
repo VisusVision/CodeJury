@@ -454,7 +454,8 @@ async def assess_task_relevance_llm(
             user_prompt=user_prompt,
             temperature=0.15,
             num_predict=1536,
-            model=settings.ollama_coder_model,
+            model=settings.ollama_general_model,
+            role="general",
             use_cache=False,
         )
     except Exception as exc:
@@ -493,7 +494,8 @@ async def assess_task_relevance_llm(
                 user_prompt=repair,
                 temperature=0.1,
                 num_predict=1536,
-                model=settings.ollama_coder_model,
+                model=settings.ollama_general_model,
+                role="general",
                 use_cache=False,
             )
         except Exception as exc:

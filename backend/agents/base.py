@@ -152,6 +152,7 @@ class BaseAgent(ABC):
                 temperature=temperature,
                 num_predict=num_predict,
                 model=model or settings.ollama_coder_model,
+                role="coder",
                 use_cache=use_cache,
             )
         except Exception as exc:
@@ -200,6 +201,7 @@ class BaseAgent(ABC):
                         temperature=0.1,
                         num_predict=num_predict,
                         model=model or settings.ollama_coder_model,
+                        role="coder",
                         use_cache=False,
                     )
                 except Exception as exc:
@@ -259,6 +261,7 @@ class BaseAgent(ABC):
                         temperature=0.1,
                         num_predict=num_predict,
                         model=model or settings.ollama_coder_model,
+                        role="coder",
                         use_cache=False,
                     )
                 except Exception as exc:
