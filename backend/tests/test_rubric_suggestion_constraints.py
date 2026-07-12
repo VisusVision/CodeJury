@@ -1,6 +1,8 @@
 import unittest
 from unittest.mock import AsyncMock, patch
 
+from backend.core.config import settings
+from fastapi import HTTPException
 from frontend.backend.main import (
     _ensure_mandatory_rubric_criteria,
     _polish_rubric_criteria,
@@ -11,6 +13,19 @@ from frontend.backend.main import (
 
 
 class RubricSuggestionConstraintTests(unittest.IsolatedAsyncioTestCase):
+    async def test_empty_llm_result_reports_provider_neutral_error(self):
+        with patch("frontend.backend.main.chat_json", new=AsyncMock(return_value={})):
+            with self.assertRaises(HTTPException) as raised:
+                await suggest_rubric(
+                    RubricSuggestionRequest(
+                        assignment_title="Log ozetleme",
+                        assignment_description="Log dosyasindan CLI raporu uret.",
+                    )
+                )
+
+        self.assertEqual(raised.exception.status_code, 502)
+        self.assertEqual(raised.exception.detail, "Aktif LLM provider rubrik JSON uretemedi.")
+
     async def test_hard_assignment_gets_more_criteria_and_required_rows(self):
         payload = {
             "criteria": [
@@ -49,7 +64,11 @@ class RubricSuggestionConstraintTests(unittest.IsolatedAsyncioTestCase):
                 "Kodlama Stili",
             }.issubset(names)
         )
-        self.assertIn("exactly", chat.await_args.kwargs["user_prompt"])
+        prompt = chat.await_args.kwargs["user_prompt"]
+        self.assertIn("exactly", prompt.lower())
+        self.assertIn(f"{len(criteria)} criteria", prompt.lower())
+        self.assertNotIn("provider_override", chat.await_args.kwargs)
+        self.assertEqual(chat.await_args.kwargs["model"], settings.ollama_general_model)
 
     async def test_mandatory_rows_are_specialized_to_assignment_project(self):
         payload = {

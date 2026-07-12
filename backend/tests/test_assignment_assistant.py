@@ -278,6 +278,12 @@ class AssignmentAssistantTests(unittest.IsolatedAsyncioTestCase):
 
 
 class AssignmentSuggestionDiversityTests(unittest.TestCase):
+    def test_hash_table_title_is_concrete_not_generic(self):
+        from frontend.backend.main import _is_generic_assignment_title
+
+        self.assertFalse(_is_generic_assignment_title("Hash Tablosu Sayaci"))
+        self.assertTrue(_is_generic_assignment_title("Programlama Odevi"))
+
     def test_clean_assignment_suggestion_items_drops_near_duplicate_descriptions(self):
         from frontend.backend.main import _clean_assignment_suggestion_items
 
