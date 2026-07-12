@@ -308,3 +308,31 @@ STUDENT_EXPECTATION_PROVENANCE_LEAK=False
 ALGORITHM_SCORE_CHANGED_MASTER_RUBRIC=False
 TEACHER_EXPECTATION_MUTATION_ROUTE_EXISTS=False
 ```
+
+---
+
+## 10. Faz 4A — Gerçek kullanıcı kabulü ve release
+
+Önkoşul: `.env` içinde `DEMO_MODE=0`, Docker Desktop açık, sandbox imajı, gerçek LLM provider etkin.
+
+```powershell
+docker compose up -d postgres redis
+docker build -t agentgrade-sandbox sandbox-images/agentgrade
+npm run dev:full
+npm --prefix frontend run verify:health
+```
+
+Tam adımlar (öğretmen/öğrenci tarayıcı yolculuğu, yetkilendirme, kanıt, temizlik): **[docs/PHASE4A_REAL_USER_RUNBOOK.md](docs/PHASE4A_REAL_USER_RUNBOOK.md)**
+
+Kanıt dosyası örneği: `docs/examples/phase4a-browser-evidence.example.json` (credential veya gizli I/O içermez).
+
+Denetim ve nihai release (parola veya cookie **yazmayın**):
+
+```powershell
+$runId = "phase4a-<gerçek-uuid>"
+$evidence = "artifacts/phase4a/$runId/browser-evidence.json"
+python scripts/qa_phase4a_run_audit.py --evidence $evidence
+python scripts/qa_phase4a_release.py --manage-services --browser-evidence $evidence
+```
+
+`artifacts/phase4a/` gitignore altındadır; runtime kanıtları commit edilmez.

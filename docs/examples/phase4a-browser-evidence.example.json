@@ -1,0 +1,21 @@
+{
+  "run_id": "phase4a-22222222-2222-4222-8222-222222222222",
+  "assignment_id": "a3333333-3333-4333-8333-333333333333",
+  "job_ids": [
+    "b4444444-4444-4444-8444-444444444444",
+    "c5555555-5555-4555-8555-555555555555",
+    "d6666666-6666-4666-8666-666666666666"
+  ],
+  "teacher_journey_passed": true,
+  "student_journey_passed": true,
+  "unauthorized_checks_passed": true,
+  "screenshots": [
+    "teacher-assignment-created.png",
+    "teacher-rubric-approved.png",
+    "teacher-algorithm-expectation.png",
+    "student-report-linear.png",
+    "student-report-quadratic.png",
+    "student-report-runtime-fail.png",
+    "auth-check-teacher-only.png"
+  ]
+}
