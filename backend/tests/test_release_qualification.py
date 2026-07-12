@@ -694,3 +694,25 @@ def test_analysis_pair_flags_missing_programmatic_base_score_in_pipeline_project
     student = project_student_result(copy.deepcopy(private))
     audit = audit_analysis_pair(private, student)
     assert audit.algorithm_guardrail_overridden is True
+
+
+def test_analysis_pair_allows_null_gap_steps_omitted_by_student_projection() -> None:
+    """Student projection drops null gapSteps; that is not an authority override."""
+    private = _production_private_result()
+    algorithm = next(agent for agent in private["agents"] if agent["id"] == "algorithm")
+    algorithm["score"] = 90
+    algorithm["algorithmResult"] = _algorithm_result(
+        complexity_gap="unknown",
+        gap_steps=0,
+        programmatic_base_score=90,
+    )
+    algorithm["algorithmResult"]["gapSteps"] = None
+    diagnostic = next(
+        agent for agent in private["agentDiagnostics"]["agents"] if agent["id"] == "algorithm"
+    )
+    diagnostic["score"] = 90
+    student = project_student_result(copy.deepcopy(private))
+    student_algorithm = next(agent for agent in student["agents"] if agent["id"] == "algorithm")
+    assert "gapSteps" not in student_algorithm["algorithmResult"]
+    audit = audit_analysis_pair(private, student)
+    assert audit.algorithm_guardrail_overridden is False

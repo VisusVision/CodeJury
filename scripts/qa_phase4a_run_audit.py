@@ -270,9 +270,18 @@ def _default_check_values(
 def _check_passed(name: str, safe_value: bool | int) -> bool:
     if name == "BASELINE_FAILURE_COUNT":
         return safe_value == 0
-    if name == "CLEANUP_RESIDUE_FOUND":
-        return not bool(safe_value)
-    if name.endswith("_FAILED") or name == "UNAUTHORIZED_ACCESS_SUCCEEDED":
+    # True means a failure/leak/override/residue condition was observed.
+    if (
+        name.endswith("_FAILED")
+        or name.endswith("_OVERRIDDEN")
+        or name
+        in {
+            "UNAUTHORIZED_ACCESS_SUCCEEDED",
+            "REAL_LLM_PROVIDER_MISMATCH",
+            "STUDENT_PRIVATE_DATA_LEAK",
+            "CLEANUP_RESIDUE_FOUND",
+        }
+    ):
         return not bool(safe_value)
     return bool(safe_value)
 

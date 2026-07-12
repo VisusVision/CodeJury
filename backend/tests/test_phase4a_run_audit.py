@@ -68,11 +68,12 @@ def _minimal_private_result() -> dict[str, object]:
     )
 
     def presentation(agent_id: str) -> dict[str, object]:
+        score = 50 if agent_id == "testing" else 90 if agent_id == "algorithm" else 80
         agent: dict[str, object] = {
             "id": agent_id,
             "name": agent_id,
             "summary": "ready",
-            "score": 80,
+            "score": score,
             "maxScore": 100,
             "findings": [],
         }
@@ -101,9 +102,10 @@ def _minimal_private_result() -> dict[str, object]:
         return agent
 
     def diagnostic(agent_id: str) -> dict[str, object]:
+        score = 50 if agent_id == "testing" else 90 if agent_id == "algorithm" else 80
         return {
             "id": agent_id,
-            "score": 80,
+            "score": score,
             "llm_status": "ok",
             "confidence": 0.9,
             "guardrail_flags": [],
@@ -469,6 +471,25 @@ async def test_audit_browser_run_builds_complete_ledger(audit_module, tmp_path: 
     agent_check = next(check for check in ledger.checks if check.name == "AGENT_CONTRACT_FAILED")
     assert agent_check.safe_value is False
     assert agent_check.passed is True
+    for name in (
+        "FORMAL_AUTHORITY_OVERRIDDEN",
+        "ALGORITHM_GUARDRAIL_OVERRIDDEN",
+        "STUDENT_PRIVATE_DATA_LEAK",
+        "REAL_LLM_PROVIDER_MISMATCH",
+    ):
+        check = next(item for item in ledger.checks if item.name == name)
+        assert check.safe_value is False
+        assert check.passed is True
+
+
+def test_check_passed_inverts_override_and_leak_flags(audit_module) -> None:
+    assert audit_module._check_passed("FORMAL_AUTHORITY_OVERRIDDEN", False) is True
+    assert audit_module._check_passed("FORMAL_AUTHORITY_OVERRIDDEN", True) is False
+    assert audit_module._check_passed("ALGORITHM_GUARDRAIL_OVERRIDDEN", False) is True
+    assert audit_module._check_passed("STUDENT_PRIVATE_DATA_LEAK", False) is True
+    assert audit_module._check_passed("REAL_LLM_PROVIDER_MISMATCH", False) is True
+    assert audit_module._check_passed("POSTGRES_READY", True) is True
+    assert audit_module._check_passed("POSTGRES_READY", False) is False
 
 
 def test_safe_ledger_lines_never_emit_job_payload(audit_module) -> None:
